@@ -1,6 +1,7 @@
 package com.denizetkar.walkietalkieapp
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -46,34 +47,38 @@ fun CreateGroupScreen(
 @Composable
 fun JoinGroupScreen(
     currentJoinedGroup: String?,
-    onJoin: (String) -> Unit
+    discoveredGroups: List<DiscoveredGroup>,
+    onJoin: (DiscoveredGroup) -> Unit
 ) {
-    // Mock list of local groups
-    val mockGroups = listOf("Alpha Squad", "Hiking Team", "Dev Chat")
-
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("Available Groups", style = MaterialTheme.typography.headlineMedium)
 
-        if (currentJoinedGroup != null) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                Text(
-                    text = "Currently joined: $currentJoinedGroup",
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-        }
-
         Spacer(modifier = Modifier.height(16.dp))
 
-        mockGroups.forEach { groupName ->
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(groupName)
-                Button(onClick = { onJoin(groupName) }) {
-                    Text(if (currentJoinedGroup == groupName) "Joined" else "Join")
+        if (discoveredGroups.isEmpty()) {
+            Text("Scanning...", style = MaterialTheme.typography.bodyMedium)
+        } else {
+            LazyColumn {
+                items(discoveredGroups.size) {
+                    val group = discoveredGroups[it]
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(group.name, style = MaterialTheme.typography.titleMedium)
+                            Text("Signal: ${group.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Button(
+                            onClick = { onJoin(group) },
+                            enabled = currentJoinedGroup != group.name
+                        ) {
+                            Text(if (currentJoinedGroup == group.name) "Joined" else "Join")
+                        }
+                    }
+                    HorizontalDivider()
                 }
             }
         }
@@ -82,7 +87,8 @@ fun JoinGroupScreen(
 
 @Composable
 fun ManageGroupScreen(
-    myGroupName: String?
+    myGroupName: String?,
+    onDissolve: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -96,7 +102,7 @@ fun ManageGroupScreen(
             Spacer(modifier = Modifier.height(16.dp))
             Text("Pending Requests: 0")
             Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = { /* TODO */ }) {
+            Button(onClick = onDissolve) {
                 Text("Dissolve Group")
             }
         }
