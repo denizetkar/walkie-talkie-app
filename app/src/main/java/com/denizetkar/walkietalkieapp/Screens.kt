@@ -1,19 +1,26 @@
 package com.denizetkar.walkietalkieapp
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 
 @Composable
 fun CreateGroupScreen(
-    existingGroup: String?,
-    onCreate: (String) -> Unit,
-    onGoToManage: () -> Unit
+    onCreate: (String) -> Unit
 ) {
     var text by remember { mutableStateOf("") }
 
@@ -22,62 +29,92 @@ fun CreateGroupScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (existingGroup != null) {
-            Text("You already have a group: $existingGroup")
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = onGoToManage) {
-                Text("Go to Manage Tab")
-            }
-        } else {
-            Text("Create a New Group", style = MaterialTheme.typography.headlineMedium)
-            Spacer(modifier = Modifier.height(16.dp))
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text("Group Name") }
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = { onCreate(text) }, enabled = text.isNotBlank()) {
-                Text("Create Group")
-            }
+        Text("Create a New Group", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(16.dp))
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            label = { Text("Group Name") },
+            singleLine = true
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = { onCreate(text) },
+            enabled = text.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Go Live")
         }
     }
 }
 
 @Composable
 fun JoinGroupScreen(
-    currentJoinedGroup: String?,
     discoveredGroups: List<DiscoveredGroup>,
-    onJoin: (DiscoveredGroup) -> Unit
+    onJoin: (DiscoveredGroup, String) -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Available Groups", style = MaterialTheme.typography.headlineMedium)
+    var selectedGroup by remember { mutableStateOf<DiscoveredGroup?>(null) }
+    var codeInput by remember { mutableStateOf("") }
 
+    if (selectedGroup != null) {
+        AlertDialog(
+            onDismissRequest = { selectedGroup = null },
+            title = { Text("Enter Access Code") },
+            text = {
+                Column {
+                    Text("Enter the access code for ${selectedGroup?.name}:")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = codeInput,
+                        onValueChange = { if (it.length <= 4) codeInput = it },
+                        singleLine = true,
+                        label = { Text("Code") }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onJoin(selectedGroup!!, codeInput)
+                        selectedGroup = null
+                        codeInput = ""
+                    },
+                    enabled = codeInput.length == 4
+                ) {
+                    Text("Connect")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { selectedGroup = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Nearby Groups", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
         if (discoveredGroups.isEmpty()) {
-            Text("Scanning...", style = MaterialTheme.typography.bodyMedium)
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Scanning...", modifier = Modifier.padding(top = 64.dp))
+            }
         } else {
             LazyColumn {
                 items(discoveredGroups.size) {
                     val group = discoveredGroups[it]
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(group.name, style = MaterialTheme.typography.titleMedium)
-                            Text("Signal: ${group.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+                    ListItem(
+                        headlineContent = { Text(group.name, fontWeight = FontWeight.Bold) },
+                        supportingContent = { Text("Signal: ${group.rssi} dBm") },
+                        trailingContent = {
+                            Button(onClick = { selectedGroup = group }) {
+                                Text("Join")
+                            }
                         }
-                        Button(
-                            onClick = { onJoin(group) },
-                            enabled = currentJoinedGroup != group.name
-                        ) {
-                            Text(if (currentJoinedGroup == group.name) "Joined" else "Join")
-                        }
-                    }
+                    )
                     HorizontalDivider()
                 }
             }
@@ -86,25 +123,62 @@ fun JoinGroupScreen(
 }
 
 @Composable
-fun ManageGroupScreen(
-    myGroupName: String?,
-    onDissolve: () -> Unit
+fun RadioScreen(
+    groupName: String?,
+    accessCode: String?,
+    isHosting: Boolean,
+    onLeave: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (myGroupName == null) {
-            Text("You haven't created a group yet.")
-        } else {
-            Text("Managing: $myGroupName", style = MaterialTheme.typography.headlineLarge)
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("Pending Requests: 0")
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = onDissolve) {
-                Text("Dissolve Group")
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("GROUP: ${groupName ?: "Unknown"}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("ACCESS CODE: $accessCode", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(if (isHosting) "Role: HOST" else "Role: GUEST", style = MaterialTheme.typography.labelMedium)
             }
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        // PUSH TO TALK BUTTON
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(200.dp)
+                .clip(CircleShape)
+                .background(if (isPressed) Color.Red else MaterialTheme.colorScheme.primary)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null, // Disable ripple, we handle color manually
+                    onClick = {}
+                )
+        ) {
+            Text(
+                text = if (isPressed) "TALKING" else "HOLD TO TALK",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp
+            )
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Button(
+            onClick = onLeave,
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+        ) {
+            Text("Leave Group")
         }
     }
 }

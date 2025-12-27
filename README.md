@@ -9,65 +9,33 @@ This project demonstrates a decentralized mobile mesh network using Bluetooth 5 
 ## 🚀 Key Features
 
 *   **100% Offline:** Works entirely over Bluetooth Low Energy.
+*   **Instant On:** No complex setup. Create a group and start talking immediately.
+*   **Code-Based Access:** Join an active group anytime using a secure **Access Code**.
 *   **Ad-Hoc Mesh:** Messages hop between devices to extend range (Flooding strategy).
-*   **Cross-Layer Architecture:**
-    *   **UI:** Modern Android (Jetpack Compose).
-    *   **Engine:** High-performance Systems programming (Rust).
 *   **Efficient Audio:** Opus codec compression with Jitter Buffering and Packet Loss Concealment.
 
 ---
 
 ## 📱 App Behavior & Workflow
 
-The application operates in two distinct phases: **Setup (Lobby)** and **Active (Mesh)**.
+### 1. Start a Radio (Host)
+*   Go to the **Create** tab and create a group (e.g., "Hiking").
+*   The app immediately switches to **Radio Mode**.
+*   A random **Access Code** (e.g., `4829`) is displayed on the screen.
+*   **Under the hood:** The device starts advertising the Group Name via BLE.
 
-### Phase 1: The Setup (Lobby)
-Before the group spreads out, devices must perform a secure handshake to exchange a **Group Key** and **User Map**.
+### 2. Tune In (Joiner)
+*   Go to the **Join** tab.
+*   Scan for nearby groups.
+*   Tap on "Hiking".
+*   Enter the **Access Code** (`4829`) shared by the host.
+*   The app switches to **Radio Mode**.
+*   **Under the hood:** The device connects to the mesh and authenticates using the code.
 
-#### 1. Creating a Group (The Host)
-*   User A selects **"Create Group"** and enters a name (e.g., "Hiking Squad").
-*   **Behavior:**
-    *   The device becomes a **GATT Server**.
-    *   It starts **Advertising** a specific Service UUID containing the Group Name.
-    *   It listens for incoming connection requests.
-
-#### 2. Joining a Group (The Peers)
-*   User B selects **"Join Group"**.
-*   **Behavior:**
-    *   The device scans for advertisers with the App's Service UUID.
-    *   User B sees "Hiking Squad" in the list and taps it.
-    *   The device initiates a **GATT Connection** to User A (Host).
-    *   User B sends their "Display Name" to the Host.
-
-#### 3. The Handshake
-*   The Host receives the request and approves User B.
-*   **Data Exchange:** The Host sends a **Shared Secret (Group Key)** and a unique **Member ID** back to User B.
-*   *Note:* This key is used to sign/encrypt voice packets later, ensuring only group members can listen.
-
----
-
-### Phase 2: Active Mode (The Mesh)
-Once the group is formed, everyone transitions to the "Run" screen. The distinction between Host and Peer disappears; all nodes become equal relays.
-
-#### 1. The Network Topology
-*   **Hybrid Role:** Every device acts as both an Advertiser and a Scanner simultaneously (time-sliced).
-*   **Connection:** Devices automatically form GATT connections with the strongest nearby signals that possess the valid Group Key.
-*   **Relay:** If User A is connected to B, and B is connected to C, audio from A is forwarded by B to reach C.
-
-#### 2. Voice Transmission (Push-to-Talk)
-*   **Action:** User holds the PTT button.
-*   **Audio Pipeline:**
-    1.  **Capture:** Microphone records PCM audio (via Oboe/Rust).
-    2.  **Compress:** Audio is encoded using **Opus** (8kbps - 16kbps).
-    3.  **Packetize:** Data is wrapped in a custom packet: `[SenderID | SeqNum | OpusData]`.
-    4.  **Broadcast:** The packet is sent to all currently connected neighbors via BLE Write Command (Write without Response).
-
-#### 3. Voice Reception & Flooding
-*   **Flooding Logic:** When a device receives a packet:
-    1.  **Deduplication:** Checks the `[SenderID + SeqNum]` against a local cache. If seen before, the packet is dropped.
-    2.  **Playback:** If new, the packet is pushed to the **Jitter Buffer** for that SenderID.
-    3.  **Relay:** The packet is immediately re-transmitted to all *other* connected neighbors (TTL decremented).
-*   **Rendering:** The Rust audio engine mixes streams from multiple users, applies Packet Loss Concealment (PLC) for missing frames, and plays the result.
+### 3. Talk (Radio Mode)
+*   Everyone in the group sees the **Push-to-Talk** button.
+*   Audio is compressed (Opus), encrypted with the Access Code, and flooded across the mesh network.
+*   Anyone can leave or join at any time.
 
 ---
 
@@ -112,7 +80,7 @@ This project uses a hybrid approach to leverage the best tools for each job:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) (Coming Soon) for details on our code of conduct and the process for submitting pull requests.
+Contributions are welcome! Please read the `CONTRIBUTING.md` (Coming Soon) for details on our code of conduct and the process for submitting pull requests.
 
 1.  Fork the Project
 2.  Create your Feature Branch (`git checkout -b feature/AmazingFeature`)

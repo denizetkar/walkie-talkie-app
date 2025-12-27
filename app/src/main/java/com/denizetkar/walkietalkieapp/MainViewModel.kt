@@ -9,10 +9,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.catch
+import kotlin.random.Random
 
 data class AppState(
-    val myGroupName: String? = null,
-    val joinedGroupName: String? = null,
+    val groupName: String? = null,
+    val accessCode: String? = null,
+    val isHosting: Boolean = false,
     val discoveredGroups: List<DiscoveredGroup> = emptyList(),
     val isScanning: Boolean = false
 )
@@ -24,23 +26,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _appState = MutableStateFlow(AppState())
     val appState = _appState.asStateFlow()
 
-    fun createGroup(groupName: String) {
-        bluetoothManager.startHosting(groupName)
-        _appState.update { it.copy(myGroupName = groupName) }
+    fun createGroup(name: String) {
+        val code = Random.nextInt(1000, 9999).toString()
+
+        bluetoothManager.startHosting(name)
+        _appState.update {
+            it.copy(
+                groupName = name,
+                accessCode = code,
+                isHosting = true
+            )
+        }
     }
 
     fun startScanning() {
-        // 1. Cancel any existing scan to force a fresh start
         scanJob?.cancel()
 
         _appState.update { it.copy(isScanning = true) }
 
         scanJob = viewModelScope.launch {
             bluetoothManager.scanForGroups()
-                .catch {
-                    // Handle errors (like BT being turned off mid-scan)
-                    _appState.update { it.copy(isScanning = false) }
-                }
+                .catch { _appState.update { it.copy(isScanning = false) } }
                 .collect { groups ->
                     _appState.update { it.copy(discoveredGroups = groups) }
                 }
@@ -61,16 +67,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _appState.update { AppState() }
     }
 
-    fun joinGroup(group: DiscoveredGroup) {
-        // Mock connection for now
-        _appState.update { it.copy(joinedGroupName = group.name) }
-        // Stop scanning when joined
-        // In real app, we would connectGatt here
+    fun joinGroup(group: DiscoveredGroup, code: String) {
+        stopScanning()
+
+        _appState.update {
+            it.copy(
+                groupName = group.name,
+                accessCode = code,
+                isHosting = false
+            )
+        }
+
+        // TODO: In the future, this is where we initiate the GATT connection
+        // and send the 'code' to the host for verification.
     }
 
-    fun leaveGroup() {
-        _appState.update { it.copy(joinedGroupName = null) }
-    }
+    fun leaveGroup() = stopHostingOrScanning()
 
     override fun onCleared() {
         super.onCleared()

@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Group
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -20,13 +20,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -91,42 +91,28 @@ fun WalkieTalkieApp() {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val currentRoute = navBackStackEntry?.destination?.route
 
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                    label = { Text("Create") },
-                    selected = currentRoute == "create",
-                    onClick = {
-                        navController.navigate("create") {
-                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
-                )
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Group, contentDescription = null) },
-                    label = { Text("Join") },
-                    selected = currentRoute == "join",
-                    onClick = {
-                        navController.navigate("join") {
-                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
-                )
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text("Manage") },
-                    selected = currentRoute == "manage",
-                    onClick = {
-                        navController.navigate("manage") {
-                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
-                )
+                if (state.groupName == null) {
+                    NavigationBarItem(
+                        icon = { Icon(Icons.Filled.Add, null) },
+                        label = { Text("Create") },
+                        selected = currentRoute == "create",
+                        onClick = { navController.navigate("create") }
+                    )
+                    NavigationBarItem(
+                        icon = { Icon(Icons.Filled.Group, null) },
+                        label = { Text("Join") },
+                        selected = currentRoute == "join",
+                        onClick = { navController.navigate("join") }
+                    )
+                } else {
+                    // If in a group, show a single "Radio" item or nothing (since they can't leave without clicking Leave)
+                    NavigationBarItem(
+                        icon = { Icon(Icons.Filled.Radio, null) },
+                        label = { Text("Radio") },
+                        selected = true,
+                        onClick = { /* Do nothing, already there */ }
+                    )
+                }
             }
         }
     ) { innerPadding ->
@@ -137,44 +123,45 @@ fun WalkieTalkieApp() {
         ) {
 
             composable("create") {
+                LaunchedEffect(state.groupName) {
+                    if (state.groupName != null) navController.navigate("radio")
+                }
+
                 CreateGroupScreen(
-                    existingGroup = state.myGroupName,
                     onCreate = { name ->
-                        checkAndRequestPermissions {
-                            viewModel.createGroup(name)
-                            navController.navigate("manage")
-                        }
-                    },
-                    onGoToManage = { navController.navigate("manage") }
+                        checkAndRequestPermissions { viewModel.createGroup(name) }
+                    }
                 )
             }
 
             composable("join") {
-                DisposableEffect(Unit) {
-                    checkAndRequestPermissions {
-                        viewModel.startScanning()
-                    }
+                LaunchedEffect(state.groupName) {
+                    if (state.groupName != null) navController.navigate("radio")
+                }
 
-                    onDispose {
-                        viewModel.stopScanning()
-                    }
+                DisposableEffect(Unit) {
+                    checkAndRequestPermissions { viewModel.startScanning() }
+                    onDispose { viewModel.stopScanning() }
                 }
 
                 JoinGroupScreen(
-                    currentJoinedGroup = state.joinedGroupName,
                     discoveredGroups = state.discoveredGroups,
-                    onJoin = { group ->
-                        viewModel.joinGroup(group)
+                    onJoin = { group, code ->
+                        viewModel.joinGroup(group, code)
                     }
                 )
             }
 
-            composable("manage") {
-                ManageGroupScreen(
-                    myGroupName = state.myGroupName,
-                    onDissolve = {
-                        viewModel.stopHostingOrScanning()
-                        navController.navigate("create")
+            composable("radio") {
+                RadioScreen(
+                    groupName = state.groupName,
+                    accessCode = state.accessCode,
+                    isHosting = state.isHosting,
+                    onLeave = {
+                        viewModel.leaveGroup()
+                        navController.navigate("create") {
+                            popUpTo("create") { inclusive = true }
+                        }
                     }
                 )
             }
