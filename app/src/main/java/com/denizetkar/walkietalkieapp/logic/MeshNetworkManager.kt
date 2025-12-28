@@ -34,6 +34,7 @@ class MeshNetworkManager(
     private val _discoveredGroups = MutableStateFlow<List<DiscoveredGroup>>(emptyList())
     val discoveredGroups = _discoveredGroups.asStateFlow()
     private val foundGroupsMap = ConcurrentHashMap<String, DiscoveredGroup>()
+    private var groupCleanupJob: Job? = null
 
     val isScanning = transport.isScanning
 
@@ -69,11 +70,28 @@ class MeshNetworkManager(
         foundGroupsMap.clear()
         _discoveredGroups.value = emptyList()
 
+        startGroupCleanup()
         scope.launch { transport.startDiscovery() }
     }
 
     fun stopGroupScan() {
+        groupCleanupJob?.cancel()
+        groupCleanupJob = null
         scope.launch { transport.stopDiscovery() }
+    }
+
+    private fun startGroupCleanup() {
+        groupCleanupJob?.cancel()
+        groupCleanupJob = scope.launch {
+            while (isActive) {
+                delay(Config.CLEANUP_PERIOD)
+                val now = System.currentTimeMillis()
+                val listChanged = foundGroupsMap.values.removeIf { now - it.lastSeen > Config.GROUP_ADVERTISEMENT_TIMEOUT }
+                if (!listChanged) continue
+
+                _discoveredGroups.value = foundGroupsMap.values.sortedByDescending { it.highestRssi }
+            }
+        }
     }
 
     // ===========================================================================
@@ -207,7 +225,7 @@ class MeshNetworkManager(
             while (isActive) {
                 delay(Config.CLEANUP_PERIOD)
                 val now = System.currentTimeMillis()
-                seenPackets.entries.removeIf { (now - it.value) > Config.TIMEOUT }
+                seenPackets.entries.removeIf { (now - it.value) > Config.PACKET_CACHE_TIMEOUT }
             }
         }
     }

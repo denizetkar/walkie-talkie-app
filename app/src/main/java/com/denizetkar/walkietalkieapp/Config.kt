@@ -21,5 +21,6 @@ object Config {
     const val SCAN_INTERVAL_LAZY = 30000L
 
     const val CLEANUP_PERIOD = 2000L
-    const val TIMEOUT = 4000L
+    const val PACKET_CACHE_TIMEOUT = 4000L
+    const val GROUP_ADVERTISEMENT_TIMEOUT = 6000L
 }
