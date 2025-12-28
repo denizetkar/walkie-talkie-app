@@ -5,6 +5,7 @@ import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.bluetooth.BleTransport
 import com.denizetkar.walkietalkieapp.network.NetworkTransport
+import com.denizetkar.walkietalkieapp.network.TransportDataType
 import com.denizetkar.walkietalkieapp.network.TransportEvent
 import com.denizetkar.walkietalkieapp.network.TransportNode
 import kotlinx.coroutines.*
@@ -26,8 +27,6 @@ class MeshNetworkManager(
     val ownNodeId = Random.nextInt(1, Int.MAX_VALUE)
 
     private val _connectedPeers = MutableStateFlow<Set<String>>(emptySet())
-    val connectedPeers = _connectedPeers.asStateFlow()
-
     val peerCount: StateFlow<Int> = _connectedPeers
         .map { it.size }
         .stateIn(scope, SharingStarted.Lazily, 0)
@@ -122,7 +121,7 @@ class MeshNetworkManager(
                 Log.i("MeshManager", "Peer Lost: ${event.nodeId}")
                 _connectedPeers.update { it - event.nodeId }
             }
-            is TransportEvent.DataReceived -> handleDataReceived(event.fromNodeId, event.data)
+            is TransportEvent.DataReceived -> handleDataReceived(event.fromNodeId, event.data, event.type)
             is TransportEvent.Error -> Log.e("MeshManager", "Error: ${event.message}")
         }
     }
@@ -189,16 +188,18 @@ class MeshNetworkManager(
         }
     }
 
-    private fun handleDataReceived(fromNodeId: String, data: ByteArray) {
+    private fun handleDataReceived(fromNodeId: String, data: ByteArray, type: TransportDataType) {
         val packetHash = data.contentHashCode()
         if (seenPackets.containsKey(packetHash)) return
         seenPackets[packetHash] = System.currentTimeMillis()
 
-        // Process Data (Play Audio, etc.)
-        // For now, we just expose it to the UI/Audio Engine via a callback or flow.
-        // onAudioPacketReceived(data)
+        if (type == TransportDataType.AUDIO) {
+            // Play Audio
+        } else {
+            // Handle Control Message
+        }
 
-        scope.launch { transport.broadcast(data) }
+        scope.launch { transport.sendToAll(data, type, excludeAddress = fromNodeId) }
     }
 
     private fun startPacketCleanupLoop() {

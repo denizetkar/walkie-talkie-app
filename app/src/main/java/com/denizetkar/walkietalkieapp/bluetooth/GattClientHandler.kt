@@ -1,17 +1,23 @@
 package com.denizetkar.walkietalkieapp.bluetooth
 
 import android.annotation.SuppressLint
-import android.bluetooth.*
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothGattService
+import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
+import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
+import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
-import java.nio.ByteBuffer
-import java.security.MessageDigest
 import java.util.UUID
 
 // Events specific to a Client connection
@@ -19,7 +25,7 @@ sealed class ClientEvent {
     data class Connected(val device: BluetoothDevice) : ClientEvent()
     data class Authenticated(val device: BluetoothDevice) : ClientEvent()
     data class Disconnected(val device: BluetoothDevice) : ClientEvent()
-    data class MessageReceived(val device: BluetoothDevice, val data: ByteArray) : ClientEvent()
+    data class MessageReceived(val device: BluetoothDevice, val data: ByteArray, val type: TransportDataType) : ClientEvent()
     data class Error(val device: BluetoothDevice, val message: String) : ClientEvent()
 }
 
@@ -31,6 +37,7 @@ class GattClientHandler(
     private val accessCode: String
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
+    private val operationQueue = BleOperationQueue()
 
     private val _clientEvents = MutableSharedFlow<ClientEvent>()
     val clientEvents: SharedFlow<ClientEvent> = _clientEvents
@@ -38,29 +45,45 @@ class GattClientHandler(
     @SuppressLint("MissingPermission")
     fun connect() {
         Log.d("GattClient", "Connecting to ${targetDevice.address}...")
-        // AutoConnect = false for faster connections (Direct Connection)
-        bluetoothGatt = targetDevice.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        try {
+            bluetoothGatt = targetDevice.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (_: SecurityException) {
+            scope.launch { _clientEvents.emit(ClientEvent.Error(targetDevice, "Permission Missing")) }
+        }
     }
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
-        bluetoothGatt?.disconnect()
-        bluetoothGatt?.close()
+        operationQueue.clear()
+        try {
+            bluetoothGatt?.disconnect()
+            bluetoothGatt?.close()
+        } catch (_: Exception) { /* Ignore */ }
         bluetoothGatt = null
     }
 
-    @SuppressLint("MissingPermission")
-    fun sendAudio(data: ByteArray) {
-        writeCharacteristic(GattServerHandler.CHAR_AUDIO_UUID, data, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+    // Unified Send Method
+    fun sendMessage(type: TransportDataType, data: ByteArray) {
+        val (uuid, writeType) = when (type) {
+            TransportDataType.AUDIO -> Pair(
+                GattServerHandler.CHAR_AUDIO_UUID,
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            )
+            TransportDataType.CONTROL -> Pair(
+                GattServerHandler.CHAR_CONTROL_UUID,
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            )
+        }
+        queueWrite(uuid, data, writeType)
     }
 
-    @SuppressLint("MissingPermission")
-    fun sendControlMessage(data: ByteArray) {
-        writeCharacteristic(GattServerHandler.CHAR_CONTROL_UUID, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+    private fun queueWrite(uuid: UUID, data: ByteArray, writeType: Int) {
+        operationQueue.enqueue {
+            writeCharacteristicInternal(uuid, data, writeType)
+        }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
-
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -69,11 +92,10 @@ class GattClientHandler(
                 disconnect()
                 return
             }
-
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d("GattClient", "Connected to ${targetDevice.address}. Discovering Services...")
+                Log.d("GattClient", "Connected. Requesting MTU...")
                 scope.launch { _clientEvents.emit(ClientEvent.Connected(targetDevice)) }
-                gatt.discoverServices()
+                if (!gatt.requestMtu(Config.BLE_MTU)) gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d("GattClient", "Disconnected from ${targetDevice.address}")
                 scope.launch { _clientEvents.emit(ClientEvent.Disconnected(targetDevice)) }
@@ -82,18 +104,20 @@ class GattClientHandler(
         }
 
         @SuppressLint("MissingPermission")
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            Log.d("GattClient", "MTU Changed: $mtu. Discovering Services...")
+            gatt.discoverServices()
+        }
+
+        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 val service = gatt.getService(Config.APP_SERVICE_UUID)
                 if (service != null) {
-                    Log.d("GattClient", "Services Discovered. Subscribing to Challenge...")
-                    // 1. Subscribe to Challenge (to receive the Nonce)
-                    enableNotification(gatt, service, GattServerHandler.CHAR_CHALLENGE_UUID)
-
-                    // 2. Subscribe to Control (to receive Heartbeats)
-                    // Note: We usually need to wait for the first descriptor write to finish before writing the next.
-                    // For MVP simplicity, we might rely on the OS queue, but robust apps use a command queue.
-                    // We will trigger Control subscription after Handshake is done to be safe.
+                    Log.d("GattClient", "Services Discovered. Queueing Subscriptions...")
+                    operationQueue.enqueue { enableNotificationInternal(gatt, service, GattServerHandler.CHAR_CHALLENGE_UUID) }
+                    operationQueue.enqueue { enableNotificationInternal(gatt, service, GattServerHandler.CHAR_CONTROL_UUID) }
+                    operationQueue.enqueue { enableNotificationInternal(gatt, service, GattServerHandler.CHAR_AUDIO_UUID) }
                 } else {
                     Log.e("GattClient", "Target does not have the WalkieTalkie Service!")
                     disconnect()
@@ -101,21 +125,20 @@ class GattClientHandler(
             }
         }
 
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            value: ByteArray
-        ) {
-            // API 33+ Callback
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            operationQueue.operationCompleted()
+        }
+
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            operationQueue.operationCompleted()
+        }
+
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             handleIncomingData(characteristic.uuid, value)
         }
 
         @Deprecated("Deprecated in Java")
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic
-        ) {
-            // Legacy Callback
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
             handleIncomingData(characteristic.uuid, characteristic.value)
         }
@@ -126,70 +149,58 @@ class GattClientHandler(
         when (uuid) {
             GattServerHandler.CHAR_CHALLENGE_UUID -> {
                 val nonce = String(data, Charsets.UTF_8)
-                Log.d("GattClient", "Received Challenge Nonce: $nonce")
                 solveChallenge(nonce)
             }
             GattServerHandler.CHAR_CONTROL_UUID -> {
-                scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, data)) }
+                scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, data, TransportDataType.CONTROL)) }
             }
-            // Audio usually doesn't come via Notify on Client side (Client Writes to Server),
-            // unless we implement bi-directional Audio via Notify.
-            // For now, let's assume Client Pushes Audio to Server, and Server Pushes Audio to Client via Notify?
-            // Actually, standard GATT is Client Writes to Server.
-            // To receive Audio from Server, we MUST subscribe to Audio Characteristic Notifications too.
+            GattServerHandler.CHAR_AUDIO_UUID -> {
+                scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, data, TransportDataType.AUDIO)) }
+            }
         }
     }
 
-    @SuppressLint("MissingPermission")
     private fun solveChallenge(nonce: String) {
-        // 1. Calculate Hash: SHA256(AccessCode + Nonce)
-        val fullHash = MessageDigest.getInstance("SHA-256").digest((accessCode + nonce).toByteArray(Charsets.UTF_8))
-        val hashBytes = fullHash.copyOfRange(0, 16) // First 16 bytes
-
-        // 2. Prepare Node ID (4 bytes)
-        val nodeIdBytes = ByteBuffer.allocate(4).putInt(ownNodeId).array()
-
-        // 3. Combine: [Hash (16)] + [NodeID (4)]
-        val responsePayload = hashBytes + nodeIdBytes
+        val responsePayload = ProtocolUtils.generateHandshakeResponse(accessCode, nonce, ownNodeId)
 
         Log.d("GattClient", "Sending Challenge Response...")
-        writeCharacteristic(GattServerHandler.CHAR_RESPONSE_UUID, responsePayload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-
-        // Assume success if not disconnected immediately.
-        // Realistically, we should wait for a "Welcome" control message, but for now:
+        queueWrite(GattServerHandler.CHAR_RESPONSE_UUID, responsePayload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
         scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
-
-        // Now safe to subscribe to other notifications (Control/Audio)
-        bluetoothGatt?.getService(Config.APP_SERVICE_UUID)?.let { service ->
-            enableNotification(bluetoothGatt!!, service, GattServerHandler.CHAR_CONTROL_UUID)
-            // If we want to hear audio from this peer, we must subscribe to Audio too
-            // enableNotification(bluetoothGatt!!, service, GattServerHandler.CHAR_AUDIO_UUID)
-        }
     }
 
     @SuppressLint("MissingPermission")
-    private fun enableNotification(gatt: BluetoothGatt, service: BluetoothGattService, charUUID: UUID) {
-        val characteristic = service.getCharacteristic(charUUID) ?: return
+    private fun enableNotificationInternal(gatt: BluetoothGatt, service: BluetoothGattService, charUUID: UUID) {
+        val characteristic = service.getCharacteristic(charUUID) ?: run {
+            operationQueue.operationCompleted()
+            return
+        }
         gatt.setCharacteristicNotification(characteristic, true)
-
         val descriptor = characteristic.getDescriptor(GattServerHandler.CCCD_UUID)
-        if (descriptor != null) {
-            // API 33+ vs Legacy
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-            } else {
-                @Suppress("DEPRECATION")
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                @Suppress("DEPRECATION")
-                gatt.writeDescriptor(descriptor)
-            }
+        if (descriptor == null) {
+            operationQueue.operationCompleted()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        } else {
+            @Suppress("DEPRECATION")
+            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(descriptor)
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun writeCharacteristic(uuid: UUID, data: ByteArray, writeType: Int) {
-        val service = bluetoothGatt?.getService(Config.APP_SERVICE_UUID) ?: return
-        val char = service.getCharacteristic(uuid) ?: return
+    private fun writeCharacteristicInternal(uuid: UUID, data: ByteArray, writeType: Int) {
+        val service = bluetoothGatt?.getService(Config.APP_SERVICE_UUID) ?: run {
+            operationQueue.operationCompleted()
+            return
+        }
+        val char = service.getCharacteristic(uuid) ?: run {
+            operationQueue.operationCompleted()
+            return
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             bluetoothGatt?.writeCharacteristic(char, data, writeType)

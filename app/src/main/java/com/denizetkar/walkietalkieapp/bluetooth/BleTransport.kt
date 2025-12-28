@@ -2,12 +2,19 @@ package com.denizetkar.walkietalkieapp.bluetooth
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.*
+import android.bluetooth.le.AdvertiseCallback
+import android.bluetooth.le.AdvertiseData
+import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.NetworkTransport
+import com.denizetkar.walkietalkieapp.network.TransportDataType
 import com.denizetkar.walkietalkieapp.network.TransportEvent
 import com.denizetkar.walkietalkieapp.network.TransportNode
 import kotlinx.coroutines.CoroutineScope
@@ -19,12 +26,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.collections.copyOfRange
+import kotlin.collections.forEach
 
 class BleTransport(
-    private val context: Context,
+    context: Context,
     private val scope: CoroutineScope
 ) : NetworkTransport {
 
+    private val context = context.applicationContext
     private val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter = btManager.adapter
     private val scanner = adapter.bluetoothLeScanner
@@ -41,7 +51,6 @@ class BleTransport(
 
     private val serverHandler = GattServerHandler(context, scope)
     private val activeClients = ConcurrentHashMap<String, GattClientHandler>()
-
     private val clientJobs = ConcurrentHashMap<String, Job>()
 
     init {
@@ -55,7 +64,7 @@ class BleTransport(
                         _events.emit(TransportEvent.ConnectionLost(event.device.address))
                     }
                     is ServerEvent.MessageReceived -> {
-                        _events.emit(TransportEvent.DataReceived(event.device.address, event.data))
+                        _events.emit(TransportEvent.DataReceived(event.device.address, event.data, event.type))
                     }
                     else -> {}
                 }
@@ -118,7 +127,7 @@ class BleTransport(
         val rssi = result.rssi
 
         val serviceData = record.serviceData[ParcelUuid(Config.APP_SERVICE_UUID)] ?: return
-        // Expected Format: [NodeID (4)] + [Availability (1)] + [GroupHash (1)] = 6 bytes minimum
+        // Expected Format: [NodeID (4)] + [Availability (1)] + [GroupHash (1 - optional)]
         if (serviceData.size < 5) return
 
         val nodeId = ByteBuffer.wrap(serviceData.copyOfRange(0, 4)).int
@@ -176,7 +185,7 @@ class BleTransport(
             .addServiceData(pUuid, payload.array())
             .build()
 
-        val nameBytes = groupName.toByteArray(Charsets.UTF_8).take(27).toByteArray()
+        val nameBytes = groupName.toByteArray(Charsets.UTF_8).take(Config.MAX_ADVERTISING_NAME_BYTES).toByteArray()
         val scanResponseData = AdvertiseData.Builder()
             .addManufacturerData(0xFFFF, nameBytes)
             .build()
@@ -190,13 +199,19 @@ class BleTransport(
             }
         }
 
-        advertiser.startAdvertising(settings, mainData, scanResponseData, advertiseCallback)
-        serverHandler.startServer()
+        try {
+            advertiser.startAdvertising(settings, mainData, scanResponseData, advertiseCallback)
+            serverHandler.startServer()
+        } catch (e: Exception) {
+            Log.e("BleTransport", "Start Advertising Error", e)
+        }
     }
 
     @SuppressLint("MissingPermission")
     override suspend fun stopAdvertising() {
-        advertiseCallback?.let { advertiser.stopAdvertising(it) }
+        advertiseCallback?.let {
+            try { advertiser.stopAdvertising(it) } catch (_: Exception) {}
+        }
         advertiseCallback = null
         serverHandler.stop()
     }
@@ -225,7 +240,7 @@ class BleTransport(
                         disconnect(address)
                     }
                     is ClientEvent.MessageReceived -> {
-                        _events.emit(TransportEvent.DataReceived(address, event.data))
+                        _events.emit(TransportEvent.DataReceived(address, event.data, event.type))
                     }
                     is ClientEvent.Error -> {
                         Log.e("BleTransport", "Client Error: ${event.message}")
@@ -243,33 +258,32 @@ class BleTransport(
     override suspend fun disconnect(address: String) {
         clientJobs[address]?.cancel()
         clientJobs.remove(address)
-
         activeClients[address]?.disconnect()
         activeClients.remove(address)
-        // Note: We don't manually disconnect Server-side connections here easily
-        // because GattServer manages them by Device.
-        // Ideally, we would map nodeId -> Device and call server.cancelConnection(device).
-        // For MVP, relying on the other side to disconnect or link loss is acceptable.
+        serverHandler.disconnect(address)
     }
 
-    override suspend fun send(toAddress: String, data: ByteArray) {
-        // Try Client first
+    override suspend fun send(toAddress: String, data: ByteArray, type: TransportDataType) {
+        // 1. Try Client
         val client = activeClients[toAddress]
         if (client != null) {
-            client.sendControlMessage(data) // Or Audio depending on type
+            client.sendMessage(type, data)
             return
         }
-        // If not a client, maybe they are connected to our Server?
-        // The ServerHandler would need a method `sendTo(deviceAddress, data)`.
-        // For MVP, we assume we broadcast to everyone.
+
+        // 2. Try Server
+        serverHandler.sendTo(toAddress, data, type)
     }
 
-    override suspend fun broadcast(data: ByteArray) {
-        // 1. Send to all Clients we initiated
-        activeClients.values.forEach { it.sendControlMessage(data) }
+    override suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeAddress: String?) {
+        // 1. Send to all Clients we initiated (excluding the sender)
+        activeClients.forEach { (address, client) ->
+            if (address != excludeAddress) {
+                client.sendMessage(type, data)
+            }
+        }
 
-        // 2. Send to all Devices connected to our Server
-        // We need to add a `broadcast(data)` method to GattServerHandler
-        // serverHandler.broadcast(data)
+        // 2. Send to all Devices connected to our Server (excluding the sender)
+        serverHandler.broadcastToClients(data, excludeAddress, type)
     }
 }

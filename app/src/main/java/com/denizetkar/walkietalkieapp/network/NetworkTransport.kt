@@ -20,7 +20,7 @@ sealed class TransportEvent {
     data class NodeDiscovered(val node: TransportNode) : TransportEvent()
     data class ConnectionEstablished(val nodeId: String) : TransportEvent()
     data class ConnectionLost(val nodeId: String) : TransportEvent()
-    data class DataReceived(val fromNodeId: String, val data: ByteArray) : TransportEvent()
+    data class DataReceived(val fromNodeId: String, val data: ByteArray, val type: TransportDataType) : TransportEvent()
     data class Error(val message: String) : TransportEvent()
 }
 
@@ -47,6 +47,6 @@ interface NetworkTransport {
     suspend fun disconnect(address: String)
 
     // Data Transfer
-    suspend fun send(toAddress: String, data: ByteArray)
-    suspend fun broadcast(data: ByteArray)
+    suspend fun send(toAddress: String, data: ByteArray, type: TransportDataType)
+    suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeAddress: String? = null)
 }
