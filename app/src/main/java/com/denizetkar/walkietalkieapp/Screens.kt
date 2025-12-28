@@ -75,10 +75,36 @@ fun CreateGroupScreen(
 @Composable
 fun JoinGroupScreen(
     discoveredGroups: List<DiscoveredGroup>,
-    onJoin: (DiscoveredGroup, String) -> Unit
+    isJoining: Boolean,
+    joinError: String?,
+    onJoin: (DiscoveredGroup, String) -> Unit,
+    onJoinErrorAck: () -> Unit
 ) {
     var selectedGroup by remember { mutableStateOf<DiscoveredGroup?>(null) }
     var codeInput by remember { mutableStateOf("") }
+
+    if (joinError != null) {
+        AlertDialog(
+            onDismissRequest = onJoinErrorAck,
+            title = { Text("Error") },
+            text = { Text(joinError) },
+            confirmButton = { Button(onClick = onJoinErrorAck) { Text("OK") } }
+        )
+    }
+
+    if (isJoining) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Connecting...") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Text("Verifying Access Code...")
+                }
+            },
+            confirmButton = {}
+        )
+    }
 
     if (selectedGroup != null) {
         AlertDialog(

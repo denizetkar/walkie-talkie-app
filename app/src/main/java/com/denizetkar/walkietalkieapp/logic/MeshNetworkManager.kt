@@ -11,6 +11,7 @@ import com.denizetkar.walkietalkieapp.network.TransportNode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
 import kotlin.random.Random
 
 data class DiscoveredGroup(
@@ -41,6 +42,7 @@ class MeshNetworkManager(
     private var isMeshMode = false
     private var currentGroupName: String? = null
     private val seenPackets = ConcurrentHashMap<Int, Long>()
+    private var startAdvertisementJob: Job? = null
     private var scanJob: Job? = null
 
     init {
@@ -98,13 +100,15 @@ class MeshNetworkManager(
     // MODE 2: MESH NETWORKING (Radio Screen)
     // ===========================================================================
 
-    fun startMesh(groupName: String, accessCode: String) {
+    fun startMesh(groupName: String, accessCode: String, asHost: Boolean) {
         isMeshMode = true
         currentGroupName = groupName
 
         stopGroupScan()
         transport.setCredentials(accessCode, ownNodeId)
-        scope.launch {
+        val peerThreshold = if (asHost) 0 else 1
+        startAdvertisementJob = scope.launch {
+            peerCount.first { it >= peerThreshold }
             transport.startAdvertising(groupName)
         }
 
@@ -113,6 +117,7 @@ class MeshNetworkManager(
 
     fun stopMesh() {
         isMeshMode = false
+        startAdvertisementJob?.cancel()
         scanJob?.cancel()
 
         val peersToDisconnect = _connectedPeers.value.toSet()
@@ -132,14 +137,14 @@ class MeshNetworkManager(
         when (event) {
             is TransportEvent.NodeDiscovered -> handleNodeDiscovered(event.node)
             is TransportEvent.ConnectionEstablished -> {
-                Log.i("MeshManager", "Peer Connected: ${event.nodeId}")
-                _connectedPeers.update { it + event.nodeId }
+                Log.i("MeshManager", "Peer Connected: ${event.address}")
+                _connectedPeers.update { it + event.address.uppercase() }
             }
             is TransportEvent.ConnectionLost -> {
-                Log.i("MeshManager", "Peer Lost: ${event.nodeId}")
-                _connectedPeers.update { it - event.nodeId }
+                Log.i("MeshManager", "Peer Lost: ${event.address}")
+                _connectedPeers.update { it - event.address.uppercase() }
             }
-            is TransportEvent.DataReceived -> handleDataReceived(event.fromNodeId, event.data, event.type)
+            is TransportEvent.DataReceived -> handleDataReceived(event.fromAddress, event.data, event.type)
             is TransportEvent.Error -> Log.e("MeshManager", "Error: ${event.message}")
         }
     }
@@ -148,19 +153,17 @@ class MeshNetworkManager(
         if (!isMeshMode) {
             if (node.name == null) return
 
-            val rssi = node.extraInfo["rssi"] as? Int ?: -100
             val existing = foundGroupsMap[node.name]
+            val rssi = max(node.extraInfo["rssi"] as? Int ?: Config.WORST_RSSI, existing?.highestRssi ?: Config.WORST_RSSI)
 
-            if (existing == null || rssi > existing.highestRssi) {
-                foundGroupsMap[node.name] = DiscoveredGroup(node.name, rssi)
-                _discoveredGroups.value = foundGroupsMap.values.toList().sortedByDescending { it.highestRssi }
-            }
+            foundGroupsMap[node.name] = DiscoveredGroup(node.name, rssi)
+            _discoveredGroups.value = foundGroupsMap.values.toList().sortedByDescending { it.highestRssi }
             return
         }
 
         if (node.name != currentGroupName) return
         val currentPeers = _connectedPeers.value
-        if (currentPeers.contains(node.id)) return
+        if (currentPeers.contains(node.id.uppercase())) return
         if (currentPeers.size >= Config.MAX_PEERS) return
 
         val nodeId = node.extraInfo["nodeId"] as? Int ?: return
@@ -168,7 +171,7 @@ class MeshNetworkManager(
 
         if (currentPeers.size >= Config.TARGET_PEERS && !isAvailable) return
 
-        Log.d("MeshManager", "Found Candidate: $nodeId. Connecting...")
+        Log.d("MeshManager", "Found Candidate: $nodeId, ${node.id}. Connecting...")
         scope.launch { transport.connect(node.id) }
     }
 
@@ -206,7 +209,7 @@ class MeshNetworkManager(
         }
     }
 
-    private fun handleDataReceived(fromNodeId: String, data: ByteArray, type: TransportDataType) {
+    private fun handleDataReceived(fromAddress: String, data: ByteArray, type: TransportDataType) {
         val packetHash = data.contentHashCode()
         if (seenPackets.containsKey(packetHash)) return
         seenPackets[packetHash] = System.currentTimeMillis()
@@ -217,7 +220,7 @@ class MeshNetworkManager(
             // Handle Control Message
         }
 
-        scope.launch { transport.sendToAll(data, type, excludeAddress = fromNodeId) }
+        scope.launch { transport.sendToAll(data, type, excludeAddress = fromAddress) }
     }
 
     private fun startPacketCleanupLoop() {

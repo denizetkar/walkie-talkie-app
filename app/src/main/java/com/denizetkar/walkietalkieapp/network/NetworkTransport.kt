@@ -18,9 +18,9 @@ data class TransportNode(
  */
 sealed class TransportEvent {
     data class NodeDiscovered(val node: TransportNode) : TransportEvent()
-    data class ConnectionEstablished(val nodeId: String) : TransportEvent()
-    data class ConnectionLost(val nodeId: String) : TransportEvent()
-    data class DataReceived(val fromNodeId: String, val data: ByteArray, val type: TransportDataType) : TransportEvent()
+    data class ConnectionEstablished(val address: String) : TransportEvent()
+    data class ConnectionLost(val address: String) : TransportEvent()
+    data class DataReceived(val fromAddress: String, val data: ByteArray, val type: TransportDataType) : TransportEvent()
     data class Error(val message: String) : TransportEvent()
 }
 

@@ -13,14 +13,16 @@ object Config {
     // BLE Technical Limits
     const val BLE_MTU = 512 // Request high MTU for Opus packets
     const val MAX_ADVERTISING_NAME_BYTES = 20 // Leave room for flags + headers (31 byte limit)
+    const val WORST_RSSI = -100
 
     // Timing
-    const val SCAN_PERIOD_AGGRESSIVE = 5000L
-    const val SCAN_PAUSE_AGGRESSIVE = 2000L
+    const val SCAN_PERIOD_AGGRESSIVE = 10000L
+    const val SCAN_PAUSE_AGGRESSIVE = 500L
     const val SCAN_PERIOD_LAZY = 5000L
     const val SCAN_INTERVAL_LAZY = 30000L
 
     const val CLEANUP_PERIOD = 2000L
     const val PACKET_CACHE_TIMEOUT = 4000L
-    const val GROUP_ADVERTISEMENT_TIMEOUT = 6000L
+    const val GROUP_ADVERTISEMENT_TIMEOUT = 4000L
+    const val GROUP_JOIN_TIMEOUT = 8000L
 }

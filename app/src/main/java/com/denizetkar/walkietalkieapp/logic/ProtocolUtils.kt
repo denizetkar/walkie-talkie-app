@@ -4,6 +4,7 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 
 object ProtocolUtils {
+    val HANDSHAKE_SUCCESS_PAYLOAD = byteArrayOf(0x01)
 
     /**
      * Generates the response payload for the Challenge-Response handshake.

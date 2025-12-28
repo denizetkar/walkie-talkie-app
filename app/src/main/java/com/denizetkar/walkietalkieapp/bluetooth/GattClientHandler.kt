@@ -152,6 +152,12 @@ class GattClientHandler(
                 solveChallenge(nonce)
             }
             GattServerHandler.CHAR_CONTROL_UUID -> {
+                if (data.contentEquals(ProtocolUtils.HANDSHAKE_SUCCESS_PAYLOAD)) {
+                    Log.d("GattClient", "Received Handshake Success ACK")
+                    scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
+                    return
+                }
+
                 scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, data, TransportDataType.CONTROL)) }
             }
             GattServerHandler.CHAR_AUDIO_UUID -> {
@@ -165,7 +171,6 @@ class GattClientHandler(
 
         Log.d("GattClient", "Sending Challenge Response...")
         queueWrite(GattServerHandler.CHAR_RESPONSE_UUID, responsePayload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-        scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
     }
 
     @SuppressLint("MissingPermission")

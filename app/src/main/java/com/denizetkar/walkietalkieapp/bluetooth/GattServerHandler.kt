@@ -57,18 +57,22 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     fun startServer() {
-        if (gattServer != null) return
+        if (gattServer != null) {
+            Log.d("GattServer", "Server already running")
+            return
+        }
+
         val callback = object : BluetoothGattServerCallback() {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     Log.d("GattServer", "New Connection: ${device.address}")
-                    connectedDevices[device.address] = device
+                    connectedDevices[device.address.uppercase()] = device
                     scope.launch { _serverEvents.emit(ServerEvent.ClientConnected(device)) }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     Log.d("GattServer", "Disconnected: ${device.address}")
-                    connectedDevices.remove(device.address)
-                    pendingChallenges.remove(device.address)
-                    authenticatedSessions.remove(device.address)
+                    connectedDevices.remove(device.address.uppercase())
+                    pendingChallenges.remove(device.address.uppercase())
+                    authenticatedSessions.remove(device.address.uppercase())
                     scope.launch { _serverEvents.emit(ServerEvent.ClientDisconnected(device)) }
                 }
             }
@@ -77,6 +81,7 @@ class GattServerHandler(
                 device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
                 preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
             ) {
+                Log.d("GattServer", "Descriptor Write Request: ${device.address}, characteristic: ${descriptor.characteristic.uuid}, descriptor: ${descriptor.uuid}")
                 if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                 if (descriptor.characteristic.uuid == CHAR_CHALLENGE_UUID && descriptor.uuid == CCCD_UUID) {
                     sendChallenge(device)
@@ -87,17 +92,18 @@ class GattServerHandler(
                 device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
                 preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
             ) {
+                Log.d("GattServer", "Characteristic Write Request: ${device.address}, characteristic: ${characteristic.uuid}")
                 if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
 
                 when (characteristic.uuid) {
                     CHAR_RESPONSE_UUID -> handleHandshakeResponse(device, value)
                     CHAR_AUDIO_UUID -> {
-                        if (authenticatedSessions.containsKey(device.address)) {
+                        if (authenticatedSessions.containsKey(device.address.uppercase())) {
                             scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.AUDIO)) }
                         }
                     }
                     CHAR_CONTROL_UUID -> {
-                        if (authenticatedSessions.containsKey(device.address)) {
+                        if (authenticatedSessions.containsKey(device.address.uppercase())) {
                             scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.CONTROL)) }
                         }
                     }
@@ -106,30 +112,30 @@ class GattServerHandler(
         }
         gattServer = bluetoothManager.openGattServer(context, callback)
         setupService()
+        Log.d("GattServer", "GATT Server Started")
     }
 
     @SuppressLint("MissingPermission")
     fun disconnect(address: String) {
-        val device = connectedDevices[address]
+        val device = connectedDevices[address.uppercase()]
         if (device != null) {
+            Log.d("GattServer", "Disconnecting: ${device.address}")
             gattServer?.cancelConnection(device)
         }
     }
 
-    // NEW: Unicast Send from Server to Client
     @SuppressLint("MissingPermission")
     fun sendTo(address: String, data: ByteArray, type: TransportDataType) {
-        val device = connectedDevices[address] ?: return
-        if (!authenticatedSessions.containsKey(address)) return
+        val device = connectedDevices[address.uppercase()] ?: return
+        if (!authenticatedSessions.containsKey(address.uppercase())) return
         notifyDevice(device, data, type)
     }
 
-    // UPDATED: Multicast Send from Server to Clients
     @SuppressLint("MissingPermission")
     fun broadcastToClients(data: ByteArray, excludeAddress: String?, type: TransportDataType) {
         authenticatedSessions.keys.forEach { address ->
             if (address != excludeAddress) {
-                val device = connectedDevices[address] ?: return@forEach
+                val device = connectedDevices[address.uppercase()] ?: return@forEach
                 notifyDevice(device, data, type)
             }
         }
@@ -182,8 +188,9 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     private fun sendChallenge(device: BluetoothDevice) {
+        Log.d("GattServer", "Sending challenge to ${device.address}...")
         val nonce = UUID.randomUUID().toString().substring(0, 8)
-        pendingChallenges[device.address] = nonce
+        pendingChallenges[device.address.uppercase()] = nonce
         val char = gattServer?.getService(SERVICE_UUID)?.getCharacteristic(CHAR_CHALLENGE_UUID) ?: return
         val data = nonce.toByteArray(Charsets.UTF_8)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -198,16 +205,20 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     private fun handleHandshakeResponse(device: BluetoothDevice, value: ByteArray) {
-        val nonce = pendingChallenges[device.address]
+        val nonce = pendingChallenges[device.address.uppercase()]
         val code = currentAccessCode
-        if (nonce == null || code == null) return
+        if (nonce == null || code == null) {
+            Log.w("GattServer", "Nonce or Code Missing for ${device.address}: $nonce, $code")
+            return
+        }
 
         val clientNodeId = ProtocolUtils.verifyHandshake(value, code, nonce)
 
         if (clientNodeId != null) {
             Log.i("GattServer", "Authenticated Node: $clientNodeId (MAC: ${device.address})")
-            pendingChallenges.remove(device.address)
-            authenticatedSessions[device.address] = clientNodeId
+            pendingChallenges.remove(device.address.uppercase())
+            authenticatedSessions[device.address.uppercase()] = clientNodeId
+            sendTo(device.address, ProtocolUtils.HANDSHAKE_SUCCESS_PAYLOAD, TransportDataType.CONTROL)
             scope.launch { _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId)) }
         } else {
             Log.w("GattServer", "Auth Failed for ${device.address}")
@@ -216,12 +227,14 @@ class GattServerHandler(
     }
 
     @SuppressLint("MissingPermission")
-    fun stop() {
+    fun stopServer() {
+        connectedDevices.forEach { (_, device) -> gattServer!!.cancelConnection(device) }
         gattServer?.clearServices()
         gattServer?.close()
         gattServer = null
         authenticatedSessions.clear()
         pendingChallenges.clear()
         connectedDevices.clear()
+        Log.d("GattServer", "GATT Server Stopped")
     }
 }

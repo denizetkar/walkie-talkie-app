@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.copyOfRange
@@ -126,7 +128,7 @@ class BleTransport(
         val device = result.device
         val rssi = result.rssi
 
-        val serviceData = record.serviceData[ParcelUuid(Config.APP_SERVICE_UUID)] ?: return
+        val serviceData = record.serviceData?.get(ParcelUuid(Config.APP_SERVICE_UUID)) ?: return
         // Expected Format: [NodeID (4)] + [Availability (1)] + [GroupHash (1 - optional)]
         if (serviceData.size < 5) return
 
@@ -157,6 +159,7 @@ class BleTransport(
         }
         scanCallback = null
         _isScanning.value = false
+        Log.d("BleTransport", "Discovery Stopped")
     }
 
     // ===========================================================================
@@ -213,15 +216,16 @@ class BleTransport(
             try { advertiser.stopAdvertising(it) } catch (_: Exception) {}
         }
         advertiseCallback = null
-        serverHandler.stop()
+        serverHandler.stopServer()
     }
 
     // ===========================================================================
     // CONNECTION & DATA
     // ===========================================================================
 
+    private val connectMutex = Mutex()
     @SuppressLint("MissingPermission")
-    override suspend fun connect(address: String) {
+    override suspend fun connect(address: String) = connectMutex.withLock {
         if (activeClients.containsKey(address)) return
 
         val device = adapter.getRemoteDevice(address)

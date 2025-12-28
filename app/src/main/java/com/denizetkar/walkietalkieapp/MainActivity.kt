@@ -146,9 +146,12 @@ fun WalkieTalkieApp() {
 
                 JoinGroupScreen(
                     discoveredGroups = state.discoveredGroups,
+                    isJoining = state.isJoining,
+                    joinError = state.joinError,
                     onJoin = { group, code ->
                         viewModel.joinGroup(group.name, code)
-                    }
+                    },
+                    onJoinErrorAck = { viewModel.ackJoinError() }
                 )
             }
 
