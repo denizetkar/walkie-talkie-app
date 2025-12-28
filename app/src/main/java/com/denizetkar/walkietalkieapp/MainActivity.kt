@@ -145,7 +145,7 @@ fun WalkieTalkieApp() {
                 }
 
                 JoinGroupScreen(
-                    discoveredGroups = state.discoveredGroups,
+                    discoveredNodes = state.discoveredNodes,
                     onJoin = { group, code ->
                         viewModel.joinGroup(group, code)
                     }
@@ -156,7 +156,6 @@ fun WalkieTalkieApp() {
                 RadioScreen(
                     groupName = state.groupName,
                     accessCode = state.accessCode,
-                    isHosting = state.isHosting,
                     onLeave = {
                         viewModel.leaveGroup()
                         navController.navigate("create") {

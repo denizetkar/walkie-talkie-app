@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -18,46 +19,80 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import java.nio.charset.Charset
-import java.util.UUID
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import java.util.concurrent.ConcurrentHashMap
 
-// Simple data class for UI
-data class DiscoveredGroup(
-    val name: String,
-    val macAddress: String,
-    val rssi: Int,
-    val lastSeen: Long = System.currentTimeMillis() // Default to Now
+data class DiscoveredNode(
+    val address: String,      // MAC Address
+    val groupName: String,    // The Group they belong to
+    val rssi: Int,            // Signal Strength
+    val lastSeen: Long = System.currentTimeMillis()
 )
-
-// A fixed UUID for our App Service so we only see our own devices
-val APP_SERVICE_UUID: UUID = UUID.fromString("b5e764d4-4a06-4c96-8c25-f378ccf9c8e1")
 
 class WalkieTalkieBluetoothManager(context: Context) {
 
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter: BluetoothAdapter = bluetoothManager.adapter
 
-    // --- ADVERTISING (HOST) ---
-
     private var advertiseCallback: AdvertiseCallback? = null
 
     @SuppressLint("MissingPermission")
-    fun startHosting(groupName: String) {
-        if (!adapter.isEnabled) return
+    fun scanGlobal(): Flow<List<DiscoveredNode>> = callbackFlow {
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null || !adapter.isEnabled) { close(); return@callbackFlow }
 
+        val foundNodes = ConcurrentHashMap<String, DiscoveredNode>()
+
+        // Filter: Accept ALL groups
+        val scanCallback = createScanCallback(foundNodes) { true }
+
+        val pulseJob = launch { runScanPulseLoop(scanner, scanCallback) }
+        val cleanupJob = launch { runCleanupLoop(foundNodes) }
+
+        awaitClose {
+            pulseJob.cancel()
+            cleanupJob.cancel()
+            scanner.stopScan(scanCallback)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startNode(groupName: String): Flow<List<DiscoveredNode>> = callbackFlow {
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null || !adapter.isEnabled) { close(); return@callbackFlow }
+
+        val foundPeers = ConcurrentHashMap<String, DiscoveredNode>()
+
+        startAdvertising(groupName)
+
+        // Filter: Accept ONLY my group
+        val scanCallback = createScanCallback(foundPeers) { discoveredName ->
+            discoveredName == groupName
+        }
+
+        val pulseJob = launch { runScanPulseLoop(scanner, scanCallback) }
+        val cleanupJob = launch { runCleanupLoop(foundPeers) }
+
+        awaitClose {
+            stopAdvertising()
+            pulseJob.cancel()
+            cleanupJob.cancel()
+            scanner.stopScan(scanCallback)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAdvertising(groupName: String) {
         val advertiser = adapter.bluetoothLeAdvertiser ?: return
 
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setConnectable(true)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .build()
 
-        val pUuid = ParcelUuid(APP_SERVICE_UUID)
-
-        // FIX: Ensure name fits in the remaining ~10 bytes
-        // 31 bytes total - 3 (Flags) - 2 (Header) - 16 (UUID) = 10 bytes max
+        val pUuid = ParcelUuid(Config.APP_SERVICE_UUID)
         val nameBytes = groupName.take(10).toByteArray(Charset.forName("UTF-8"))
 
         val data = AdvertiseData.Builder()
@@ -67,11 +102,10 @@ class WalkieTalkieBluetoothManager(context: Context) {
 
         val callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                Log.d("BT", "Advertising started successfully! Group: $groupName")
+                Log.d("BT", "Advertising Started: $groupName")
             }
-
             override fun onStartFailure(errorCode: Int) {
-                Log.e("BT", "Advertising failed with error code: $errorCode")
+                Log.e("BT", "Advertising Failed: $errorCode")
             }
         }
 
@@ -80,56 +114,33 @@ class WalkieTalkieBluetoothManager(context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun stopHosting() {
+    private fun stopAdvertising() {
         advertiseCallback?.let {
-            adapter.bluetoothLeAdvertiser.stopAdvertising(it)
+            adapter.bluetoothLeAdvertiser?.stopAdvertising(it)
         }
         advertiseCallback = null
     }
 
-    // --- SCANNING (PEER) ---
-
-    @SuppressLint("MissingPermission")
-    fun scanForGroups(): Flow<List<DiscoveredGroup>> = callbackFlow {
-        val scanner = adapter.bluetoothLeScanner
-        if (scanner == null) {
-            close()
-            return@callbackFlow
-        }
-
-        // Shared state
-        val foundGroups = java.util.concurrent.ConcurrentHashMap<String, DiscoveredGroup>()
-        val scanCallback = createScanCallback(foundGroups)
-
-        // Start background jobs
-        val cleanupJob = launch { runCleanupLoop(foundGroups) }
-        val pulseJob = launch { runScanPulseLoop(scanner, scanCallback) }
-
-        awaitClose {
-            cleanupJob.cancel()
-            pulseJob.cancel()
-            scanner.stopScan(scanCallback)
-        }
-    }
-
-    private fun ProducerScope<List<DiscoveredGroup>>.createScanCallback(
-        foundGroups: MutableMap<String, DiscoveredGroup>
+    private fun ProducerScope<List<DiscoveredNode>>.createScanCallback(
+        foundNodes: ConcurrentHashMap<String, DiscoveredNode>,
+        filterPredicate: (String) -> Boolean
     ): ScanCallback {
         return object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult?) {
                 result?.let { scanResult ->
                     val serviceData = scanResult.scanRecord?.serviceData ?: return
-                    val dataBytes = serviceData[ParcelUuid(APP_SERVICE_UUID)] ?: return
+                    val dataBytes = serviceData[ParcelUuid(Config.APP_SERVICE_UUID)] ?: return
 
-                    val groupName = String(dataBytes, Charset.forName("UTF-8")).trim { it <= ' ' }
+                    val discoveredGroupName = String(dataBytes, Charset.forName("UTF-8")).trim { it <= ' ' }
+                    if (!filterPredicate(discoveredGroupName)) return@let
+
                     val deviceAddress = scanResult.device.address
-
-                    foundGroups[deviceAddress] = DiscoveredGroup(
-                        name = groupName,
-                        macAddress = deviceAddress,
+                    foundNodes[deviceAddress] = DiscoveredNode(
+                        address = deviceAddress,
+                        groupName = discoveredGroupName,
                         rssi = scanResult.rssi
                     )
-                    trySend(foundGroups.values.toList().sortedByDescending { it.rssi })
+                    trySend(foundNodes.values.toList().sortedByDescending { it.rssi })
                 }
             }
 
@@ -139,28 +150,13 @@ class WalkieTalkieBluetoothManager(context: Context) {
         }
     }
 
-    private suspend fun ProducerScope<List<DiscoveredGroup>>.runCleanupLoop(
-        foundGroups: MutableMap<String, DiscoveredGroup>
-    ) {
-        while (true) {
-            delay(2000)
-            val now = System.currentTimeMillis()
-            val timeout = 4000L
-
-            val removed = foundGroups.values.removeIf { (now - it.lastSeen) > timeout }
-            if (removed) {
-                trySend(foundGroups.values.toList().sortedByDescending { it.rssi })
-            }
-        }
-    }
-
     @SuppressLint("MissingPermission")
     private suspend fun runScanPulseLoop(
-        scanner: android.bluetooth.le.BluetoothLeScanner,
+        scanner: BluetoothLeScanner,
         callback: ScanCallback
     ) {
         val filter = ScanFilter.Builder()
-            .setServiceData(ParcelUuid(APP_SERVICE_UUID), null)
+            .setServiceData(ParcelUuid(Config.APP_SERVICE_UUID), null)
             .build()
 
         val settings = ScanSettings.Builder()
@@ -170,21 +166,28 @@ class WalkieTalkieBluetoothManager(context: Context) {
         while (true) {
             try {
                 scanner.startScan(listOf(filter), settings, callback)
-                Log.d("BT", "Scan started (pulse)")
-            } catch (e: Exception) {
-                Log.e("BT", "Start scan failed", e)
-            }
+            } catch (e: Exception) { Log.e("BT", "Scan Start Error", e) }
 
-            delay(25000) // Scan for 25s
+            delay(Config.SCAN_PERIOD)
 
             try {
                 scanner.stopScan(callback)
-                Log.d("BT", "Scan paused (pulse)")
-            } catch (e: Exception) {
-                Log.e("BT", "Stop scan failed", e)
-            }
+            } catch (e: Exception) { Log.e("BT", "Scan Stop Error", e) }
 
-            delay(500) // Rest for 0.5s
+            delay(Config.SCAN_PAUSE)
+        }
+    }
+
+    private suspend fun ProducerScope<List<DiscoveredNode>>.runCleanupLoop(
+        foundNodes: ConcurrentHashMap<String, DiscoveredNode>
+    ) {
+        while (true) {
+            delay(Config.CLEANUP_PERIOD)
+            val now = System.currentTimeMillis()
+            val removed = foundNodes.values.removeIf { (now - it.lastSeen) > Config.PEER_TIMEOUT }
+            if (removed) {
+                trySend(foundNodes.values.toList().sortedByDescending { it.rssi })
+            }
         }
     }
 }

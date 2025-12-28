@@ -1,6 +1,7 @@
 package com.denizetkar.walkietalkieapp
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
@@ -14,78 +15,82 @@ import kotlin.random.Random
 data class AppState(
     val groupName: String? = null,
     val accessCode: String? = null,
-    val isHosting: Boolean = false,
-    val discoveredGroups: List<DiscoveredGroup> = emptyList(),
+    val discoveredNodes: List<DiscoveredNode> = emptyList(),
+    val connectedPeers: List<DiscoveredNode> = emptyList(),
     val isScanning: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val bluetoothManager = WalkieTalkieBluetoothManager(application)
-    private var scanJob: Job? = null
+    private var discoveryJob: Job? = null
+    private var radioJob: Job? = null
 
     private val _appState = MutableStateFlow(AppState())
     val appState = _appState.asStateFlow()
 
-    fun createGroup(name: String) {
-        val code = Random.nextInt(1000, 9999).toString()
-
-        bluetoothManager.startHosting(name)
-        _appState.update {
-            it.copy(
-                groupName = name,
-                accessCode = code,
-                isHosting = true
-            )
-        }
-    }
-
     fun startScanning() {
-        scanJob?.cancel()
+        if (_appState.value.groupName != null) return
 
+        discoveryJob?.cancel()
         _appState.update { it.copy(isScanning = true) }
 
-        scanJob = viewModelScope.launch {
-            bluetoothManager.scanForGroups()
-                .catch { _appState.update { it.copy(isScanning = false) } }
-                .collect { groups ->
-                    _appState.update { it.copy(discoveredGroups = groups) }
+        discoveryJob = viewModelScope.launch {
+            bluetoothManager.scanGlobal()
+                .catch { e ->
+                    Log.e("VM", "Scan Error", e)
+                    _appState.update { it.copy(isScanning = false) }
+                }
+                .collect { nodes ->
+                    _appState.update { it.copy(discoveredNodes = nodes) }
                 }
         }
     }
 
     fun stopScanning() {
-        scanJob?.cancel()
-        scanJob = null
+        discoveryJob?.cancel()
+        discoveryJob = null
         _appState.update { it.copy(isScanning = false) }
     }
 
-    fun stopHostingOrScanning() {
-        bluetoothManager.stopHosting()
-
-        stopScanning()
-
-        _appState.update { AppState() }
+    fun createGroup(name: String) {
+        val code = Random.nextInt(1000, 9999).toString()
+        startRadioMode(name, code)
     }
 
-    fun joinGroup(group: DiscoveredGroup, code: String) {
+    fun joinGroup(node: DiscoveredNode, code: String) {
+        startRadioMode(node.groupName, code)
+    }
+
+    private fun startRadioMode(name: String, code: String) {
         stopScanning()
 
         _appState.update {
             it.copy(
-                groupName = group.name,
+                groupName = name,
                 accessCode = code,
-                isHosting = false
+                connectedPeers = emptyList()
             )
         }
 
-        // TODO: In the future, this is where we initiate the GATT connection
-        // and send the 'code' to the host for verification.
+        radioJob?.cancel()
+        radioJob = viewModelScope.launch {
+            bluetoothManager.startNode(name)
+                .catch { e -> Log.e("VM", "Node Error", e) }
+                .collect { peers ->
+                    _appState.update { it.copy(connectedPeers = peers) }
+                }
+        }
     }
 
-    fun leaveGroup() = stopHostingOrScanning()
+    fun leaveGroup() {
+        radioJob?.cancel()
+        radioJob = null
+        _appState.update { AppState() }
+    }
 
     override fun onCleared() {
         super.onCleared()
-        stopHostingOrScanning()
+        stopScanning()
+        radioJob?.cancel()
     }
 }

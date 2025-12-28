@@ -18,7 +18,7 @@ This project demonstrates a decentralized mobile mesh network using Bluetooth 5 
 
 ## 📱 App Behavior & Workflow
 
-### 1. Start a Radio (Host)
+### 1. Start a Radio Group
 *   Go to the **Create** tab and create a group (e.g., "Hiking").
 *   The app immediately switches to **Radio Mode**.
 *   A random **Access Code** (e.g., `4829`) is displayed on the screen.

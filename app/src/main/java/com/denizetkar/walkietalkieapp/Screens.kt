@@ -50,10 +50,10 @@ fun CreateGroupScreen(
 
 @Composable
 fun JoinGroupScreen(
-    discoveredGroups: List<DiscoveredGroup>,
-    onJoin: (DiscoveredGroup, String) -> Unit
+    discoveredNodes: List<DiscoveredNode>,
+    onJoin: (DiscoveredNode, String) -> Unit
 ) {
-    var selectedGroup by remember { mutableStateOf<DiscoveredGroup?>(null) }
+    var selectedGroup by remember { mutableStateOf<DiscoveredNode?>(null) }
     var codeInput by remember { mutableStateOf("") }
 
     if (selectedGroup != null) {
@@ -62,7 +62,7 @@ fun JoinGroupScreen(
             title = { Text("Enter Access Code") },
             text = {
                 Column {
-                    Text("Enter the access code for ${selectedGroup?.name}:")
+                    Text("Enter the access code for ${selectedGroup?.groupName}:")
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = codeInput,
@@ -96,7 +96,7 @@ fun JoinGroupScreen(
         Text("Nearby Groups", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (discoveredGroups.isEmpty()) {
+        if (discoveredNodes.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(8.dp))
@@ -104,10 +104,10 @@ fun JoinGroupScreen(
             }
         } else {
             LazyColumn {
-                items(discoveredGroups.size) {
-                    val group = discoveredGroups[it]
+                items(discoveredNodes.size) {
+                    val group = discoveredNodes[it]
                     ListItem(
-                        headlineContent = { Text(group.name, fontWeight = FontWeight.Bold) },
+                        headlineContent = { Text(group.groupName, fontWeight = FontWeight.Bold) },
                         supportingContent = { Text("Signal: ${group.rssi} dBm") },
                         trailingContent = {
                             Button(onClick = { selectedGroup = group }) {
@@ -126,7 +126,6 @@ fun JoinGroupScreen(
 fun RadioScreen(
     groupName: String?,
     accessCode: String?,
-    isHosting: Boolean,
     onLeave: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -144,8 +143,6 @@ fun RadioScreen(
                 Text("GROUP: ${groupName ?: "Unknown"}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(4.dp))
                 Text("ACCESS CODE: $accessCode", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(if (isHosting) "Role: HOST" else "Role: GUEST", style = MaterialTheme.typography.labelMedium)
             }
         }
 
