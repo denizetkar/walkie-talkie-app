@@ -145,9 +145,9 @@ fun WalkieTalkieApp() {
                 }
 
                 JoinGroupScreen(
-                    discoveredNodes = state.discoveredNodes,
+                    discoveredGroups = state.discoveredGroups,
                     onJoin = { group, code ->
-                        viewModel.joinGroup(group, code)
+                        viewModel.joinGroup(group.name, code)
                     }
                 )
             }

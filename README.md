@@ -4,38 +4,35 @@
 
 This project demonstrates a decentralized mobile mesh network using Bluetooth 5 (BLE). It allows a group of users to communicate via voice in real-time without Internet, Wi-Fi, or cellular data. It is designed for hiking, festivals, or emergency situations where infrastructure is unavailable.
 
+> **See [ARCHITECTURE.md](./ARCHITECTURE.md) for deep technical details on the topology, protocol, and security.**
+
 ---
 
 ## 🚀 Key Features
 
+*   **Symmetric Mesh:** No "Host" node. Every device is equal. The network survives even if the creator leaves.
+*   **Self-Healing:** Automatically merges separated groups ("Islands") into a single mesh.
+*   **Zero-Knowledge Security:** The Access Code is never sent over the air. Uses a Challenge-Response handshake.
+*   **Split-Packet Discovery:** Maximizes advertising payload to show Group Names while maintaining protocol logic.
 *   **100% Offline:** Works entirely over Bluetooth Low Energy.
-*   **Instant On:** No complex setup. Create a group and start talking immediately.
-*   **Code-Based Access:** Join an active group anytime using a secure **Access Code**.
-*   **Ad-Hoc Mesh:** Messages hop between devices to extend range (Flooding strategy).
-*   **Efficient Audio:** Opus codec compression with Jitter Buffering and Packet Loss Concealment.
 
 ---
 
 ## 📱 App Behavior & Workflow
 
-### 1. Start a Radio Group
-*   Go to the **Create** tab and create a group (e.g., "Hiking").
-*   The app immediately switches to **Radio Mode**.
-*   A random **Access Code** (e.g., `4829`) is displayed on the screen.
-*   **Under the hood:** The device starts advertising the Group Name via BLE.
+### 1. Create or Join
+*   **Create:** Enter a Group Name (e.g., "Hiking"). The app generates a random Access Code.
+*   **Join:** Scan for nearby groups, select "Hiking", and enter the Access Code shared by your friend.
+*   **Under the hood:** The device enters **Mesh Mode**. It starts advertising its presence and scanning for neighbors simultaneously.
 
-### 2. Tune In (Joiner)
-*   Go to the **Join** tab.
-*   Scan for nearby groups.
-*   Tap on "Hiking".
-*   Enter the **Access Code** (`4829`) shared by the host.
-*   The app switches to **Radio Mode**.
-*   **Under the hood:** The device connects to the mesh and authenticates using the code.
+### 2. The Mesh Logic
+*   **Auto-Connect:** The app automatically connects to available neighbors to reach a target of **3 peers**.
+*   **Island Merging:** Even when stable, the app performs "Lazy Scans" to find and bridge with other clusters of users.
+*   **Identity:** Users are identified by a random 4-byte **Node ID**, decoupled from their MAC address (which rotates for privacy).
 
 ### 3. Talk (Radio Mode)
-*   Everyone in the group sees the **Push-to-Talk** button.
-*   Audio is compressed (Opus), encrypted with the Access Code, and flooded across the mesh network.
-*   Anyone can leave or join at any time.
+*   **Push-to-Talk:** Audio is compressed (Opus), encrypted, and flooded across the mesh.
+*   **Flooding:** Messages hop from node to node. A deduplication cache prevents echo loops.
 
 ---
 
@@ -45,17 +42,19 @@ This project uses a hybrid approach to leverage the best tools for each job:
 
 | Component | Technology | Responsibility |
 | :--- | :--- | :--- |
-| **UI / Presentation** | **Kotlin** (Jetpack Compose) | Rendering views, Navigation, Permissions, State Management. |
-| **Bluetooth Layer** | **Kotlin** (Android APIs) | Scanning, Advertising, GATT connections (managed via Android SDK for stability). |
-| **Bridge** | **JNI / UniFFI** | Passing byte arrays between the Android runtime and the Rust engine. |
-| **Core Engine** | **Rust** | Audio I/O (Oboe), Opus Encoding/Decoding, Jitter Buffer, Packet Logic. |
+| **UI / Presentation** | **Kotlin** (Jetpack Compose) | Rendering views, State Management (ViewModel). |
+| **Mesh Logic** | **Kotlin** (Coroutines/Flow) | Topology management, State Machine, Packet Flooding. |
+| **Transport Layer** | **Kotlin** (Android BLE) | Scanning, Advertising, GATT Server/Client management. |
+| **Core Engine** | **Rust** | Audio I/O (Oboe), Opus Encoding/Decoding, Jitter Buffer. |
 
 ### Directory Structure
 ```text
-├── app/src/main/java/   # Kotlin UI and Bluetooth Logic
-├── rust/                # Rust Library (The "Brain")
-│   ├── src/lib.rs       # JNI Entry points
-│   ├── Cargo.toml       # Rust dependencies (opus, oboe, bytes)
+├── app/src/main/java/com/denizetkar/walkietalkieapp/
+│   ├── logic/           # The Brain (MeshNetworkManager, State Machine)
+│   ├── network/         # Transport Interface (NetworkTransport)
+│   ├── bluetooth/       # BLE Implementation (BleTransport, GattServer, GattClient)
+│   └── MainActivity.kt
+├── rust/                # Rust Library (Audio Engine)
 └── gradle/              # Build configuration
 ```
 
@@ -80,13 +79,7 @@ This project uses a hybrid approach to leverage the best tools for each job:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please read the `CONTRIBUTING.md` (Coming Soon) for details on our code of conduct and the process for submitting pull requests.
-
-1.  Fork the Project
-2.  Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3.  Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4.  Push to the Branch (`git push origin feature/AmazingFeature`)
-5.  Open a Pull Request
+Contributions are welcome! Please read the [CONTRIBUTING.md](./CONTRIBUTING.md) (Coming Soon) for details on our code of conduct and the process for submitting pull requests.
 
 ---
 
@@ -101,4 +94,4 @@ Distributed under the MIT License. See [license](./LICENSE) for more information
 This app is currently in **Alpha**.
 *   Bluetooth Mesh performance varies heavily based on hardware.
 *   Audio latency is expected to be between 200ms - 500ms depending on the number of hops.
-*   No encryption is currently implemented (Voice is sent in cleartext, signed by Group Key).
+*   Voice is currently sent unencrypted (though the handshake is secure).
