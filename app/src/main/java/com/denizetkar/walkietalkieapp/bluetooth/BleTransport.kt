@@ -158,6 +158,20 @@ class BleTransport(
         _events.emit(TransportEvent.ConnectionLost(nodeId))
     }
 
+    override suspend fun disconnectAll() {
+        rawClientHandlers.forEach { (address, client) ->
+            clientJobs[address]?.cancel()
+            client.disconnect()
+        }
+        rawClientHandlers.clear()
+        clientJobs.clear()
+
+        peers.values.forEach { peer ->
+            serverHandler.disconnect(peer.address)
+        }
+        peers.clear()
+    }
+
     // ===========================================================================
     // DATA TRANSFER
     // ===========================================================================

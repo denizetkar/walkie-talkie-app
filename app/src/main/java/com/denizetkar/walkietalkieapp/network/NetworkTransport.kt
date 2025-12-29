@@ -37,6 +37,7 @@ interface NetworkTransport {
 
     suspend fun connect(address: String, nodeId: Int)
     suspend fun disconnect(nodeId: Int)
+    suspend fun disconnectAll()
 
     suspend fun send(toNodeId: Int, data: ByteArray, type: TransportDataType)
     suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeNodeId: Int? = null)

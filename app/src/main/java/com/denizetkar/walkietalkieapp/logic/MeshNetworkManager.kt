@@ -115,12 +115,11 @@ class MeshNetworkManager(
         startAdvertisementJob?.cancel()
         scanJob?.cancel()
 
-        val peersToDisconnect = _connectedNodeIds.value.toSet()
         _connectedNodeIds.value = emptySet()
         scope.launch {
             transport.stopDiscovery()
             transport.stopAdvertising()
-            peersToDisconnect.forEach { transport.disconnect(it) }
+            transport.disconnectAll()
         }
     }
 
