@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class BleDiscoveryModule(
     private val adapter: BluetoothAdapter,
@@ -81,11 +82,15 @@ class BleDiscoveryModule(
         val rssi = result.rssi
 
         val serviceData = record.serviceData?.get(ParcelUuid(Config.APP_SERVICE_UUID)) ?: return
-        // Expected: [NodeID (4)] + [Availability (1)]
-        if (serviceData.size < 5) return
 
-        val nodeId = ByteBuffer.wrap(serviceData.copyOfRange(0, 4)).int
-        val availabilityByte = serviceData[4].toInt()
+        // Expected: [NodeID(4)] [NetworkID(4)] [Hops(1)] [Avail(1)] = 10 bytes
+        if (serviceData.size < 10) return
+
+        val buffer = ByteBuffer.wrap(serviceData).order(ByteOrder.LITTLE_ENDIAN)
+        val nodeId = buffer.int
+        val networkId = buffer.int
+        val hops = buffer.get().toInt()
+        val availabilityByte = buffer.get().toInt()
         val isAvailable = (availabilityByte == 1)
 
         val manufacturerBytes = record.getManufacturerSpecificData(0xFFFF)
@@ -98,7 +103,11 @@ class BleDiscoveryModule(
         val node = TransportNode(
             id = device.address,
             name = groupName,
-            extraInfo = mapOf("rssi" to rssi, "nodeId" to nodeId, "available" to isAvailable)
+            rssi = rssi,
+            nodeId = nodeId,
+            networkId = networkId,
+            hopsToRoot = hops,
+            isAvailable = isAvailable
         )
         scope.launch { events.emit(TransportEvent.NodeDiscovered(node)) }
     }

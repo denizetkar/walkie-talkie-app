@@ -12,6 +12,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
+import com.denizetkar.walkietalkieapp.logic.PacketUtils
 import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
@@ -62,19 +63,26 @@ class GattClientHandler(
         bluetoothGatt = null
     }
 
-    // Unified Send Method
     fun sendMessage(type: TransportDataType, data: ByteArray) {
         val (uuid, writeType) = when (type) {
             TransportDataType.AUDIO -> Pair(
-                GattServerHandler.CHAR_AUDIO_UUID,
+                Config.CHAR_DATA_UUID,
                 BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             )
             TransportDataType.CONTROL -> Pair(
-                GattServerHandler.CHAR_CONTROL_UUID,
+                Config.CHAR_CONTROL_UUID,
                 BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             )
         }
-        queueWrite(uuid, data, writeType)
+
+        // Wrap Control messages
+        val payload = if (type == TransportDataType.CONTROL) {
+            PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, data)
+        } else {
+            data
+        }
+
+        queueWrite(uuid, payload, writeType)
     }
 
     private fun queueWrite(uuid: UUID, data: ByteArray, writeType: Int) {
@@ -115,9 +123,8 @@ class GattClientHandler(
                 val service = gatt.getService(Config.APP_SERVICE_UUID)
                 if (service != null) {
                     Log.d("GattClient", "Services Discovered. Queueing Subscriptions...")
-                    operationQueue.enqueue { enableNotificationInternal(gatt, service, GattServerHandler.CHAR_CHALLENGE_UUID) }
-                    operationQueue.enqueue { enableNotificationInternal(gatt, service, GattServerHandler.CHAR_CONTROL_UUID) }
-                    operationQueue.enqueue { enableNotificationInternal(gatt, service, GattServerHandler.CHAR_AUDIO_UUID) }
+                    operationQueue.enqueue { enableNotificationInternal(gatt, service, Config.CHAR_CONTROL_UUID) }
+                    operationQueue.enqueue { enableNotificationInternal(gatt, service, Config.CHAR_DATA_UUID) }
                 } else {
                     Log.e("GattClient", "Target does not have the WalkieTalkie Service!")
                     disconnect()
@@ -147,20 +154,27 @@ class GattClientHandler(
     @SuppressLint("MissingPermission")
     private fun handleIncomingData(uuid: UUID, data: ByteArray) {
         when (uuid) {
-            GattServerHandler.CHAR_CHALLENGE_UUID -> {
-                val nonce = String(data, Charsets.UTF_8)
-                solveChallenge(nonce)
-            }
-            GattServerHandler.CHAR_CONTROL_UUID -> {
-                if (data.contentEquals(ProtocolUtils.HANDSHAKE_SUCCESS_PAYLOAD)) {
-                    Log.d("GattClient", "Received Handshake Success ACK")
-                    scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
-                    return
+            Config.CHAR_CONTROL_UUID -> {
+                val (type, payload) = PacketUtils.parseControlPacket(data) ?: return
+                when (type) {
+                    PacketUtils.TYPE_AUTH_CHALLENGE -> {
+                        val nonce = String(payload, Charsets.UTF_8)
+                        solveChallenge(nonce)
+                    }
+                    PacketUtils.TYPE_AUTH_RESULT -> {
+                        Log.d("GattClient", "Received Handshake Result: ${payload.getOrNull(0)}")
+                        if (payload.isNotEmpty() && payload[0] == 1.toByte()) {
+                            scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
+                        } else {
+                            disconnect()
+                        }
+                    }
+                    PacketUtils.TYPE_HEARTBEAT -> {
+                        scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, payload, TransportDataType.CONTROL)) }
+                    }
                 }
-
-                scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, data, TransportDataType.CONTROL)) }
             }
-            GattServerHandler.CHAR_AUDIO_UUID -> {
+            Config.CHAR_DATA_UUID -> {
                 scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, data, TransportDataType.AUDIO)) }
             }
         }
@@ -168,9 +182,10 @@ class GattClientHandler(
 
     private fun solveChallenge(nonce: String) {
         val responsePayload = ProtocolUtils.generateHandshakeResponse(accessCode, nonce, ownNodeId)
+        val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESPONSE, responsePayload)
 
         Log.d("GattClient", "Sending Challenge Response...")
-        queueWrite(GattServerHandler.CHAR_RESPONSE_UUID, responsePayload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        queueWrite(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
     }
 
     @SuppressLint("MissingPermission")

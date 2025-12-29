@@ -4,9 +4,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
 data class TransportNode(
-    val id: String,           // Unique ID (MAC address or IP)
-    val name: String?,        // "Hiking Group"
-    val extraInfo: Map<String, Any> // RSSI, Availability, NodeID, etc.
+    val id: String,           // MAC Address
+    val name: String?,        // Group Name
+    val rssi: Int,
+
+    // Topology Info
+    val nodeId: Int,
+    val networkId: Int,       // NEW: The Root they follow
+    val hopsToRoot: Int,      // NEW: Their distance to root
+    val isAvailable: Boolean
 )
 
 sealed class TransportEvent {
@@ -32,12 +38,13 @@ interface NetworkTransport {
     suspend fun startDiscovery()
     suspend fun stopDiscovery()
 
-    suspend fun startAdvertising(groupName: String)
+    suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int)
     suspend fun stopAdvertising()
 
     suspend fun connect(address: String, nodeId: Int)
     suspend fun disconnect(nodeId: Int)
     suspend fun disconnectAll()
+    suspend fun shutdown()
 
     suspend fun send(toNodeId: Int, data: ByteArray, type: TransportDataType)
     suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeNodeId: Int? = null)

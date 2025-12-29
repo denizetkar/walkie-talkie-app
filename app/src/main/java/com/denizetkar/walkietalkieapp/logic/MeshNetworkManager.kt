@@ -27,21 +27,40 @@ class MeshNetworkManager(
     private val transport: NetworkTransport = BleTransport(context, scope)
     val ownNodeId = Random.nextInt(1, Int.MAX_VALUE)
 
+    // ===========================================================================
+    // STATE: TOPOLOGY
+    // ===========================================================================
+    private var currentNetworkId: Int = ownNodeId
+    private var hopsToRoot: Int = 0
+    private var rootSequence: Int = 0
+    private var lastHeartbeatTime: Long = System.currentTimeMillis()
+
+    // ===========================================================================
+    // STATE: APP & MESH
+    // ===========================================================================
+    private var isMeshMode = false
+    private var currentGroupName: String? = null
+
+    // The Latch: Once true, we advertise forever (until stopMesh)
+    private var isAdvertisingAllowed = false
+
     private val _connectedNodeIds = MutableStateFlow<Set<Int>>(emptySet())
     val peerCount = _connectedNodeIds.map { it.size }.stateIn(scope, SharingStarted.Lazily, 0)
 
     private val _discoveredGroups = MutableStateFlow<List<DiscoveredGroup>>(emptyList())
     val discoveredGroups = _discoveredGroups.asStateFlow()
     private val foundGroupsMap = ConcurrentHashMap<String, DiscoveredGroup>()
-    private var groupCleanupJob: Job? = null
 
     val isScanning = transport.isScanning
 
-    private var isMeshMode = false
-    private var currentGroupName: String? = null
+    // Deduplication Cache
     private val seenPackets = ConcurrentHashMap<Int, Long>()
+
+    // Jobs
     private var startAdvertisementJob: Job? = null
+    private var heartbeatJob: Job? = null
     private var scanJob: Job? = null
+    private var groupCleanupJob: Job? = null
 
     init {
         scope.launch {
@@ -58,7 +77,7 @@ class MeshNetworkManager(
     }
 
     // ===========================================================================
-    // MODE 1: GROUP SCANNING
+    // MODE 1: GROUP SCANNING (Join Screen)
     // ===========================================================================
 
     fun startGroupScan() {
@@ -73,7 +92,6 @@ class MeshNetworkManager(
 
     fun stopGroupScan() {
         groupCleanupJob?.cancel()
-        groupCleanupJob = null
         scope.launch { transport.stopDiscovery() }
     }
 
@@ -92,34 +110,144 @@ class MeshNetworkManager(
     }
 
     // ===========================================================================
-    // MODE 2: MESH NETWORKING
+    // MODE 2: MESH NETWORKING (Radio Screen)
     // ===========================================================================
 
     fun startMesh(groupName: String, accessCode: String, asHost: Boolean) {
         isMeshMode = true
         currentGroupName = groupName
+        isAdvertisingAllowed = false
+
+        // 1. Reset Topology
+        currentNetworkId = ownNodeId
+        hopsToRoot = 0
+        rootSequence = 0
+        lastHeartbeatTime = System.currentTimeMillis()
 
         stopGroupScan()
         transport.setCredentials(accessCode, ownNodeId)
+
         val peerThreshold = if (asHost) 0 else 1
         startAdvertisementJob = scope.launch {
             peerCount.first { it >= peerThreshold }
-            transport.startAdvertising(groupName)
+
+            Log.i("MeshManager", "Advertising Threshold Met ($peerThreshold). Enabling Visibility.")
+            isAdvertisingAllowed = true
+            refreshAdvertising()
         }
+
+        // 3. Start Heartbeat Loop (Sends only if Root)
+        startHeartbeatLoop()
 
         updateScanStrategy(peerCount.value)
     }
 
     fun stopMesh() {
         isMeshMode = false
+        isAdvertisingAllowed = false
         startAdvertisementJob?.cancel()
+        heartbeatJob?.cancel()
         scanJob?.cancel()
 
         _connectedNodeIds.value = emptySet()
+        scope.launch { transport.shutdown() }
+    }
+
+    /**
+     * Pushes the current Topology State to the Advertiser.
+     * Only runs if the "Latch" (isAdvertisingAllowed) is open.
+     */
+    private fun refreshAdvertising() {
+        if (!isMeshMode || currentGroupName == null || !isAdvertisingAllowed) return
+
         scope.launch {
-            transport.stopDiscovery()
-            transport.stopAdvertising()
-            transport.disconnectAll()
+            transport.startAdvertising(currentGroupName!!, currentNetworkId, hopsToRoot)
+        }
+    }
+
+    // ===========================================================================
+    // TOPOLOGY CONTROL (The Heartbeat)
+    // ===========================================================================
+
+    private fun startHeartbeatLoop() {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                val now = System.currentTimeMillis()
+
+                // CASE A: I am the Root
+                if (currentNetworkId == ownNodeId) {
+                    rootSequence++
+                    lastHeartbeatTime = now
+
+                    // Only broadcast if we are allowed (Host or Connected Joiner)
+                    if (isAdvertisingAllowed) {
+                        val payload = PacketUtils.createHeartbeatPayload(ownNodeId, rootSequence, 0)
+                        transport.sendToAll(payload, TransportDataType.CONTROL)
+                        if (rootSequence % 6 == 0) Log.d("MeshTopology", "Root Heartbeat #$rootSequence")
+                    }
+                }
+                // CASE B: I am a Follower
+                else {
+                    if (now - lastHeartbeatTime > Config.HEARTBEAT_TIMEOUT) {
+                        Log.w("MeshTopology", "Root Timeout! Downgrading to Self.")
+                        downgradeToRoot()
+                    }
+                }
+
+                delay(Config.HEARTBEAT_INTERVAL)
+            }
+        }
+    }
+
+    private fun downgradeToRoot() {
+        currentNetworkId = ownNodeId
+        hopsToRoot = 0
+        rootSequence = 0
+        lastHeartbeatTime = System.currentTimeMillis()
+        refreshAdvertising()
+    }
+
+    private fun handleHeartbeat(fromNodeId: Int, payload: ByteArray) {
+        val (netId, seq, hops) = PacketUtils.parseHeartbeatPayload(payload) ?: return
+
+        var topologyChanged = false
+        var shouldRelay = false
+
+        // 1. MERGE / INITIAL JOIN
+        if (netId > currentNetworkId) {
+            Log.i("MeshTopology", "Adopting Better Network: $netId (Old: $currentNetworkId)")
+            currentNetworkId = netId
+            rootSequence = seq
+            hopsToRoot = hops + 1
+            lastHeartbeatTime = System.currentTimeMillis()
+            topologyChanged = true
+            shouldRelay = true
+        }
+        // 2. UPDATE
+        else if (netId == currentNetworkId) {
+            if (seq > rootSequence) {
+                rootSequence = seq
+                hopsToRoot = hops + 1
+                lastHeartbeatTime = System.currentTimeMillis()
+                topologyChanged = true
+                shouldRelay = true
+            }
+        }
+
+        if (topologyChanged) {
+            refreshAdvertising()
+        }
+
+        if (shouldRelay) {
+            relayHeartbeat(fromNodeId, netId, seq, hops + 1)
+        }
+    }
+
+    private fun relayHeartbeat(fromNodeId: Int, netId: Int, seq: Int, myHops: Int) {
+        val newPayload = PacketUtils.createHeartbeatPayload(netId, seq, myHops)
+        scope.launch {
+            transport.sendToAll(newPayload, TransportDataType.CONTROL, excludeNodeId = fromNodeId)
         }
     }
 
@@ -144,32 +272,74 @@ class MeshNetworkManager(
     }
 
     private fun handleNodeDiscovered(node: TransportNode) {
+        // Mode 1: Just collecting groups for UI
         if (!isMeshMode) {
             if (node.name == null) return
-
             val existing = foundGroupsMap[node.name]
-            val rssi = max(node.extraInfo["rssi"] as? Int ?: Config.WORST_RSSI, existing?.highestRssi ?: Config.WORST_RSSI)
+            val rssi = max(node.rssi, existing?.highestRssi ?: Config.WORST_RSSI)
             foundGroupsMap[node.name] = DiscoveredGroup(node.name, rssi)
             _discoveredGroups.value = foundGroupsMap.values.toList().sortedByDescending { it.highestRssi }
             return
         }
 
+        // Mode 2: Mesh Logic
         if (node.name != currentGroupName) return
+        if (node.nodeId == ownNodeId) return
+        if (_connectedNodeIds.value.contains(node.nodeId)) return
 
-        val nodeId = node.extraInfo["nodeId"] as? Int ?: return
-        if (nodeId == ownNodeId) return
-        if (_connectedNodeIds.value.contains(nodeId)) return
-        if (_connectedNodeIds.value.size >= Config.MAX_PEERS) return
+        // --- PEER SELECTION STRATEGY ---
 
-        val isAvailable = node.extraInfo["available"] as? Boolean ?: false
-        if (_connectedNodeIds.value.size >= Config.TARGET_PEERS && !isAvailable) return
+        // Priority 1: ISLAND MERGE (They have a higher Network ID)
+        if (node.networkId > currentNetworkId) {
+            Log.i("MeshManager", "Found Better Network (${node.networkId}). Connecting Priority!")
+            scope.launch { transport.connect(node.id, node.nodeId) }
+            return
+        }
 
-        Log.d("MeshManager", "Found Candidate: $nodeId. Connecting...")
-        scope.launch { transport.connect(node.id, nodeId) }
+        // Priority 2: FILL SLOTS (If I am lonely)
+        if (_connectedNodeIds.value.size < Config.TARGET_PEERS) {
+            // If they are available OR if they are an inferior island (we want to absorb them)
+            if (node.isAvailable || node.networkId < currentNetworkId) {
+                Log.d("MeshManager", "Connecting to fill slots: ${node.nodeId}")
+                scope.launch { transport.connect(node.id, node.nodeId) }
+            }
+        }
+
+        // Priority 3: MAX CAPACITY (Only for merging inferior islands)
+        else if (_connectedNodeIds.value.size < Config.MAX_PEERS) {
+            if (node.networkId < currentNetworkId) {
+                Log.i("MeshManager", "Absorbing Inferior Island: ${node.nodeId}")
+                scope.launch { transport.connect(node.id, node.nodeId) }
+            }
+        }
+    }
+
+    private fun handleDataReceived(fromNodeId: Int, data: ByteArray, type: TransportDataType) {
+        // 1. Handle Control Messages
+        if (type == TransportDataType.CONTROL) {
+            val (msgType, payload) = PacketUtils.parseControlPacket(data) ?: return
+            if (msgType == PacketUtils.TYPE_HEARTBEAT) {
+                handleHeartbeat(fromNodeId, payload)
+            }
+            return
+        }
+
+        // 2. Handle Data (Voice/Chat)
+        val packetHash = data.contentHashCode()
+        if (seenPackets.containsKey(packetHash)) return
+        seenPackets[packetHash] = System.currentTimeMillis()
+
+        if (type == TransportDataType.AUDIO) {
+            // TODO: Send to Audio Engine
+            Log.v("MeshManager", "Playing Audio from $fromNodeId")
+        }
+
+        // Flood
+        scope.launch { transport.sendToAll(data, type, excludeNodeId = fromNodeId) }
     }
 
     // ===========================================================================
-    // REACTIVE SCAN LOGIC
+    // SCANNING LOOP
     // ===========================================================================
 
     private fun updateScanStrategy(count: Int) {
@@ -200,20 +370,6 @@ class MeshNetworkManager(
             transport.stopDiscovery()
             delay(pauseDuration)
         }
-    }
-
-    private fun handleDataReceived(fromNodeId: Int, data: ByteArray, type: TransportDataType) {
-        val packetHash = data.contentHashCode()
-        if (seenPackets.containsKey(packetHash)) return
-        seenPackets[packetHash] = System.currentTimeMillis()
-
-        if (type == TransportDataType.AUDIO) {
-            // Play Audio
-        } else {
-            // Handle Control Message
-        }
-
-        scope.launch { transport.sendToAll(data, type, excludeNodeId = fromNodeId) }
     }
 
     private fun startPacketCleanupLoop() {
