@@ -38,7 +38,7 @@ interface NetworkTransport {
     suspend fun startDiscovery()
     suspend fun stopDiscovery()
 
-    suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int)
+    suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int, isAvailable: Boolean)
     suspend fun stopAdvertising()
 
     suspend fun connect(address: String, nodeId: Int)

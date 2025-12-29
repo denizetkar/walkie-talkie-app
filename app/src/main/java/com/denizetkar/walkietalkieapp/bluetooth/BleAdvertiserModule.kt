@@ -19,8 +19,8 @@ class BleAdvertiserModule(
     private var advertiseCallback: AdvertiseCallback? = null
 
     @SuppressLint("MissingPermission")
-    fun start(groupName: String, myNodeId: Int, networkId: Int, hops: Int) {
-        // 1. If already advertising, stop first (to update data)
+    fun start(groupName: String, myNodeId: Int, networkId: Int, hops: Int, isAvailable: Boolean) {
+        // If already advertising, stop first (to update data)
         stop()
 
         val advertiser = adapter.bluetoothLeAdvertiser ?: return
@@ -37,7 +37,7 @@ class BleAdvertiserModule(
         payload.putInt(myNodeId)
         payload.putInt(networkId)
         payload.put(hops.toByte())
-        payload.put(1.toByte()) // TODO: Pass availability from Manager if needed
+        payload.put(if (isAvailable) 1.toByte() else 0.toByte())
 
         val mainData = AdvertiseData.Builder()
             .setIncludeDeviceName(false)

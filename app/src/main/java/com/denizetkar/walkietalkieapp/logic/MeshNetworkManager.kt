@@ -40,9 +40,8 @@ class MeshNetworkManager(
     // ===========================================================================
     private var isMeshMode = false
     private var currentGroupName: String? = null
-
-    // The Latch: Once true, we advertise forever (until stopMesh)
     private var isAdvertisingAllowed = false
+    private var lastAdvertisedAvailability = true
 
     private val _connectedNodeIds = MutableStateFlow<Set<Int>>(emptySet())
     val peerCount = _connectedNodeIds.map { it.size }.stateIn(scope, SharingStarted.Lazily, 0)
@@ -69,7 +68,16 @@ class MeshNetworkManager(
 
         scope.launch {
             peerCount.collect { count ->
-                if (isMeshMode) updateScanStrategy(count)
+                if (!isMeshMode) return@collect
+                updateScanStrategy(count)
+                if (isAdvertisingAllowed) {
+                    val isAvailable = count < Config.MAX_PEERS
+                    // Only restart advertising if the state actually changed (e.g., Available -> Full)
+                    if (isAvailable != lastAdvertisedAvailability) {
+                        Log.d("MeshManager", "Availability Changed: $isAvailable. Updating Advertisement.")
+                        refreshAdvertising()
+                    }
+                }
             }
         }
 
@@ -160,8 +168,10 @@ class MeshNetworkManager(
     private fun refreshAdvertising() {
         if (!isMeshMode || currentGroupName == null || !isAdvertisingAllowed) return
 
+        val isAvailable = _connectedNodeIds.value.size < Config.MAX_PEERS
+        lastAdvertisedAvailability = isAvailable
         scope.launch {
-            transport.startAdvertising(currentGroupName!!, currentNetworkId, hopsToRoot)
+            transport.startAdvertising(currentGroupName!!, currentNetworkId, hopsToRoot, isAvailable)
         }
     }
 

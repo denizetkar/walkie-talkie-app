@@ -201,6 +201,6 @@ class BleTransport(
 
     override suspend fun startDiscovery() = discoveryModule.start()
     override suspend fun stopDiscovery() = discoveryModule.stop()
-    override suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int) = advertiserModule.start(groupName, myNodeId, networkId, hops)
+    override suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int, isAvailable: Boolean) = advertiserModule.start(groupName, myNodeId, networkId, hops, isAvailable)
     override suspend fun stopAdvertising() = advertiserModule.stop()
 }
