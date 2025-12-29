@@ -42,4 +42,18 @@ object ProtocolUtils {
             null
         }
     }
+
+    fun truncateUtf8(input: String, maxBytes: Int): ByteArray {
+        var byteCount = 0
+        val sb = StringBuilder()
+
+        for (char in input) {
+            val charBytes = char.toString().toByteArray(Charsets.UTF_8)
+            if (byteCount + charBytes.size > maxBytes) break
+            byteCount += charBytes.size
+            sb.append(char)
+        }
+
+        return sb.toString().toByteArray(Charsets.UTF_8)
+    }
 }

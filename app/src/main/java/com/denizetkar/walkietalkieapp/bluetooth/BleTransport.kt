@@ -13,6 +13,7 @@ import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
+import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.NetworkTransport
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import com.denizetkar.walkietalkieapp.network.TransportEvent
@@ -54,13 +55,14 @@ class BleTransport(
     private val serverHandler = GattServerHandler(context, scope)
     private val activeClients = ConcurrentHashMap<String, GattClientHandler>()
     private val clientJobs = ConcurrentHashMap<String, Job>()
+    private val outgoingNodeIds = ConcurrentHashMap<String, Int>()
 
     init {
         scope.launch {
             serverHandler.serverEvents.collect { event ->
                 when (event) {
                     is ServerEvent.ClientAuthenticated -> {
-                        _events.emit(TransportEvent.ConnectionEstablished(event.device.address))
+                        _events.emit(TransportEvent.ConnectionEstablished(event.device.address, event.nodeId))
                     }
                     is ServerEvent.ClientDisconnected -> {
                         _events.emit(TransportEvent.ConnectionLost(event.device.address))
@@ -188,7 +190,7 @@ class BleTransport(
             .addServiceData(pUuid, payload.array())
             .build()
 
-        val nameBytes = groupName.toByteArray(Charsets.UTF_8).take(Config.MAX_ADVERTISING_NAME_BYTES).toByteArray()
+        val nameBytes = ProtocolUtils.truncateUtf8(groupName, Config.MAX_ADVERTISING_NAME_BYTES)
         val scanResponseData = AdvertiseData.Builder()
             .addManufacturerData(0xFFFF, nameBytes)
             .build()
@@ -225,21 +227,23 @@ class BleTransport(
 
     private val connectMutex = Mutex()
     @SuppressLint("MissingPermission")
-    override suspend fun connect(address: String) = connectMutex.withLock {
+    override suspend fun connect(address: String, nodeId: Int) = connectMutex.withLock {
         if (activeClients.containsKey(address)) return
 
+        outgoingNodeIds[address] = nodeId
         val device = adapter.getRemoteDevice(address)
         val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode)
-
         activeClients[address] = client
 
         val job = scope.launch {
             client.clientEvents.collect { event ->
                 when (event) {
                     is ClientEvent.Authenticated -> {
-                        _events.emit(TransportEvent.ConnectionEstablished(address))
+                        val id = outgoingNodeIds[address] ?: 0
+                        _events.emit(TransportEvent.ConnectionEstablished(address, id))
                     }
                     is ClientEvent.Disconnected -> {
+                        outgoingNodeIds.remove(address)
                         _events.emit(TransportEvent.ConnectionLost(address))
                         disconnect(address)
                     }

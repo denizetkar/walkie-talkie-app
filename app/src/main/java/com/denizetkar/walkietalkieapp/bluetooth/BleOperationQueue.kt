@@ -1,10 +1,12 @@
 package com.denizetkar.walkietalkieapp.bluetooth
 
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import java.util.LinkedList
 import java.util.Queue
+import java.util.concurrent.Executors
 
 /**
  * Android BLE is synchronous. You cannot fire two operations (Write, Read, DescWrite) at once.
@@ -13,7 +15,8 @@ import java.util.Queue
 class BleOperationQueue {
     private val queue: Queue<Runnable> = LinkedList()
     private var isBusy = false
-    private val handler = Handler(Looper.getMainLooper())
+    private val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private val scope = CoroutineScope(dispatcher)
 
     @Synchronized
     fun enqueue(operation: Runnable) {
@@ -35,9 +38,7 @@ class BleOperationQueue {
         val operation = queue.poll()
         if (operation != null) {
             isBusy = true
-            // Run on main thread to be safe with BLE callbacks,
-            // though most callbacks happen on binder threads.
-            handler.post {
+            scope.launch {
                 try {
                     operation.run()
                 } catch (e: Exception) {
