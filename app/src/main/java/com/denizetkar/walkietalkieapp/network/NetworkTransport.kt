@@ -3,24 +3,17 @@ package com.denizetkar.walkietalkieapp.network
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
-/**
- * Represents a generic node found during discovery.
- * We don't care if it's BLE MAC or IP Address here.
- */
 data class TransportNode(
     val id: String,           // Unique ID (MAC address or IP)
     val name: String?,        // "Hiking Group"
     val extraInfo: Map<String, Any> // RSSI, Availability, NodeID, etc.
 )
 
-/**
- * Events coming FROM the hardware layer TO the app.
- */
 sealed class TransportEvent {
     data class NodeDiscovered(val node: TransportNode) : TransportEvent()
-    data class ConnectionEstablished(val address: String, val nodeId: Int) : TransportEvent()
-    data class ConnectionLost(val address: String) : TransportEvent()
-    data class DataReceived(val fromAddress: String, val data: ByteArray, val type: TransportDataType) : TransportEvent()
+    data class ConnectionEstablished(val nodeId: Int) : TransportEvent()
+    data class ConnectionLost(val nodeId: Int) : TransportEvent()
+    data class DataReceived(val fromNodeId: Int, val data: ByteArray, val type: TransportDataType) : TransportEvent()
     data class Error(val message: String) : TransportEvent()
 }
 
@@ -42,11 +35,9 @@ interface NetworkTransport {
     suspend fun startAdvertising(groupName: String)
     suspend fun stopAdvertising()
 
-    // Connection Management
     suspend fun connect(address: String, nodeId: Int)
-    suspend fun disconnect(address: String)
+    suspend fun disconnect(nodeId: Int)
 
-    // Data Transfer
-    suspend fun send(toAddress: String, data: ByteArray, type: TransportDataType)
-    suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeAddress: String? = null)
+    suspend fun send(toNodeId: Int, data: ByteArray, type: TransportDataType)
+    suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeNodeId: Int? = null)
 }
