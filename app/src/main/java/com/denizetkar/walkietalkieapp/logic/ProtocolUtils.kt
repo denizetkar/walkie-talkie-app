@@ -4,14 +4,12 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 
 object ProtocolUtils {
-    val HANDSHAKE_SUCCESS_PAYLOAD = byteArrayOf(0x01)
-
     /**
      * Generates the response payload for the Challenge-Response handshake.
-     * Payload = [First 16 bytes of SHA256(AccessCode + Nonce)] + [NodeID (4 bytes)]
+     * Payload = [First 16 bytes of SHA256(AccessCode + Nonce + NodeID)] + [NodeID (4 bytes)]
      */
     fun generateHandshakeResponse(accessCode: String, nonce: String, ownNodeId: Int): ByteArray {
-        val input = accessCode + nonce
+        val input = accessCode + nonce + ownNodeId.toString()
         val fullHash = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
         val hashBytes = fullHash.copyOfRange(0, 16)
         val nodeIdBytes = ByteBuffer.allocate(4).putInt(ownNodeId).array()
@@ -32,7 +30,7 @@ object ProtocolUtils {
         val nodeIdBytes = payload.copyOfRange(16, 20)
         val nodeId = ByteBuffer.wrap(nodeIdBytes).int
 
-        val input = accessCode + nonce
+        val input = accessCode + nonce + nodeId.toString()
         val fullHash = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
         val expectedHash = fullHash.copyOfRange(0, 16)
 

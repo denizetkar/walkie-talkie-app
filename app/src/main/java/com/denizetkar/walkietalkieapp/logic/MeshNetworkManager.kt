@@ -43,8 +43,10 @@ class MeshNetworkManager(
     private var isAdvertisingAllowed = false
     private var lastAdvertisedAvailability = true
 
-    private val _connectedNodeIds = MutableStateFlow<Set<Int>>(emptySet())
-    val peerCount = _connectedNodeIds.map { it.size }.stateIn(scope, SharingStarted.Lazily, 0)
+    private val pendingConnections = ConcurrentHashMap.newKeySet<Int>()
+    val peerCount = transport.connectedPeers
+        .map { it.size }
+        .stateIn(scope, SharingStarted.Lazily, 0)
 
     private val _discoveredGroups = MutableStateFlow<List<DiscoveredGroup>>(emptyList())
     val discoveredGroups = _discoveredGroups.asStateFlow()
@@ -67,8 +69,10 @@ class MeshNetworkManager(
         }
 
         scope.launch {
-            peerCount.collect { count ->
+            transport.connectedPeers.collect { connectedIds ->
                 if (!isMeshMode) return@collect
+
+                val count = connectedIds.size
                 updateScanStrategy(count)
                 if (isAdvertisingAllowed) {
                     val isAvailable = count < Config.MAX_PEERS
@@ -156,8 +160,6 @@ class MeshNetworkManager(
         startAdvertisementJob?.cancel()
         heartbeatJob?.cancel()
         scanJob?.cancel()
-
-        _connectedNodeIds.value = emptySet()
         scope.launch { transport.shutdown() }
     }
 
@@ -168,7 +170,7 @@ class MeshNetworkManager(
     private fun refreshAdvertising() {
         if (!isMeshMode || currentGroupName == null || !isAdvertisingAllowed) return
 
-        val isAvailable = _connectedNodeIds.value.size < Config.MAX_PEERS
+        val isAvailable = transport.connectedPeers.value.size < Config.MAX_PEERS
         lastAdvertisedAvailability = isAvailable
         scope.launch {
             transport.startAdvertising(currentGroupName!!, currentNetworkId, hopsToRoot, isAvailable)
@@ -268,14 +270,8 @@ class MeshNetworkManager(
     private fun handleTransportEvent(event: TransportEvent) {
         when (event) {
             is TransportEvent.NodeDiscovered -> handleNodeDiscovered(event.node)
-            is TransportEvent.ConnectionEstablished -> {
-                Log.i("MeshManager", "Peer Connected: ${event.nodeId}")
-                _connectedNodeIds.update { it + event.nodeId }
-            }
-            is TransportEvent.ConnectionLost -> {
-                Log.i("MeshManager", "Peer Lost: ${event.nodeId}")
-                _connectedNodeIds.update { it - event.nodeId }
-            }
+            is TransportEvent.ConnectionEstablished -> Log.i("MeshManager", "Peer Connected: ${event.nodeId}")
+            is TransportEvent.ConnectionLost -> Log.i("MeshManager", "Peer Lost: ${event.nodeId}")
             is TransportEvent.DataReceived -> handleDataReceived(event.fromNodeId, event.data, event.type)
             is TransportEvent.Error -> Log.e("MeshManager", "Error: ${event.message}")
         }
@@ -295,31 +291,42 @@ class MeshNetworkManager(
         // Mode 2: Mesh Logic
         if (node.name != currentGroupName) return
         if (node.nodeId == ownNodeId) return
-        if (_connectedNodeIds.value.contains(node.nodeId)) return
+        val currentPeers = transport.connectedPeers.value
+        if (currentPeers.contains(node.nodeId)) return
+        if (pendingConnections.contains(node.nodeId)) return
 
         // --- PEER SELECTION STRATEGY ---
+        var shouldConnect = false
 
         // Priority 1: ISLAND MERGE (They have a higher Network ID)
         if (node.networkId > currentNetworkId) {
             Log.i("MeshManager", "Found Better Network (${node.networkId}). Connecting Priority!")
-            scope.launch { transport.connect(node.id, node.nodeId) }
-            return
+            shouldConnect = true
         }
-
         // Priority 2: FILL SLOTS (If I am lonely)
-        if (_connectedNodeIds.value.size < Config.TARGET_PEERS) {
+        else if (currentPeers.size < Config.TARGET_PEERS) {
             // If they are available OR if they are an inferior island (we want to absorb them)
             if (node.isAvailable || node.networkId < currentNetworkId) {
                 Log.d("MeshManager", "Connecting to fill slots: ${node.nodeId}")
-                scope.launch { transport.connect(node.id, node.nodeId) }
+                shouldConnect = true
+            }
+        }
+        // Priority 3: MAX CAPACITY (Only for merging inferior islands)
+        else if (currentPeers.size < Config.MAX_PEERS) {
+            if (node.networkId < currentNetworkId) {
+                Log.i("MeshManager", "Absorbing Inferior Island: ${node.nodeId}")
+                shouldConnect = true
             }
         }
 
-        // Priority 3: MAX CAPACITY (Only for merging inferior islands)
-        else if (_connectedNodeIds.value.size < Config.MAX_PEERS) {
-            if (node.networkId < currentNetworkId) {
-                Log.i("MeshManager", "Absorbing Inferior Island: ${node.nodeId}")
-                scope.launch { transport.connect(node.id, node.nodeId) }
+        if (shouldConnect) {
+            pendingConnections.add(node.nodeId)
+            scope.launch {
+                try {
+                    transport.connect(node.id, node.nodeId)
+                } finally {
+                    pendingConnections.remove(node.nodeId)
+                }
             }
         }
     }

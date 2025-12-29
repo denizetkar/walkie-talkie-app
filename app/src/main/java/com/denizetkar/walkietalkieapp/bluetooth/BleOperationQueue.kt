@@ -4,23 +4,31 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
-import java.util.LinkedList
-import java.util.Queue
 import java.util.concurrent.Executors
+import java.util.concurrent.PriorityBlockingQueue
 
-/**
- * Android BLE is synchronous. You cannot fire two operations (Write, Read, DescWrite) at once.
- * This queue serializes operations.
- */
+data class PrioritizedRunnable(
+    val priority: Int,
+    val timestamp: Long,
+    val action: Runnable
+) : Comparable<PrioritizedRunnable> {
+    override fun compareTo(other: PrioritizedRunnable): Int {
+        if (this.priority != other.priority) {
+            return this.priority - other.priority
+        }
+        return this.timestamp.compareTo(other.timestamp)
+    }
+}
+
 class BleOperationQueue {
-    private val queue: Queue<Runnable> = LinkedList()
+    private val queue = PriorityBlockingQueue<PrioritizedRunnable>()
     private var isBusy = false
     private val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private val scope = CoroutineScope(dispatcher)
 
     @Synchronized
-    fun enqueue(operation: Runnable) {
-        queue.add(operation)
+    fun enqueue(priority: Int, operation: Runnable) {
+        queue.add(PrioritizedRunnable(priority, System.nanoTime(), operation))
         if (!isBusy) {
             processNext()
         }
@@ -35,12 +43,12 @@ class BleOperationQueue {
     @Synchronized
     private fun processNext() {
         if (isBusy) return
-        val operation = queue.poll()
-        if (operation != null) {
+        val item = queue.poll()
+        if (item != null) {
             isBusy = true
             scope.launch {
                 try {
-                    operation.run()
+                    item.action.run()
                 } catch (e: Exception) {
                     Log.e("BleQueue", "Operation failed", e)
                     isBusy = false

@@ -49,11 +49,12 @@ Sent only when a scanner requests more info.
 
 ## 3. GATT Protocol: The "Two-Pipe" Architecture
 
-To maximize the negotiated **512-byte MTU** and simplify the GATT server, we expose only **two characteristics** under the App Service.
+To maximize throughput and simplify the GATT server, we expose only **two characteristics** under the App Service.
 
-### A. The Control Characteristic (Reliable)
+### A. The Control Characteristic (Reliable / High Priority)
 *   **Properties:** `Write` (or Write No Response) | `Notify`
 *   **Usage:** Handshakes, Heartbeats, Topology Updates.
+*   **Priority:** **High (0)**. These packets jump the queue ahead of audio.
 *   **Format:** Binary Packet with Header.
 
 **Packet Structure:**
@@ -67,28 +68,28 @@ To maximize the negotiated **512-byte MTU** and simplify the GATT server, we exp
 | Hex | Name | Payload |
 | :--- | :--- | :--- |
 | `0x01` | **AUTH_CHALLENGE** | `[Nonce (8 bytes)]` |
-| `0x02` | **AUTH_RESPONSE** | `[Hash (16 bytes)]` |
+| `0x02` | **AUTH_RESPONSE** | `[Hash (16 bytes)] [NodeID (4 bytes)]` |
 | `0x03` | **AUTH_RESULT** | `[Result (1 byte: 0=Fail, 1=Success)]` |
 | `0x10` | **HEARTBEAT** | `[NetID (4)] [Seq (4)] [Hops (1)]` |
 
-### B. The Data Characteristic (High Throughput)
+### B. The Data Characteristic (High Throughput / Low Priority)
 *   **Properties:** `Write No Response` | `Notify`
-*   **Usage:** Voice Audio (Opus), File Chunks.
-*   **Format:** Minimal Header to maximize payload.
-*   **Structure:** `[Type (1 byte)] [Raw Data...]` (e.g., `0x50` for Opus Audio).
+*   **Usage:** Voice Audio (Opus).
+*   **Priority:** **Low (1)**. Dropped if queue is full.
+*   **Format:** Raw Opus Frames (or wrapped with minimal header).
 
 ---
 
 ## 4. Security: Challenge-Response State Machine
 
-The **Access Code** is treated as a Pre-Shared Key (PSK). Authentication is now a state machine executed over the **Control Characteristic**.
+The **Access Code** is treated as a Pre-Shared Key (PSK). Authentication is a state machine executed over the **Control Characteristic**. To prevent Replay Attacks, the Node ID is bound to the hash.
 
 ### The Handshake Flow
 1.  **Connect:** GATT connection established.
 2.  **Challenge:** Server sends `0x01 (AUTH_CHALLENGE)` + `Nonce`.
-3.  **Calculation:** Client computes `SHA256(AccessCode + Nonce)`.
-4.  **Response:** Client sends `0x02 (AUTH_RESPONSE)` + `First 16 bytes of Hash`.
-5.  **Verification:** Server verifies hash.
+3.  **Calculation:** Client computes `SHA256(AccessCode + Nonce + ClientNodeID)`.
+4.  **Response:** Client sends `0x02 (AUTH_RESPONSE)` + `[Hash (16 bytes)] [ClientNodeID (4 bytes)]`.
+5.  **Verification:** Server extracts Node ID, re-computes hash, and compares.
     *   *Valid:* Server sends `0x03 (AUTH_RESULT)` + `0x01`. Both nodes mark link as `AUTHENTICATED`.
     *   *Invalid:* Server sends `0x03` + `0x00` and disconnects.
 6.  **Sync:** Immediately upon authentication, both nodes exchange `0x10 (HEARTBEAT)` to sync Topology state.
@@ -97,35 +98,43 @@ The **Access Code** is treated as a Pre-Shared Key (PSK). Authentication is now 
 
 ## 5. Software Layering
 
-The app follows a Clean Architecture approach.
+The app follows a Clean Architecture approach with Reactive State management.
 
 ### Layer 1: The Brain (`logic/`)
 *   **`MeshNetworkManager`:**
+    *   **Reactive State:** Observes `Transport.connectedPeers` as the Single Source of Truth.
     *   **Topology State:** Tracks `CurrentNetworkID`, `HopsToRoot`, and `LastHeartbeatTime`.
-    *   **Heartbeat Loop:** If Root, generates heartbeats every 5s. If Follower, checks for timeouts (15s).
-    *   **Peer Selection:** Prioritizes scanning/connecting to nodes with `Remote.NetworkID > Local.NetworkID`.
+    *   **Heartbeat Loop:** Root generates heartbeats (~1s). Followers check for timeouts (~3s) to detect Root loss.
+    *   **Peer Selection Strategy:**
+        1.  **Island Merge:** Priority connect if `Remote.NetID > Local.NetID`.
+        2.  **Fill Slots:** Connect if `Peers < Target (3)`.
+        3.  **Absorb:** Connect if `Peers < Max (5)` and `Remote.NetID < Local.NetID`.
+    *   **Race Condition Handling:** Maintains a `pendingConnections` set to prevent duplicate connection attempts.
 
 ### Layer 2: The Abstraction (`network/`)
 *   **`NetworkTransport`:**
+    *   Exposes `connectedPeers` (StateFlow) and `events` (SharedFlow).
     *   Abstracts the specific packet formats.
-    *   Exposes `sendControl(type, payload)` and `sendData(type, payload)`.
 
 ### Layer 3: The Hardware (`bluetooth/`)
 *   **`BleTransport`:**
-    *   **`PacketSerializer`:** Handles the packing/unpacking of the Control Header and Message Types.
-    *   **`GattHandler`:** Manages the single Service and two Characteristics.
+    *   **Reactive Map:** Maintains `MutableStateFlow<Map<Int, BlePeer>>`.
+    *   **Priority Queue:** Uses a `PriorityBlockingQueue` to ensure Control packets are sent before Audio packets.
+    *   **MTU Tracking:** Negotiates MTU per client, though currently defaults to safe limits.
 
 ---
 
 ## 6. Data Flow (Flooding & Routing)
 
 ### Voice/Chat (Flooding)
-1.  **Source:** User speaks. Audio encoded to Opus.
+1.  **Source:** User speaks. Audio encoded to Opus (via Rust).
 2.  **Packet:** Wrapped in `0x50` (Voice) Data Packet.
 3.  **Relay:**
     *   Received on `DATA` characteristic.
-    *   Deduplicated via Cache (Hash of payload).
-    *   If new: Play Audio -> Forward to all other `AUTHENTICATED` peers.
+    *   **Deduplication:** Kotlin checks `seenPackets` cache.
+    *   If new:
+        1.  Send to Rust Engine (Decoding/Playback).
+        2.  Forward to all other `AUTHENTICATED` peers (Flooding).
 
 ### Topology (Controlled Propagation)
 1.  **Source:** Root Node generates `HEARTBEAT` (Control `0x10`).
@@ -134,3 +143,29 @@ The app follows a Clean Architecture approach.
     *   **Check:** Is `Seq > StoredSeq`?
     *   **If Yes:** Update local state (`Hops = RxHops + 1`), then Forward to all peers.
     *   **If No:** Discard.
+
+---
+
+## 7. Audio Engine & Rust Interface Constraints
+
+The Rust library (`rust/`) is responsible for Audio I/O, Encoding, and Jitter Buffering. It must adhere to the constraints imposed by the BLE Transport.
+
+### A. MTU Awareness
+*   **Constraint:** BLE MTU varies per device (23 to 512 bytes).
+*   **Requirement:** The Rust Encoder must accept a `max_packet_size` parameter.
+*   **Strategy:** If the negotiated MTU is small (e.g., 23 bytes), Rust must either:
+    *   Increase Opus compression (lower bitrate).
+    *   Or fragment packets (though this increases latency/complexity).
+    *   *Current Decision:* Target ~40-60 byte Opus frames to fit in standard BLE packets without fragmentation.
+
+### B. Jitter Buffer
+*   **Constraint:** BLE is lossy and jittery. Packets arrive out of order.
+*   **Requirement:** Rust must implement a Jitter Buffer (e.g., 60ms - 100ms) to smooth out playback.
+
+### C. Interface Boundary (Kotlin <-> Rust)
+*   **Kotlin -> Rust:**
+    *   `init_audio(sample_rate: i32, channels: i32)`
+    *   `push_incoming_packet(data: &[u8])` (Called when BLE receives data)
+    *   `start_recording()` / `stop_recording()`
+*   **Rust -> Kotlin:**
+    *   `on_packet_generated(data: &[u8])` (Callback: Rust gives Kotlin a packet to flood via BLE).

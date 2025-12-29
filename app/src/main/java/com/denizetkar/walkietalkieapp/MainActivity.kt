@@ -1,9 +1,13 @@
 package com.denizetkar.walkietalkieapp
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -78,11 +82,23 @@ fun WalkieTalkieApp() {
         val hasPermissions = permissionsToRequest.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
-        if (hasPermissions) {
-            onGranted()
-        } else {
+        if (!hasPermissions) {
             permissionLauncher.launch(permissionsToRequest)
+            return
         }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+
+            if (!isGpsEnabled) {
+                val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                context.startActivity(intent)
+                return
+            }
+        }
+
+        onGranted()
     }
 
     Scaffold(

@@ -32,6 +32,7 @@ interface NetworkTransport {
 
     // Expose real-time hardware state
     val isScanning: StateFlow<Boolean>
+    val connectedPeers: StateFlow<Set<Int>>
 
     fun setCredentials(accessCode: String, ownNodeId: Int)
 

@@ -40,6 +40,8 @@ class GattClientHandler(
     private var bluetoothGatt: BluetoothGatt? = null
     private val operationQueue = BleOperationQueue()
 
+    private var currentMtu = 23
+
     private val _clientEvents = MutableSharedFlow<ClientEvent>()
     val clientEvents: SharedFlow<ClientEvent> = _clientEvents
 
@@ -64,14 +66,16 @@ class GattClientHandler(
     }
 
     fun sendMessage(type: TransportDataType, data: ByteArray) {
-        val (uuid, writeType) = when (type) {
-            TransportDataType.AUDIO -> Pair(
+        val (uuid, writeType, priority) = when (type) {
+            TransportDataType.AUDIO -> Triple(
                 Config.CHAR_DATA_UUID,
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+                1 // Low Priority
             )
-            TransportDataType.CONTROL -> Pair(
+            TransportDataType.CONTROL -> Triple(
                 Config.CHAR_CONTROL_UUID,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                0 // High Priority
             )
         }
 
@@ -82,11 +86,13 @@ class GattClientHandler(
             data
         }
 
-        queueWrite(uuid, payload, writeType)
+        // TODO: In the future, check payload.size vs currentMtu here and fragment if needed
+
+        queueWrite(uuid, payload, writeType, priority)
     }
 
-    private fun queueWrite(uuid: UUID, data: ByteArray, writeType: Int) {
-        operationQueue.enqueue {
+    private fun queueWrite(uuid: UUID, data: ByteArray, writeType: Int, priority: Int) {
+        operationQueue.enqueue(priority) {
             writeCharacteristicInternal(uuid, data, writeType)
         }
     }
@@ -113,7 +119,10 @@ class GattClientHandler(
 
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            Log.d("GattClient", "MTU Changed: $mtu. Discovering Services...")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                currentMtu = mtu
+                Log.d("GattClient", "MTU Negotiated: $mtu")
+            }
             gatt.discoverServices()
         }
 
@@ -123,8 +132,8 @@ class GattClientHandler(
                 val service = gatt.getService(Config.APP_SERVICE_UUID)
                 if (service != null) {
                     Log.d("GattClient", "Services Discovered. Queueing Subscriptions...")
-                    operationQueue.enqueue { enableNotificationInternal(gatt, service, Config.CHAR_CONTROL_UUID) }
-                    operationQueue.enqueue { enableNotificationInternal(gatt, service, Config.CHAR_DATA_UUID) }
+                    operationQueue.enqueue(0) { enableNotificationInternal(gatt, service, Config.CHAR_CONTROL_UUID) }
+                    operationQueue.enqueue(0) { enableNotificationInternal(gatt, service, Config.CHAR_DATA_UUID) }
                 } else {
                     Log.e("GattClient", "Target does not have the WalkieTalkie Service!")
                     disconnect()
@@ -185,7 +194,7 @@ class GattClientHandler(
         val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESPONSE, responsePayload)
 
         Log.d("GattClient", "Sending Challenge Response...")
-        queueWrite(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        queueWrite(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, 0)
     }
 
     @SuppressLint("MissingPermission")

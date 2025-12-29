@@ -11,8 +11,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -27,9 +32,13 @@ class BleTransport(
     private val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter = btManager.adapter
 
-    private val peers = ConcurrentHashMap<Int, BlePeer>()
+    private val peerMap = MutableStateFlow<Map<Int, BlePeer>>(emptyMap())
     private val rawClientHandlers = ConcurrentHashMap<String, GattClientHandler>()
     private val clientJobs = ConcurrentHashMap<String, Job>()
+
+    override val connectedPeers: StateFlow<Set<Int>> = peerMap
+        .map { it.keys }
+        .stateIn(scope, SharingStarted.Eagerly, emptySet())
 
     private val _events = MutableSharedFlow<TransportEvent>()
     override val events = _events.asSharedFlow()
@@ -59,7 +68,7 @@ class BleTransport(
                     }
                     is ServerEvent.ClientDisconnected -> unregisterPeerByAddress(event.device.address)
                     is ServerEvent.MessageReceived -> {
-                        val nodeId = peers.entries.find { it.value.address == event.device.address }?.key
+                        val nodeId = peerMap.value.entries.find { it.value.address == event.device.address }?.key
                         if (nodeId != null) {
                             _events.emit(TransportEvent.DataReceived(nodeId, event.data, event.type))
                         }
@@ -77,22 +86,23 @@ class BleTransport(
     }
 
     // ===========================================================================
-    // PEER MANAGEMENT
+    // PEER MANAGEMENT (Reactive Updates)
     // ===========================================================================
 
     private suspend fun registerPeer(peer: BlePeer) {
-        if (peers.containsKey(peer.nodeId)) {
+        val currentMap = peerMap.value
+        if (currentMap.containsKey(peer.nodeId)) {
             Log.w("BleTransport", "Duplicate connection to Node ${peer.nodeId}. Dropping new one.")
             peer.disconnect()
             return
         }
-        peers[peer.nodeId] = peer
+        peerMap.update { it + (peer.nodeId to peer) }
         _events.emit(TransportEvent.ConnectionEstablished(peer.nodeId))
     }
 
     private suspend fun unregisterPeerByAddress(address: String) {
-        val nodeId = peers.entries.find { it.value.address == address }?.key ?: return
-        peers.remove(nodeId)
+        val nodeId = peerMap.value.entries.find { it.value.address == address }?.key ?: return
+        peerMap.update { it - nodeId }
         _events.emit(TransportEvent.ConnectionLost(nodeId))
     }
 
@@ -103,7 +113,7 @@ class BleTransport(
     private val connectMutex = Mutex()
 
     override suspend fun connect(address: String, nodeId: Int) = connectMutex.withLock {
-        if (peers.containsKey(nodeId)) return
+        if (peerMap.value.containsKey(nodeId)) return
         if (rawClientHandlers.containsKey(address)) return
 
         val device = adapter.getRemoteDevice(address)
@@ -145,7 +155,7 @@ class BleTransport(
     }
 
     override suspend fun disconnect(nodeId: Int) {
-        val peer = peers[nodeId] ?: return
+        val peer = peerMap.value[nodeId] ?: return
 
         clientJobs[peer.address]?.cancel()
         clientJobs.remove(peer.address)
@@ -154,7 +164,7 @@ class BleTransport(
 
         serverHandler.disconnect(peer.address)
 
-        peers.remove(nodeId)
+        peerMap.update { it - nodeId }
         _events.emit(TransportEvent.ConnectionLost(nodeId))
     }
 
@@ -166,10 +176,11 @@ class BleTransport(
         rawClientHandlers.clear()
         clientJobs.clear()
 
-        peers.values.forEach { peer ->
+        val currentPeers = peerMap.value.values
+        currentPeers.forEach { peer ->
             serverHandler.disconnect(peer.address)
         }
-        peers.clear()
+        peerMap.value = emptyMap()
     }
 
     override suspend fun shutdown() {
@@ -184,11 +195,11 @@ class BleTransport(
     // ===========================================================================
 
     override suspend fun send(toNodeId: Int, data: ByteArray, type: TransportDataType) {
-        peers[toNodeId]?.send(data, type)
+        peerMap.value[toNodeId]?.send(data, type)
     }
 
     override suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeNodeId: Int?) {
-        peers.forEach { (nodeId, peer) ->
+        peerMap.value.forEach { (nodeId, peer) ->
             if (nodeId != excludeNodeId) {
                 peer.send(data, type)
             }
