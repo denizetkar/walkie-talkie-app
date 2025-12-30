@@ -13,7 +13,7 @@ This project demonstrates a decentralized mobile mesh network using Bluetooth 5 
 *   **Symmetric Mesh:** No "Host" node. Every device is equal. The network survives even if the creator leaves.
 *   **Self-Healing:** Automatically merges separated groups ("Islands") into a single mesh.
 *   **Zero-Knowledge Security:** The Access Code is never sent over the air. Uses a Challenge-Response handshake.
-*   **Split-Packet Discovery:** Maximizes advertising payload to show Group Names while maintaining protocol logic.
+*   **Low-Latency Audio:** Powered by **Rust**, **Oboe** (AAudio), and **Opus** for high-performance voice encoding.
 *   **100% Offline:** Works entirely over Bluetooth Low Energy.
 
 ---
@@ -45,7 +45,8 @@ This project uses a hybrid approach to leverage the best tools for each job:
 | **UI / Presentation** | **Kotlin** (Jetpack Compose) | Rendering views, State Management (ViewModel). |
 | **Mesh Logic** | **Kotlin** (Coroutines/Flow) | Topology management, State Machine, Packet Flooding. |
 | **Transport Layer** | **Kotlin** (Android BLE) | Scanning, Advertising, GATT Server/Client management. |
-| **Core Engine** | **Rust** | Audio I/O (Oboe), Opus Encoding/Decoding, Jitter Buffer. |
+| **Audio Engine** | **Rust** (Oboe + Opus) | Low-latency Audio I/O, Encoding/Decoding, Jitter Buffer. |
+| **FFI Bridge** | **UniFFI** | Generates the Kotlin bindings to talk to Rust safely. |
 
 ### Directory Structure
 ```text
@@ -53,8 +54,12 @@ This project uses a hybrid approach to leverage the best tools for each job:
 │   ├── logic/           # The Brain (MeshNetworkManager, State Machine)
 │   ├── network/         # Transport Interface (NetworkTransport)
 │   ├── bluetooth/       # BLE Implementation (BleTransport, GattServer, GattClient)
+│   ├── engine/          # Generated UniFFI Bindings (Rust Interface)
 │   └── MainActivity.kt
 ├── rust/                # Rust Library (Audio Engine)
+│   ├── src/             # Rust Source (lib.rs, Oboe impl)
+│   ├── build.ps1        # PowerShell Build Script (NDK Glue)
+│   └── build.rs         # Cargo Build Script (Linker Flags)
 └── gradle/              # Build configuration
 ```
 
@@ -63,16 +68,20 @@ This project uses a hybrid approach to leverage the best tools for each job:
 ## 📦 Getting Started
 
 ### Prerequisites
-1.  **Android Studio** (Koala or later).
-2.  **Rust Toolchain** (`rustup`).
-3.  **Cargo NDK**: `cargo install cargo-ndk`.
-4.  **Python** (Required for UniFFI binding generation).
+1.  **Android Studio** (Ladybug or later).
+2.  **Rust Toolchain** (`rustup` with `aarch64-linux-android` target).
+3.  **Android NDK** (Version 29+ recommended).
+4.  **Cargo NDK**: `cargo install cargo-ndk`.
+5.  **Python**: Required for `uniffi-bindgen` to generate Kotlin code.
 
 ### Building
 1.  Clone the repo.
 2.  Open in Android Studio.
-3.  Sync Gradle (this will trigger the Rust build scripts).
-4.  Connect two Android devices (Android 9.0+ recommended for BLE 5 features).
+3.  **Sync Gradle**: This triggers the `buildRust` task, which:
+    *   Compiles the Rust code for `arm64-v8a`.
+    *   Copies `libc++_shared.so` (required for Oboe) to `jniLibs`.
+    *   Generates the Kotlin bindings via UniFFI.
+4.  Connect two Android devices (Android 9.0+ recommended).
 5.  Run the app.
 
 ---

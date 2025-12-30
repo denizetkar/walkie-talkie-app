@@ -146,26 +146,55 @@ The app follows a Clean Architecture approach with Reactive State management.
 
 ---
 
-## 7. Audio Engine & Rust Interface Constraints
+## 7. Audio Engine (Rust Implementation)
 
-The Rust library (`rust/`) is responsible for Audio I/O, Encoding, and Jitter Buffering. It must adhere to the constraints imposed by the BLE Transport.
+The Audio Engine is written in **Rust** to ensure memory safety and low latency. It interfaces with Android's Audio API via the `oboe` crate and handles compression using `opus-codec`.
 
-### A. MTU Awareness
-*   **Constraint:** BLE MTU varies per device (23 to 512 bytes).
-*   **Requirement:** The Rust Encoder must accept a `max_packet_size` parameter.
-*   **Strategy:** If the negotiated MTU is small (e.g., 23 bytes), Rust must either:
-    *   Increase Opus compression (lower bitrate).
-    *   Or fragment packets (though this increases latency/complexity).
-    *   *Current Decision:* Target ~40-60 byte Opus frames to fit in standard BLE packets without fragmentation.
+### A. The Interface (UniFFI)
+We use **UniFFI** to generate the Kotlin bindings. The interface is defined in Rust and exposed as a Kotlin class `AudioEngine`.
 
-### B. Jitter Buffer
-*   **Constraint:** BLE is lossy and jittery. Packets arrive out of order.
-*   **Requirement:** Rust must implement a Jitter Buffer (e.g., 60ms - 100ms) to smooth out playback.
-
-### C. Interface Boundary (Kotlin <-> Rust)
 *   **Kotlin -> Rust:**
-    *   `init_audio(sample_rate: i32, channels: i32)`
-    *   `push_incoming_packet(data: &[u8])` (Called when BLE receives data)
-    *   `start_recording()` / `stop_recording()`
-*   **Rust -> Kotlin:**
-    *   `on_packet_generated(data: &[u8])` (Callback: Rust gives Kotlin a packet to flood via BLE).
+    *   `start_recording()`: Opens the Input Stream (Microphone).
+    *   `stop_recording()`: Closes the Input Stream.
+    *   `push_incoming_packet(data: ByteArray)`: Pushes received BLE data into the Jitter Buffer.
+*   **Rust -> Kotlin (Callback):**
+    *   `PacketTransport` trait: A callback interface implemented in Kotlin.
+    *   When Rust encodes a frame, it calls `transport.send_packet(data)`, which triggers the BLE flood in Kotlin.
+
+### B. Audio Pipeline
+1.  **Input (Microphone):**
+    *   **API:** Oboe (AAudio)
+    *   **Config:** 48kHz, Mono, Low Latency, Exclusive Mode.
+    *   **Buffering:** Raw PCM samples are collected until we have 20ms worth of audio (960 samples).
+2.  **Encoding:**
+    *   **Codec:** Opus (VOIP Application).
+    *   **Bitrate:** Variable (VBR).
+    *   **Packetization:** The Opus frame is wrapped with a 2-byte **Sequence Number** (for ordering/jitter handling) before being sent to Kotlin.
+3.  **Output (Speaker):**
+    *   **API:** Oboe (Audio)
+    *   **Jitter Buffer:** A `VecDeque` (Double-ended queue) stores incoming Opus packets.
+    *   **Decoding:** The callback pulls from the queue, decodes via Opus, and fills the audio buffer. If the queue is empty (underrun), it generates silence (PLC).
+
+### C. Jitter Buffer Strategy
+Since BLE delivery is not guaranteed to be in order or perfectly timed, we use a **Fixed-Size De-Jitter Queue**.
+*   **Logic:** Incoming packets are pushed to the back of the queue.
+*   **Playback:** The audio thread pops from the front.
+*   **Overflow Protection:** If the queue exceeds 50 packets (~1 second), the oldest packets are dropped to reduce latency.
+
+---
+
+## 8. Build System & FFI Strategy
+
+Integrating Rust with Android requires a specific build pipeline to handle the C++ Runtime (`libc++_shared.so`) required by Oboe.
+
+### The "Shared Runtime" Challenge
+Android's Oboe library is C++ code. When Rust links against it, it expects the C++ symbols to be available at runtime.
+1.  **Linking:** We configure Cargo (`.cargo/config.toml`) to link with `-lc++_shared`.
+2.  **Packaging:** The Gradle build script (`build.ps1`) manually locates `libc++_shared.so` inside the Android NDK and copies it to `src/main/jniLibs/arm64-v8a/`.
+3.  **Loading:** In `MainActivity.kt`, we explicitly load `libc++_shared` before loading the Rust library.
+
+### The Build Chain
+1.  **Gradle Sync:** Triggers `build.ps1`.
+2.  **Cargo NDK:** Compiles Rust code to `.so`.
+3.  **UniFFI Bindgen:** Generates `walkie_talkie_engine.kt` from the compiled library.
+4.  **APK Package:** Bundles the Rust `.so`, the `libc++_shared.so`, and the JNA/UniFFI generated code.

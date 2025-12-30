@@ -89,6 +89,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _appState.update { AppState() }
     }
 
+    fun startTalking() = meshManager.startTalking()
+    fun stopTalking() = meshManager.stopTalking()
+
     override fun onCleared() {
         super.onCleared()
         meshManager.stopMesh()

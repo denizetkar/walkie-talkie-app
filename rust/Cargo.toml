@@ -1,0 +1,28 @@
+[package]
+name = "walkie_talkie_engine"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "walkie_talkie_engine"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+# --- Common Dependencies ---
+uniffi = { version = "0.30", features = ["cli"] }
+thiserror = "2.0"
+log = "0.4"
+bytes = "1.11"
+anyhow = "1.0"
+byteorder = "1.5"
+
+# --- Android Only Dependencies ---
+# We moved opus-codec here so it doesn't break Windows builds
+[target.'cfg(target_os = "android")'.dependencies]
+opus-codec = "0.1"
+oboe = { version = "0.6", features = ["java-interface"] }
+android_logger = "0.15"

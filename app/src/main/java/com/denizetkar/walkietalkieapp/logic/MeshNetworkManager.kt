@@ -10,6 +10,9 @@ import com.denizetkar.walkietalkieapp.network.TransportEvent
 import com.denizetkar.walkietalkieapp.network.TransportNode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import uniffi.walkie_talkie_engine.AudioEngine
+import uniffi.walkie_talkie_engine.PacketTransport
+import uniffi.walkie_talkie_engine.initLogger
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 import kotlin.random.Random
@@ -57,6 +60,16 @@ class MeshNetworkManager(
     // Deduplication Cache
     private val seenPackets = ConcurrentHashMap<Int, Long>()
 
+    // Audio variables
+    private val audioTransport = object : PacketTransport {
+        override fun sendPacket(data: ByteArray) {
+            scope.launch {
+                transport.sendToAll(data, TransportDataType.AUDIO)
+            }
+        }
+    }
+    private val audioEngine = AudioEngine(audioTransport)
+
     // Jobs
     private var startAdvertisementJob: Job? = null
     private var heartbeatJob: Job? = null
@@ -64,6 +77,8 @@ class MeshNetworkManager(
     private var groupCleanupJob: Job? = null
 
     init {
+        try { initLogger() } catch (_: Exception) {}
+
         scope.launch {
             transport.events.collect { event -> handleTransportEvent(event) }
         }
@@ -86,6 +101,29 @@ class MeshNetworkManager(
         }
 
         startPacketCleanupLoop()
+    }
+
+    // ===========================================================================
+    // Audio functions
+    // ===========================================================================
+
+    fun startTalking() {
+        if (!isMeshMode) return
+        try {
+            audioEngine.startRecording()
+            Log.d("MeshManager", "PTT Pressed: Recording Started")
+        } catch (e: Exception) {
+            Log.e("MeshManager", "Failed to start recording", e)
+        }
+    }
+
+    fun stopTalking() {
+        try {
+            audioEngine.stopRecording()
+            Log.d("MeshManager", "PTT Released: Recording Stopped")
+        } catch (e: Exception) {
+            Log.e("MeshManager", "Failed to stop recording", e)
+        }
     }
 
     // ===========================================================================
@@ -161,6 +199,7 @@ class MeshNetworkManager(
         heartbeatJob?.cancel()
         scanJob?.cancel()
         scope.launch { transport.shutdown() }
+        try { audioEngine.stopRecording() } catch (_: Exception) {}
     }
 
     /**
@@ -347,8 +386,11 @@ class MeshNetworkManager(
         seenPackets[packetHash] = System.currentTimeMillis()
 
         if (type == TransportDataType.AUDIO) {
-            // TODO: Send to Audio Engine
-            Log.v("MeshManager", "Playing Audio from $fromNodeId")
+            try {
+                audioEngine.pushIncomingPacket(data)
+            } catch (e: Exception) {
+                Log.e("MeshManager", "Error pushing audio to engine", e)
+            }
         }
 
         // Flood

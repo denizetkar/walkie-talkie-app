@@ -109,7 +109,8 @@ Cargo.lock
 # Java class files
 
 # Generated files
-bin/
+bin/*
+!rust/**/bin
 gen/
 out/
 
@@ -214,3 +215,6 @@ fabric.properties
 !/gradle/wrapper/gradle-wrapper.jar
 
 # End of https://www.toptal.com/developers/gitignore/api/android,androidstudio,java,kotlin,rust
+
+*.so
+.kotlin/

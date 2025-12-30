@@ -8,6 +8,7 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -37,6 +38,18 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        init {
+            try {
+                System.loadLibrary("c++_shared")
+                System.loadLibrary("walkie_talkie_engine")
+            } catch (e: UnsatisfiedLinkError) {
+                Log.e("MainActivity", "Failed to load native libraries", e)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -57,13 +70,15 @@ fun WalkieTalkieApp() {
         arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_ADVERTISE,
-            Manifest.permission.BLUETOOTH_CONNECT
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.RECORD_AUDIO
         )
     } else {
         arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.BLUETOOTH,
-            Manifest.permission.BLUETOOTH_ADMIN
+            Manifest.permission.BLUETOOTH_ADMIN,
+            Manifest.permission.RECORD_AUDIO
         )
     }
 
@@ -177,10 +192,10 @@ fun WalkieTalkieApp() {
                     accessCode = state.accessCode,
                     onLeave = {
                         viewModel.leaveGroup()
-                        navController.navigate("create") {
-                            popUpTo("create") { inclusive = true }
-                        }
-                    }
+                        navController.navigate("create") { popUpTo("create") { inclusive = true } }
+                    },
+                    onTalkStart = { viewModel.startTalking() },
+                    onTalkStop = { viewModel.stopTalking() }
                 )
             }
 

@@ -28,6 +28,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -176,10 +177,16 @@ fun JoinGroupScreen(
 fun RadioScreen(
     groupName: String?,
     accessCode: String?,
-    onLeave: () -> Unit
+    onLeave: () -> Unit,
+    onTalkStart: () -> Unit,
+    onTalkStop: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+
+    LaunchedEffect(isPressed) {
+        if (isPressed) onTalkStart() else onTalkStop()
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
