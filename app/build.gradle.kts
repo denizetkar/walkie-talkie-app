@@ -23,7 +23,17 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        ndk {
+            // This tells Gradle: "Only package libraries for 64-bit ARM"
+            // It will strip out the x86 and armv7 libs that JNA added.
+            abiFilters.add("arm64-v8a")
+        }
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    lint {
+        disable.add("ForegroundServiceType")
+        disable.add("ForegroundServicePermission")
     }
 
     buildFeatures {

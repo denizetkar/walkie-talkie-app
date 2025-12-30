@@ -1,30 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-
-    <!-- Legacy Bluetooth (Android 9 - 11) -->
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Hardware Feature Check -->
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
 
-    <!-- Modern Bluetooth (Android 12+) -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
     <!-- android:usesPermissionFlags="neverForLocation" tells Android we aren't using BT for GPS tracking -->
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="s" />
+        tools:targetApi="31" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADVERTISE"
-        tools:targetApi="s" />
+        tools:targetApi="31" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_CONNECT"
-        tools:targetApi="s" />
+        tools:targetApi="31" />
+
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"
+        tools:targetApi="34" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
+        tools:targetApi="34" />
 
     <application
         android:allowBackup="true"
@@ -46,6 +52,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".WalkieTalkieService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone|connectedDevice" />
     </application>
 
 </manifest>

@@ -1,10 +1,16 @@
 package com.denizetkar.walkietalkieapp
 
 import android.app.Application
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.denizetkar.walkietalkieapp.logic.DiscoveredGroup
 import com.denizetkar.walkietalkieapp.logic.MeshNetworkManager
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,6 +21,11 @@ import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
 
 data class AppState(
+    // Gatekeeper States
+    val hasPermissions: Boolean = false,
+    val isServiceBound: Boolean = false,
+
+    // App States
     val groupName: String? = null,
     val accessCode: String? = null,
     val peerCount: Int = 0,
@@ -25,56 +36,82 @@ data class AppState(
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val meshManager = MeshNetworkManager(application, viewModelScope)
+
+    private var meshManager: MeshNetworkManager? = null
+    private var managerCollectionJob: Job? = null
 
     private val _appState = MutableStateFlow(AppState())
     val appState = _appState.asStateFlow()
 
-    init {
-        viewModelScope.launch {
-            meshManager.peerCount.collect { count ->
-                _appState.update { it.copy(peerCount = count) }
-            }
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as WalkieTalkieService.LocalBinder
+            meshManager = binder.getService().meshManager
+            _appState.update { it.copy(isServiceBound = true) }
+            subscribeToManager()
         }
-        viewModelScope.launch {
-            meshManager.isScanning.collect { scanning ->
-                _appState.update { it.copy(isScanning = scanning) }
-            }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            managerCollectionJob?.cancel()
+            meshManager = null
+            _appState.update { it.copy(isServiceBound = false) }
         }
-        viewModelScope.launch {
-            meshManager.discoveredGroups.collect { groups ->
-                _appState.update { it.copy(discoveredGroups = groups) }
-            }
+    }
+
+    fun onPermissionsGranted() {
+        _appState.update { it.copy(hasPermissions = true) }
+        bindService()
+    }
+
+    private fun bindService() {
+        if (_appState.value.isServiceBound) return
+
+        val context = getApplication<Application>()
+        val intent = Intent(context, WalkieTalkieService::class.java)
+        context.startForegroundService(intent)
+        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun subscribeToManager() {
+        val manager = meshManager ?: return
+        managerCollectionJob?.cancel()
+
+        managerCollectionJob = viewModelScope.launch {
+            launch { manager.peerCount.collect { count -> _appState.update { it.copy(peerCount = count) } } }
+            launch { manager.isScanning.collect { scanning -> _appState.update { it.copy(isScanning = scanning) } } }
+            launch { manager.discoveredGroups.collect { groups -> _appState.update { it.copy(discoveredGroups = groups) } } }
         }
     }
 
     fun startScanning() {
         if (_appState.value.groupName != null) return
-        meshManager.startGroupScan()
+
+        meshManager?.startGroupScan()
     }
 
     fun stopScanning() {
-        meshManager.stopGroupScan()
+        meshManager?.stopGroupScan()
     }
 
     fun createGroup(name: String) {
         val code = Random.nextInt(1000, 9999).toString()
-
         _appState.update { it.copy(groupName = name, accessCode = code) }
-        meshManager.startMesh(name, code, true)
+        meshManager?.startMesh(name, code, true)
     }
 
     fun joinGroup(name: String, code: String) {
+        val manager = meshManager ?: return
+
         _appState.update { it.copy(isJoining = true, joinError = null) }
-        meshManager.startMesh(name, code, false)
+        manager.startMesh(name, code, false)
         viewModelScope.launch {
             try {
                 withTimeout(Config.GROUP_JOIN_TIMEOUT) {
-                    meshManager.peerCount.first { it > 0 }
+                    manager.peerCount.first { it > 0 }
                 }
                 _appState.update { it.copy(groupName = name, accessCode = code, isJoining = false) }
             } catch (_: TimeoutCancellationException) {
-                meshManager.stopMesh()
+                manager.stopMesh()
                 _appState.update { it.copy(isJoining = false, joinError = "Invalid Code or Connection Failed") }
             }
         }
@@ -85,15 +122,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun leaveGroup() {
-        meshManager.stopMesh()
-        _appState.update { AppState() }
+        meshManager?.stopMesh()
+        _appState.update { it.copy(groupName = null, accessCode = null, peerCount = 0) }
     }
 
-    fun startTalking() = meshManager.startTalking()
-    fun stopTalking() = meshManager.stopTalking()
+    fun startTalking() = meshManager?.startTalking()
+    fun stopTalking() = meshManager?.stopTalking()
 
     override fun onCleared() {
         super.onCleared()
-        meshManager.stopMesh()
+        getApplication<Application>().unbindService(serviceConnection)
     }
 }

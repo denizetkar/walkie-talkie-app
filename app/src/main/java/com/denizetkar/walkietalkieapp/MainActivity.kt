@@ -1,13 +1,9 @@
 package com.denizetkar.walkietalkieapp
 
 import android.Manifest
-import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -38,7 +34,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
 class MainActivity : ComponentActivity() {
-
     companion object {
         init {
             try {
@@ -64,8 +59,6 @@ fun WalkieTalkieApp() {
     val viewModel: MainViewModel = viewModel()
     val state by viewModel.appState.collectAsState()
 
-    val navController = rememberNavController()
-
     val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,
@@ -87,34 +80,35 @@ fun WalkieTalkieApp() {
     ) { permissions ->
         val allGranted = permissions.values.all { it }
         if (allGranted) {
-            // Permissions granted, you can show a snackbar or just proceed
-        } else {
-            // Handle denial (show dialog explaining why)
+            viewModel.onPermissionsGranted()
         }
     }
 
-    fun checkAndRequestPermissions(onGranted: () -> Unit) {
-        val hasPermissions = permissionsToRequest.all {
+    LaunchedEffect(Unit) {
+        val allGranted = permissionsToRequest.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
-        if (!hasPermissions) {
-            permissionLauncher.launch(permissionsToRequest)
-            return
+        if (allGranted) {
+            viewModel.onPermissionsGranted()
         }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-
-            if (!isGpsEnabled) {
-                val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
-                context.startActivity(intent)
-                return
-            }
-        }
-
-        onGranted()
     }
+
+    when {
+        !state.hasPermissions -> {
+            PermissionRequiredScreen(
+                onGrantClick = { permissionLauncher.launch(permissionsToRequest) }
+            )
+        }
+        !state.isServiceBound -> { LoadingScreen("Starting Audio Engine...") }
+        else -> {
+            WalkieTalkieNavHost(viewModel, state)
+        }
+    }
+}
+
+@Composable
+fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppState) {
+    val navController = rememberNavController()
 
     Scaffold(
         bottomBar = {
@@ -136,12 +130,11 @@ fun WalkieTalkieApp() {
                         onClick = { navController.navigate("join") }
                     )
                 } else {
-                    // If in a group, show a single "Radio" item or nothing (since they can't leave without clicking Leave)
                     NavigationBarItem(
                         icon = { Icon(Icons.Filled.Radio, null) },
                         label = { Text("Radio") },
                         selected = true,
-                        onClick = { /* Do nothing, already there */ }
+                        onClick = { }
                     )
                 }
             }
@@ -152,16 +145,12 @@ fun WalkieTalkieApp() {
             startDestination = "create",
             modifier = Modifier.padding(innerPadding)
         ) {
-
             composable("create") {
                 LaunchedEffect(state.groupName) {
                     if (state.groupName != null) navController.navigate("radio")
                 }
-
                 CreateGroupScreen(
-                    onCreate = { name ->
-                        checkAndRequestPermissions { viewModel.createGroup(name) }
-                    }
+                    onCreate = { name -> viewModel.createGroup(name) }
                 )
             }
 
@@ -171,7 +160,7 @@ fun WalkieTalkieApp() {
                 }
 
                 DisposableEffect(Unit) {
-                    checkAndRequestPermissions { viewModel.startScanning() }
+                    viewModel.startScanning()
                     onDispose { viewModel.stopScanning() }
                 }
 
@@ -179,9 +168,7 @@ fun WalkieTalkieApp() {
                     discoveredGroups = state.discoveredGroups,
                     isJoining = state.isJoining,
                     joinError = state.joinError,
-                    onJoin = { group, code ->
-                        viewModel.joinGroup(group.name, code)
-                    },
+                    onJoin = { group, code -> viewModel.joinGroup(group.name, code) },
                     onJoinErrorAck = { viewModel.ackJoinError() }
                 )
             }
@@ -198,7 +185,6 @@ fun WalkieTalkieApp() {
                     onTalkStop = { viewModel.stopTalking() }
                 )
             }
-
         }
     }
 }

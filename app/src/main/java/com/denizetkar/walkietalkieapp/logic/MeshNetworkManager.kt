@@ -69,6 +69,7 @@ class MeshNetworkManager(
         }
     }
     private val audioEngine = AudioEngine(audioTransport)
+    private val audioSession = AudioSessionManager(context)
 
     // Jobs
     private var startAdvertisementJob: Job? = null
@@ -168,13 +169,14 @@ class MeshNetworkManager(
         currentGroupName = groupName
         isAdvertisingAllowed = false
 
-        // 1. Reset Topology
+        // Reset Topology
         currentNetworkId = ownNodeId
         hopsToRoot = 0
         rootSequence = 0
         lastHeartbeatTime = System.currentTimeMillis()
 
         stopGroupScan()
+        audioSession.startSession()
         transport.setCredentials(accessCode, ownNodeId)
 
         val peerThreshold = if (asHost) 0 else 1
@@ -186,7 +188,7 @@ class MeshNetworkManager(
             refreshAdvertising()
         }
 
-        // 3. Start Heartbeat Loop (Sends only if Root)
+        // Start Heartbeat Loop (Sends only if Root)
         startHeartbeatLoop()
 
         updateScanStrategy(peerCount.value)
@@ -199,6 +201,7 @@ class MeshNetworkManager(
         heartbeatJob?.cancel()
         scanJob?.cancel()
         scope.launch { transport.shutdown() }
+        audioSession.stopSession()
         try { audioEngine.stopRecording() } catch (_: Exception) {}
     }
 

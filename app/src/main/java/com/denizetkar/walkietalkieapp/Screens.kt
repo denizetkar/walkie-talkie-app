@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -22,6 +25,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -38,15 +42,48 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.denizetkar.walkietalkieapp.logic.DiscoveredGroup
 
+@Composable
+fun PermissionRequiredScreen(onGrantClick: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Permissions Needed", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            "To function as a Walkie-Talkie, this app needs access to Bluetooth (to find peers) and the Microphone (to talk).",
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(32.dp))
+        Button(onClick = onGrantClick, modifier = Modifier.fillMaxWidth()) {
+            Text("Grant Permissions")
+        }
+    }
+}
 
 @Composable
-fun CreateGroupScreen(
-    onCreate: (String) -> Unit
-) {
+fun LoadingScreen(message: String) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CircularProgressIndicator()
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(message)
+    }
+}
+
+@Composable
+fun CreateGroupScreen(onCreate: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
 
     Column(
@@ -205,7 +242,6 @@ fun RadioScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // PUSH TO TALK BUTTON
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -214,16 +250,19 @@ fun RadioScreen(
                 .background(if (isPressed) Color.Red else MaterialTheme.colorScheme.primary)
                 .clickable(
                     interactionSource = interactionSource,
-                    indication = null, // Disable ripple, we handle color manually
+                    indication = null,
                     onClick = {}
                 )
         ) {
-            Text(
-                text = if (isPressed) "TALKING" else "HOLD TO TALK",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 20.sp
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White, modifier = Modifier.size(48.dp))
+                Text(
+                    text = if (isPressed) "TALKING" else "HOLD TO TALK",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+            }
         }
 
         Spacer(modifier = Modifier.weight(1f))

@@ -120,7 +120,7 @@ mod real_impl {
                 .set_format::<i16>()
                 .set_channel_count::<Mono>()
                 .set_performance_mode(PerformanceMode::LowLatency)
-                .set_sharing_mode(SharingMode::Exclusive)
+                .set_sharing_mode(SharingMode::Shared)
                 .set_sample_rate(SAMPLE_RATE_INT)
                 .set_input_preset(InputPreset::VoiceCommunication)
                 .set_callback(callback)
