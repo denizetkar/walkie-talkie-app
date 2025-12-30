@@ -27,23 +27,25 @@ pub trait PacketTransport: Send + Sync {
 #[cfg(target_os = "android")]
 mod real_impl {
     use super::*;
-    use std::collections::VecDeque;
+    use std::collections::BTreeMap;
     use std::thread;
     use std::sync::mpsc::{channel, Receiver};
     use byteorder::{ByteOrder, LittleEndian};
 
-    // --- IMPORTS ---
     use oboe::{
         AudioInputCallback, AudioOutputCallback, AudioStreamBuilder, AudioStreamAsync,
         PerformanceMode, SharingMode, Mono, DataCallbackResult, InputPreset, Usage,
         Input, Output, AudioInputStreamSafe, AudioOutputStreamSafe,
-        AudioStream // Required for .start()
+        AudioStream
     };
     use opus_codec::{Encoder, Decoder, Application, Channels, SampleRate};
 
     const FRAME_SIZE_MS: i32 = 20;
     const SAMPLE_RATE_INT: i32 = 48000;
     const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE_INT / 1000 * FRAME_SIZE_MS) as usize;
+
+    const MAX_BUFFER_PACKETS: usize = 20;
+    const MIN_BUFFER_TO_START: usize = 4;
 
     fn wrap_packet(seq: u16, opus_data: &[u8]) -> Vec<u8> {
         let mut packet = Vec::with_capacity(2 + opus_data.len());
@@ -66,7 +68,7 @@ mod real_impl {
         output_stream: Mutex<Option<AudioStreamAsync<Output, OutputCallback>>>,
         tx_transport: Sender<Vec<u8>>,
         sequence_number: Arc<Mutex<u16>>,
-        incoming_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+        incoming_queue: Arc<Mutex<BTreeMap<u16, Vec<u8>>>>,
     }
 
     #[uniffi::export]
@@ -87,18 +89,24 @@ mod real_impl {
                 output_stream: Mutex::new(None),
                 tx_transport: tx,
                 sequence_number: Arc::new(Mutex::new(0)),
-                incoming_queue: Arc::new(Mutex::new(VecDeque::new())),
+                incoming_queue: Arc::new(Mutex::new(BTreeMap::new())),
             }
         }
 
         pub fn start_recording(&self) -> Result<(), AudioError> {
             log::info!("Starting Recording...");
 
-            let encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
+            let mut encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
                 .map_err(|e| {
                     log::error!("Opus Encoder Error: {}", e);
                     AudioError::EncoderError
                 })?;
+
+            // Enable smart features (if supported by the wrapper, otherwise these might be no-ops or fail)
+            // We use .ok() to ignore errors if the wrapper doesn't support them perfectly,
+            // but standard libopus supports them.
+            let _ = encoder.set_dtx(true);
+            let _ = encoder.set_inband_fec(true);
 
             let callback = InputCallback {
                 encoder,
@@ -107,7 +115,6 @@ mod real_impl {
                 buffer: Vec::with_capacity(SAMPLES_PER_FRAME * 2),
             };
 
-            // FIX: Added 'mut' here
             let mut stream = AudioStreamBuilder::default()
                 .set_direction::<Input>()
                 .set_format::<i16>()
@@ -137,10 +144,14 @@ mod real_impl {
         }
 
         pub fn push_incoming_packet(&self, data: Vec<u8>) {
-            if let Some((_seq, opus_data)) = unwrap_packet(&data) {
+            if let Some((seq, opus_data)) = unwrap_packet(&data) {
                 let mut queue = self.incoming_queue.lock().unwrap();
-                queue.push_back(opus_data.to_vec());
-                if queue.len() > 50 { queue.pop_front(); }
+                queue.insert(seq, opus_data.to_vec());
+                if queue.len() > MAX_BUFFER_PACKETS {
+                    if let Some(&first_key) = queue.keys().next() {
+                        queue.remove(&first_key);
+                    }
+                }
             }
         }
 
@@ -162,9 +173,10 @@ mod real_impl {
                 decoder,
                 queue: self.incoming_queue.clone(),
                 buffer: Vec::with_capacity(SAMPLES_PER_FRAME),
+                next_expected_seq: None,
+                buffering: true,
             };
 
-            // FIX: Added 'mut' here
             let mut stream = AudioStreamBuilder::default()
                 .set_direction::<Output>()
                 .set_format::<i16>()
@@ -201,6 +213,7 @@ mod real_impl {
             while self.buffer.len() >= SAMPLES_PER_FRAME {
                 let frame_data: Vec<i16> = self.buffer.drain(0..SAMPLES_PER_FRAME).collect();
                 let mut output_buffer = [0u8; 512];
+
                 match self.encoder.encode(&frame_data, &mut output_buffer) {
                     Ok(len) => {
                         let mut seq = self.sequence_number.lock().unwrap();
@@ -217,8 +230,10 @@ mod real_impl {
 
     struct OutputCallback {
         decoder: Decoder,
-        queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+        queue: Arc<Mutex<BTreeMap<u16, Vec<u8>>>>,
         buffer: Vec<i16>,
+        next_expected_seq: Option<u16>,
+        buffering: bool,
     }
 
     impl AudioOutputCallback for OutputCallback {
@@ -230,13 +245,53 @@ mod real_impl {
 
             while samples_filled < samples_needed {
                 if self.buffer.is_empty() {
-                    let packet_opt = { self.queue.lock().unwrap().pop_front() };
+                    let mut queue = self.queue.lock().unwrap();
+
+                    if self.buffering {
+                        if queue.len() >= MIN_BUFFER_TO_START {
+                            self.buffering = false;
+                            if let Some(&first_seq) = queue.keys().next() {
+                                self.next_expected_seq = Some(first_seq);
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let packet_to_decode = if let Some(expected) = self.next_expected_seq {
+                        if let Some(data) = queue.remove(&expected) {
+                            self.next_expected_seq = Some(expected.wrapping_add(1));
+                            Some(data)
+                        } else {
+                            if let Some(&next_available) = queue.keys().next() {
+                                let gap = next_available.wrapping_sub(expected);
+                                if gap < 30000 && gap > 10 {
+                                    self.next_expected_seq = Some(next_available.wrapping_add(1));
+                                    queue.remove(&next_available)
+                                } else {
+                                    self.next_expected_seq = Some(expected.wrapping_add(1));
+                                    None
+                                }
+                            } else {
+                                self.buffering = true;
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     let mut decoded_chunk = [0i16; SAMPLES_PER_FRAME];
-                    let len = match packet_opt {
+                    let len = match packet_to_decode {
                         Some(packet) => self.decoder.decode(&packet, &mut decoded_chunk, false).unwrap_or(0),
                         None => self.decoder.decode(&[], &mut decoded_chunk, true).unwrap_or(0)
                     };
-                    if len > 0 { self.buffer.extend_from_slice(&decoded_chunk[..len]); } else { break; }
+
+                    if len > 0 {
+                        self.buffer.extend_from_slice(&decoded_chunk[..len]);
+                    } else {
+                        break;
+                    }
                 }
 
                 let remaining_needed = samples_needed - samples_filled;
@@ -245,13 +300,19 @@ mod real_impl {
 
                 if to_copy > 0 {
                     let chunk: Vec<i16> = self.buffer.drain(0..to_copy).collect();
-                    for (i, sample) in chunk.iter().enumerate() { frames[samples_filled + i] = *sample; }
+                    for (i, sample) in chunk.iter().enumerate() {
+                        frames[samples_filled + i] = *sample;
+                    }
                     samples_filled += to_copy;
-                } else { break; }
+                } else {
+                    break;
+                }
             }
 
             if samples_filled < samples_needed {
-                for i in samples_filled..samples_needed { frames[i] = 0; }
+                for i in samples_filled..samples_needed {
+                    frames[i] = 0;
+                }
             }
             DataCallbackResult::Continue
         }
@@ -265,15 +326,11 @@ mod real_impl {
     }
 }
 
-// --- 4. STUB IMPLEMENTATION (For Windows / Bindgen) ---
-
 #[cfg(not(target_os = "android"))]
 mod stub_impl {
     use super::*;
-
     #[derive(uniffi::Object)]
     pub struct AudioEngine;
-
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
@@ -283,14 +340,11 @@ mod stub_impl {
         pub fn push_incoming_packet(&self, _data: Vec<u8>) {}
         pub fn shutdown(&self) {}
     }
-
     #[uniffi::export]
     pub fn init_logger() {}
 }
 
-// --- 5. RE-EXPORTS ---
 #[cfg(target_os = "android")]
 pub use real_impl::{AudioEngine, init_logger};
-
 #[cfg(not(target_os = "android"))]
 pub use stub_impl::{AudioEngine, init_logger};
