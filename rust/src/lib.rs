@@ -35,11 +35,11 @@ mod real_impl {
     };
     use opus_codec::{Encoder, Decoder, Application, Channels, SampleRate};
 
-    const FRAME_SIZE_MS: i32 = 20;
+    const FRAME_SIZE_MS: i32 = 40;
     const SAMPLE_RATE_INT: i32 = 48000;
     const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE_INT / 1000 * FRAME_SIZE_MS) as usize; // 960
 
-    const MIN_BUFFER_TO_START: usize = 8;
+    const MIN_BUFFER_TO_START: usize = 4;
     const MAX_BUFFER_PACKETS: usize = 50;
 
     fn wrap_packet(seq: u16, opus_data: &[u8]) -> Vec<u8> {
@@ -107,7 +107,7 @@ mod real_impl {
                 .set_direction::<Input>()
                 .set_format::<i16>()
                 .set_channel_count::<Mono>()
-                .set_performance_mode(PerformanceMode::LowLatency)
+                .set_performance_mode(PerformanceMode::None)
                 .set_sharing_mode(SharingMode::Shared)
                 .set_sample_rate(SAMPLE_RATE_INT)
                 .set_input_preset(InputPreset::VoiceCommunication)
@@ -171,8 +171,8 @@ mod real_impl {
                 .set_direction::<Output>()
                 .set_format::<i16>()
                 .set_channel_count::<Mono>()
-                .set_performance_mode(PerformanceMode::LowLatency)
-                .set_sharing_mode(SharingMode::Exclusive)
+                .set_performance_mode(PerformanceMode::None)
+                .set_sharing_mode(SharingMode::Shared)
                 .set_sample_rate(SAMPLE_RATE_INT)
                 .set_usage(Usage::VoiceCommunication)
                 .set_callback(callback)
