@@ -6,6 +6,7 @@ import android.util.Log
 import com.denizetkar.walkietalkieapp.network.NetworkTransport
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import com.denizetkar.walkietalkieapp.network.TransportEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -29,16 +30,18 @@ class BleTransport(
     private val scope: CoroutineScope
 ) : NetworkTransport {
 
-    private val context = context.applicationContext
-    private val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    // --- Dependencies ---
+    private val btManager = context.applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter = btManager.adapter
+    private val context = context.applicationContext
 
-    private val peerMap = MutableStateFlow<Map<Int, BlePeer>>(emptyMap())
-    private val rawClientHandlers = ConcurrentHashMap<String, GattClientHandler>()
-    private val clientJobs = ConcurrentHashMap<String, Job>()
+    // --- State ---
+    private val _peerMap = MutableStateFlow<Map<Int, BlePeer>>(emptyMap())
+    private val activeClientHandlers = ConcurrentHashMap<String, GattClientHandler>()
+    private val activeClientJobs = ConcurrentHashMap<String, Job>()
 
-    override val connectedPeers: StateFlow<Set<Int>> = peerMap
-        .map { it.keys }
+    // --- Public API ---
+    override val connectedPeers: StateFlow<Set<Int>> = _peerMap.map { it.keys }
         .stateIn(scope, SharingStarted.Eagerly, emptySet())
 
     private val _events = MutableSharedFlow<TransportEvent>(
@@ -50,36 +53,18 @@ class BleTransport(
     private val _isScanning = MutableStateFlow(false)
     override val isScanning = _isScanning.asStateFlow()
 
-    private val serverHandler = GattServerHandler(context, scope)
-    private val discoveryModule = BleDiscoveryModule(adapter, scope, _events, _isScanning)
-    private val advertiserModule = BleAdvertiserModule(adapter, serverHandler)
-
+    // --- Config ---
     private var myAccessCode: String = ""
     private var myNodeId: Int = 0
 
+    // --- Modules ---
+    private val serverHandler = GattServerHandler(this.context, scope)
+    private val discoveryModule = BleDiscoveryModule(adapter, scope, _events, _isScanning) // Re-linked below
+    private val advertiserModule = BleAdvertiserModule(adapter, serverHandler)
+
     init {
         scope.launch {
-            serverHandler.serverEvents.collect { event ->
-                when (event) {
-                    is ServerEvent.ClientAuthenticated -> {
-                        val peer = BlePeer(
-                            nodeId = event.nodeId,
-                            address = event.device.address,
-                            sendImpl = { data, type -> serverHandler.sendTo(event.device.address, data, type) },
-                            disconnectImpl = { serverHandler.disconnect(event.device.address) }
-                        )
-                        registerPeer(peer)
-                    }
-                    is ServerEvent.ClientDisconnected -> unregisterPeerByAddress(event.device.address)
-                    is ServerEvent.MessageReceived -> {
-                        val nodeId = peerMap.value.entries.find { it.value.address == event.device.address }?.key
-                        if (nodeId != null) {
-                            _events.emit(TransportEvent.DataReceived(nodeId, event.data, event.type))
-                        }
-                    }
-                    else -> {}
-                }
-            }
+            serverHandler.serverEvents.collect { event -> handleServerEvent(event) }
         }
     }
 
@@ -90,101 +75,152 @@ class BleTransport(
     }
 
     // ===========================================================================
-    // PEER MANAGEMENT (Reactive Updates)
-    // ===========================================================================
-
-    private suspend fun registerPeer(peer: BlePeer) {
-        val currentMap = peerMap.value
-        if (currentMap.containsKey(peer.nodeId)) {
-            Log.w("BleTransport", "Duplicate connection to Node ${peer.nodeId}. Dropping new one.")
-            peer.disconnect()
-            return
-        }
-        peerMap.update { it + (peer.nodeId to peer) }
-        _events.emit(TransportEvent.ConnectionEstablished(peer.nodeId))
-    }
-
-    private suspend fun unregisterPeerByAddress(address: String) {
-        val nodeId = peerMap.value.entries.find { it.value.address == address }?.key ?: return
-        peerMap.update { it - nodeId }
-        _events.emit(TransportEvent.ConnectionLost(nodeId))
-    }
-
-    // ===========================================================================
-    // CONNECTION LOGIC
+    // 1. CONNECTION LOGIC (The Client Side)
     // ===========================================================================
 
     private val connectMutex = Mutex()
 
     override suspend fun connect(address: String, nodeId: Int) = connectMutex.withLock {
-        if (peerMap.value.containsKey(nodeId)) return
-        if (rawClientHandlers.containsKey(address)) return
+        if (_peerMap.value.containsKey(nodeId)) return
+        if (activeClientHandlers.containsKey(address)) return
 
         val device = adapter.getRemoteDevice(address)
         val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode)
-        rawClientHandlers[address] = client
-
+        val connectionResult = CompletableDeferred<Boolean>()
         val job = scope.launch {
             client.clientEvents.collect { event ->
                 when (event) {
                     is ClientEvent.Authenticated -> {
-                        val peer = BlePeer(
+                        registerPeer(
                             nodeId = nodeId,
                             address = address,
-                            sendImpl = { data, type -> client.sendMessage(type, data) },
-                            disconnectImpl = { client.disconnect() }
+                            sender = { data, type -> client.sendMessage(type, data) },
+                            disconnector = { client.disconnect() }
                         )
-                        registerPeer(peer)
-                    }
-                    is ClientEvent.Disconnected -> {
-                        rawClientHandlers.remove(address)
-                        clientJobs.remove(address)
-                        unregisterPeerByAddress(address)
-                        this.cancel()
+                        if (connectionResult.isActive) connectionResult.complete(true)
                     }
                     is ClientEvent.MessageReceived -> {
-                        _events.emit(TransportEvent.DataReceived(nodeId, event.data, event.type))
+                        handleIncomingData(nodeId, event.data, event.type)
                     }
-                    is ClientEvent.Error -> {
-                        Log.e("BleTransport", "Client Error: ${event.message}")
-                        disconnect(nodeId)
+                    is ClientEvent.Error, is ClientEvent.Disconnected -> {
+                        // Any error (Timeout, Permission, GATT) ends the attempt
+                        if (connectionResult.isActive) connectionResult.complete(false)
+                        cleanupClient(address)
+                        this.cancel()
                     }
-                    else -> {}
+                    else -> {} // Ignore intermediate states like 'Connected'
                 }
             }
         }
-        clientJobs[address] = job
+
+        activeClientHandlers[address] = client
+        activeClientJobs[address] = job
 
         client.connect()
+
+        val success = connectionResult.await()
+        if (!success) {
+            cleanupClient(address)
+            throw java.io.IOException("Connection Failed or Timed Out")
+        }
     }
 
+    private fun cleanupClient(address: String) {
+        activeClientJobs[address]?.cancel()
+        activeClientJobs.remove(address)
+        activeClientHandlers[address]?.disconnect()
+        activeClientHandlers.remove(address)
+    }
+
+    // ===========================================================================
+    // 2. SERVER LOGIC (The Server Side)
+    // ===========================================================================
+
+    private suspend fun handleServerEvent(event: ServerEvent) {
+        when (event) {
+            is ServerEvent.ClientAuthenticated -> {
+                registerPeer(
+                    nodeId = event.nodeId,
+                    address = event.device.address,
+                    sender = { data, type -> serverHandler.sendTo(event.device.address, data, type) },
+                    disconnector = { serverHandler.disconnect(event.device.address) }
+                )
+            }
+            is ServerEvent.MessageReceived -> {
+                val nodeId = _peerMap.value.entries.find { it.value.address == event.device.address }?.key
+                if (nodeId != null) {
+                    handleIncomingData(nodeId, event.data, event.type)
+                }
+            }
+            is ServerEvent.ClientDisconnected -> {
+                unregisterPeerByAddress(event.device.address)
+            }
+            else -> {}
+        }
+    }
+
+    // ===========================================================================
+    // 3. UNIFIED PEER REGISTRY
+    // ===========================================================================
+
+    private suspend fun registerPeer(
+        nodeId: Int,
+        address: String,
+        sender: suspend (ByteArray, TransportDataType) -> Unit,
+        disconnector: suspend () -> Unit
+    ) {
+        if (_peerMap.value.containsKey(nodeId)) {
+            Log.w("BleTransport", "Duplicate Node $nodeId. Ignoring.")
+            disconnector()
+            return
+        }
+
+        val peer = BlePeer(nodeId, address, sender, disconnector)
+        _peerMap.update { it + (nodeId to peer) }
+        _events.emit(TransportEvent.ConnectionEstablished(nodeId))
+    }
+
+    private suspend fun unregisterPeerByAddress(address: String) {
+        val nodeId = _peerMap.value.entries.find { it.value.address == address }?.key ?: return
+        _peerMap.update { it - nodeId }
+        _events.emit(TransportEvent.ConnectionLost(nodeId))
+    }
+
+    private suspend fun handleIncomingData(nodeId: Int, data: ByteArray, type: TransportDataType) {
+        _events.emit(TransportEvent.DataReceived(nodeId, data, type))
+    }
+
+    // ===========================================================================
+    // 4. STANDARD OVERRIDES
+    // ===========================================================================
+
     override suspend fun disconnect(nodeId: Int) {
-        val peer = peerMap.value[nodeId] ?: return
+        val peer = _peerMap.value[nodeId] ?: return
+        if (activeClientHandlers.containsKey(peer.address)) {
+            cleanupClient(peer.address)
+        }
+        peer.disconnect()
 
-        clientJobs[peer.address]?.cancel()
-        clientJobs.remove(peer.address)
-        rawClientHandlers[peer.address]?.disconnect()
-        rawClientHandlers.remove(peer.address)
-
-        serverHandler.disconnect(peer.address)
-
-        peerMap.update { it - nodeId }
+        _peerMap.update { it - nodeId }
         _events.emit(TransportEvent.ConnectionLost(nodeId))
     }
 
     override suspend fun disconnectAll() {
-        rawClientHandlers.forEach { (address, client) ->
-            clientJobs[address]?.cancel()
-            client.disconnect()
-        }
-        rawClientHandlers.clear()
-        clientJobs.clear()
+        activeClientHandlers.keys.forEach { cleanupClient(it) }
+        serverHandler.stopServer()
+        serverHandler.startServer()
 
-        val currentPeers = peerMap.value.values
-        currentPeers.forEach { peer ->
-            serverHandler.disconnect(peer.address)
+        _peerMap.value = emptyMap()
+    }
+
+    override suspend fun send(toNodeId: Int, data: ByteArray, type: TransportDataType) {
+        _peerMap.value[toNodeId]?.send(data, type)
+    }
+
+    override suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeNodeId: Int?) {
+        _peerMap.value.forEach { (nodeId, peer) ->
+            if (nodeId != excludeNodeId) peer.send(data, type)
         }
-        peerMap.value = emptyMap()
     }
 
     override suspend fun shutdown() {
@@ -194,28 +230,9 @@ class BleTransport(
         serverHandler.stopServer()
     }
 
-    // ===========================================================================
-    // DATA TRANSFER
-    // ===========================================================================
-
-    override suspend fun send(toNodeId: Int, data: ByteArray, type: TransportDataType) {
-        peerMap.value[toNodeId]?.send(data, type)
-    }
-
-    override suspend fun sendToAll(data: ByteArray, type: TransportDataType, excludeNodeId: Int?) {
-        peerMap.value.forEach { (nodeId, peer) ->
-            if (nodeId != excludeNodeId) {
-                peer.send(data, type)
-            }
-        }
-    }
-
-    // ===========================================================================
-    // DELEGATES
-    // ===========================================================================
-
     override suspend fun startDiscovery() = discoveryModule.start()
     override suspend fun stopDiscovery() = discoveryModule.stop()
-    override suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int, isAvailable: Boolean) = advertiserModule.start(groupName, myNodeId, networkId, hops, isAvailable)
+    override suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int, isAvailable: Boolean) =
+        advertiserModule.start(groupName, myNodeId, networkId, hops, isAvailable)
     override suspend fun stopAdvertising() = advertiserModule.stop()
 }

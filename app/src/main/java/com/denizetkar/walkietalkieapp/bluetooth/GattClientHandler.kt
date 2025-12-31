@@ -16,7 +16,9 @@ import com.denizetkar.walkietalkieapp.logic.PacketUtils
 import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -49,9 +51,12 @@ class GattClientHandler(
     )
     val clientEvents: SharedFlow<ClientEvent> = _clientEvents
 
+    private var handshakeTimeoutJob: Job? = null
+
     @SuppressLint("MissingPermission")
     fun connect() {
         Log.d("GattClient", "Connecting to ${targetDevice.address}...")
+        startHandshakeTimeout()
         try {
             bluetoothGatt = targetDevice.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } catch (_: SecurityException) {
@@ -59,8 +64,19 @@ class GattClientHandler(
         }
     }
 
+    private fun startHandshakeTimeout() {
+        handshakeTimeoutJob?.cancel()
+        handshakeTimeoutJob = scope.launch {
+            delay(Config.GROUP_JOIN_TIMEOUT)
+            Log.w("GattClient", "Handshake Timed Out")
+            _clientEvents.emit(ClientEvent.Error(targetDevice, "Handshake Timeout"))
+            disconnect()
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun disconnect() {
+        handshakeTimeoutJob?.cancel()
         operationQueue.clear()
         try {
             bluetoothGatt?.disconnect()
@@ -113,6 +129,7 @@ class GattClientHandler(
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d("GattClient", "Connected. Requesting MTU...")
                 scope.launch { _clientEvents.emit(ClientEvent.Connected(targetDevice)) }
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 if (!gatt.requestMtu(Config.BLE_MTU)) gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d("GattClient", "Disconnected from ${targetDevice.address}")
@@ -177,6 +194,7 @@ class GattClientHandler(
                     PacketUtils.TYPE_AUTH_RESULT -> {
                         Log.d("GattClient", "Received Handshake Result: ${payload.getOrNull(0)}")
                         if (payload.isNotEmpty() && payload[0] == 1.toByte()) {
+                            handshakeTimeoutJob?.cancel()
                             scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
                         } else {
                             disconnect()
