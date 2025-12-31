@@ -63,7 +63,7 @@ class MeshNetworkManager(
     // Audio variables
     private val audioTransport = object : PacketTransport {
         override fun sendPacket(data: ByteArray) {
-            scope.launch {
+            scope.launch(Dispatchers.IO) {
                 transport.sendToAll(data, TransportDataType.AUDIO)
             }
         }
@@ -202,6 +202,7 @@ class MeshNetworkManager(
         scanJob?.cancel()
         scope.launch { transport.shutdown() }
         audioSession.stopSession()
+        try { audioEngine.shutdown() } catch (_: Exception) {}
         try { audioEngine.stopRecording() } catch (_: Exception) {}
     }
 

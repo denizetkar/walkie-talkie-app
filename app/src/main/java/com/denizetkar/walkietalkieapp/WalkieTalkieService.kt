@@ -19,7 +19,7 @@ import kotlinx.coroutines.cancel
 
 class WalkieTalkieService : Service() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     lateinit var meshManager: MeshNetworkManager
         private set
 

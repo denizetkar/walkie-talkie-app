@@ -16,6 +16,7 @@ import com.denizetkar.walkietalkieapp.logic.PacketUtils
 import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -42,7 +43,10 @@ class GattClientHandler(
 
     private var currentMtu = 23
 
-    private val _clientEvents = MutableSharedFlow<ClientEvent>()
+    private val _clientEvents = MutableSharedFlow<ClientEvent>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val clientEvents: SharedFlow<ClientEvent> = _clientEvents
 
     @SuppressLint("MissingPermission")

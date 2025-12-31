@@ -24,6 +24,14 @@ class AudioSessionManager(context: Context) {
 
         // 3. Force Speakerphone
         setSpeakerphone(true)
+
+        // 4. Maximize Voice Call Volume
+        try {
+            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVol, 0)
+        } catch (e: Exception) {
+            Log.w("AudioSession", "Could not set max volume", e)
+        }
     }
 
     fun stopSession() {

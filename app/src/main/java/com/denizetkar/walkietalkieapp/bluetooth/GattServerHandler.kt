@@ -18,6 +18,7 @@ import com.denizetkar.walkietalkieapp.logic.PacketUtils
 import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -43,7 +44,10 @@ class GattServerHandler(
     private val authenticatedSessions = ConcurrentHashMap<String, Int>()
     private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
 
-    private val _serverEvents = MutableSharedFlow<ServerEvent>()
+    private val _serverEvents = MutableSharedFlow<ServerEvent>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val serverEvents: SharedFlow<ServerEvent> = _serverEvents
 
     companion object {
@@ -73,12 +77,18 @@ class GattServerHandler(
             ) {
                 if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
 
-                if (descriptor.characteristic.uuid == Config.CHAR_CONTROL_UUID && descriptor.uuid == CCCD_UUID) {
-                    if (value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
-                        Log.d("GattServer", "Client subscribed to Control. Sending Challenge to ${device.address}")
-                        scope.launch {
-                            sendChallenge(device)
+                if (descriptor.uuid == CCCD_UUID) {
+                    if (descriptor.characteristic.uuid == Config.CHAR_CONTROL_UUID) {
+                        Log.d("GattServer", "Client subscribed to CONTROL.")
+                        if (value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+                            Log.d("GattServer", "Client subscribed to Control. Sending Challenge to ${device.address}")
+                            scope.launch {
+                                sendChallenge(device)
+                            }
                         }
+                    }
+                    else if (descriptor.characteristic.uuid == Config.CHAR_DATA_UUID) {
+                        Log.d("GattServer", "Client subscribed to DATA (Audio).")
                     }
                 }
             }
@@ -92,8 +102,6 @@ class GattServerHandler(
                 when (characteristic.uuid) {
                     Config.CHAR_DATA_UUID -> {
                         if (authenticatedSessions.containsKey(device.address.uppercase())) {
-                            // Strip header if you added one for Data, or just pass raw
-                            // For now assuming raw audio or simple type header
                             scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.AUDIO)) }
                         }
                     }
@@ -178,13 +186,17 @@ class GattServerHandler(
         val service = gattServer?.getService(Config.APP_SERVICE_UUID) ?: return
         val char = service.getCharacteristic(uuid) ?: return
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             gattServer?.notifyCharacteristicChanged(device, char, false, data)
         } else {
             @Suppress("DEPRECATION")
             char.value = data
             @Suppress("DEPRECATION")
             gattServer?.notifyCharacteristicChanged(device, char, false)
+        }
+
+        if (success != true && type == TransportDataType.AUDIO) {
+            Log.w("GattServer", "Notification DROPPED (Buffer Full?) for ${device.address}")
         }
     }
 

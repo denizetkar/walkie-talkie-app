@@ -1,10 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Sender;
 
-// --- 1. SETUP SCAFFOLDING ---
 uniffi::setup_scaffolding!("walkie_talkie_engine");
-
-// --- 2. SHARED TYPES ---
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 #[uniffi(flat_error)]
@@ -22,8 +19,6 @@ pub trait PacketTransport: Send + Sync {
     fn send_packet(&self, data: Vec<u8>);
 }
 
-// --- 3. ANDROID IMPLEMENTATION ---
-
 #[cfg(target_os = "android")]
 mod real_impl {
     use super::*;
@@ -34,7 +29,7 @@ mod real_impl {
 
     use oboe::{
         AudioInputCallback, AudioOutputCallback, AudioStreamBuilder, AudioStreamAsync,
-        PerformanceMode, SharingMode, Mono, DataCallbackResult, InputPreset, Usage,
+        PerformanceMode, SharingMode, Mono, Stereo, DataCallbackResult, InputPreset, Usage,
         Input, Output, AudioInputStreamSafe, AudioOutputStreamSafe,
         AudioStream
     };
@@ -42,10 +37,10 @@ mod real_impl {
 
     const FRAME_SIZE_MS: i32 = 20;
     const SAMPLE_RATE_INT: i32 = 48000;
-    const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE_INT / 1000 * FRAME_SIZE_MS) as usize;
+    const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE_INT / 1000 * FRAME_SIZE_MS) as usize; // 960
 
-    const MAX_BUFFER_PACKETS: usize = 20;
-    const MIN_BUFFER_TO_START: usize = 4;
+    const MIN_BUFFER_TO_START: usize = 8;
+    const MAX_BUFFER_PACKETS: usize = 50;
 
     fn wrap_packet(seq: u16, opus_data: &[u8]) -> Vec<u8> {
         let mut packet = Vec::with_capacity(2 + opus_data.len());
@@ -76,14 +71,11 @@ mod real_impl {
         #[uniffi::constructor]
         pub fn new(transport: Box<dyn PacketTransport>) -> Self {
             let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = channel();
-
             thread::spawn(move || {
                 while let Ok(packet) = rx.recv() {
                     transport.send_packet(packet);
                 }
-                log::info!("Transport thread shutting down");
             });
-
             Self {
                 input_stream: Mutex::new(None),
                 output_stream: Mutex::new(None),
@@ -94,20 +86,15 @@ mod real_impl {
         }
 
         pub fn start_recording(&self) -> Result<(), AudioError> {
-            log::info!("Starting Recording...");
+            log::info!("Starting Recording (Mono Request)...");
 
+            // 1. Initialize Encoder
             let mut encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
-                .map_err(|e| {
-                    log::error!("Opus Encoder Error: {}", e);
-                    AudioError::EncoderError
-                })?;
-
-            // Enable smart features (if supported by the wrapper, otherwise these might be no-ops or fail)
-            // We use .ok() to ignore errors if the wrapper doesn't support them perfectly,
-            // but standard libopus supports them.
+                .map_err(|_| AudioError::EncoderError)?;
             let _ = encoder.set_dtx(true);
             let _ = encoder.set_inband_fec(true);
 
+            // 2. Setup Callback
             let callback = InputCallback {
                 encoder,
                 sequence_number: self.sequence_number.clone(),
@@ -115,6 +102,7 @@ mod real_impl {
                 buffer: Vec::with_capacity(SAMPLES_PER_FRAME * 2),
             };
 
+            // 3. CHANGE: Request MONO explicitly
             let mut stream = AudioStreamBuilder::default()
                 .set_direction::<Input>()
                 .set_format::<i16>()
@@ -132,7 +120,6 @@ mod real_impl {
 
             stream.start().map_err(|_| AudioError::DeviceError)?;
             *self.input_stream.lock().unwrap() = Some(stream);
-
             self.ensure_output_running()?;
             Ok(())
         }
@@ -147,11 +134,14 @@ mod real_impl {
             if let Some((seq, opus_data)) = unwrap_packet(&data) {
                 let mut queue = self.incoming_queue.lock().unwrap();
                 queue.insert(seq, opus_data.to_vec());
+
                 if queue.len() > MAX_BUFFER_PACKETS {
                     if let Some(&first_key) = queue.keys().next() {
                         queue.remove(&first_key);
                     }
                 }
+                drop(queue);
+                let _ = self.ensure_output_running();
             }
         }
 
@@ -172,7 +162,7 @@ mod real_impl {
             let callback = OutputCallback {
                 decoder,
                 queue: self.incoming_queue.clone(),
-                buffer: Vec::with_capacity(SAMPLES_PER_FRAME),
+                buffer: Vec::with_capacity(SAMPLES_PER_FRAME * 2),
                 next_expected_seq: None,
                 buffering: true,
             };
@@ -206,10 +196,21 @@ mod real_impl {
     }
 
     impl AudioInputCallback for InputCallback {
+        // CHANGE: FrameType is now (i16, Mono)
         type FrameType = (i16, Mono);
 
+        // CHANGE: Signature accepts Mono frames (just i16, not tuples)
         fn on_audio_ready(&mut self, _stream: &mut dyn AudioInputStreamSafe, frames: &[i16]) -> DataCallbackResult {
-            self.buffer.extend_from_slice(frames);
+
+            const GAIN_MULTIPLIER: f32 = 1.0;
+
+            for sample in frames {
+                let boosted = (*sample as f32 * GAIN_MULTIPLIER) as i32;
+                let clamped = boosted.clamp(-32768, 32767) as i16;
+                self.buffer.push(clamped);
+            }
+
+            // Packetize logic (Standard Opus encoding)
             while self.buffer.len() >= SAMPLES_PER_FRAME {
                 let frame_data: Vec<i16> = self.buffer.drain(0..SAMPLES_PER_FRAME).collect();
                 let mut output_buffer = [0u8; 512];
@@ -245,51 +246,84 @@ mod real_impl {
 
             while samples_filled < samples_needed {
                 if self.buffer.is_empty() {
-                    let mut queue = self.queue.lock().unwrap();
+                    let action: Option<Option<Vec<u8>>> = {
+                        let mut queue = self.queue.lock().unwrap();
 
-                    if self.buffering {
-                        if queue.len() >= MIN_BUFFER_TO_START {
-                            self.buffering = false;
-                            if let Some(&first_seq) = queue.keys().next() {
-                                self.next_expected_seq = Some(first_seq);
+                        while queue.len() > 15 {
+                            if let Some(&first) = queue.keys().next() {
+                                queue.remove(&first);
+                                self.next_expected_seq = Some(first.wrapping_add(1));
                             }
-                        } else {
-                            break;
                         }
-                    }
 
-                    let packet_to_decode = if let Some(expected) = self.next_expected_seq {
-                        if let Some(data) = queue.remove(&expected) {
-                            self.next_expected_seq = Some(expected.wrapping_add(1));
-                            Some(data)
+                        if self.buffering {
+                            if queue.len() >= MIN_BUFFER_TO_START {
+                                self.buffering = false;
+                                if let Some(&first_seq) = queue.keys().next() {
+                                    self.next_expected_seq = Some(first_seq);
+                                }
+                            }
+                        }
+
+                        if self.buffering {
+                            None
                         } else {
-                            if let Some(&next_available) = queue.keys().next() {
-                                let gap = next_available.wrapping_sub(expected);
-                                if gap < 30000 && gap > 10 {
-                                    self.next_expected_seq = Some(next_available.wrapping_add(1));
-                                    queue.remove(&next_available)
-                                } else {
+                            if let Some(expected) = self.next_expected_seq {
+                                if let Some(data) = queue.remove(&expected) {
                                     self.next_expected_seq = Some(expected.wrapping_add(1));
-                                    None
+                                    Some(Some(data))
+                                } else {
+                                    if let Some(&next_available) = queue.keys().next() {
+                                        let gap = next_available.wrapping_sub(expected);
+                                        if gap > 50 {
+                                            self.next_expected_seq = Some(next_available.wrapping_add(1));
+                                            let data = queue.remove(&next_available);
+                                            data.map(Some)
+                                        } else {
+                                            self.next_expected_seq = Some(expected.wrapping_add(1));
+                                            Some(None) // PLC
+                                        }
+                                    } else {
+                                        self.buffering = true;
+                                        None
+                                    }
                                 }
                             } else {
-                                self.buffering = true;
                                 None
                             }
                         }
-                    } else {
-                        None
                     };
 
-                    let mut decoded_chunk = [0i16; SAMPLES_PER_FRAME];
-                    let len = match packet_to_decode {
-                        Some(packet) => self.decoder.decode(&packet, &mut decoded_chunk, false).unwrap_or(0),
-                        None => self.decoder.decode(&[], &mut decoded_chunk, true).unwrap_or(0)
-                    };
+                    if let Some(maybe_packet) = action {
+                        let mut decoded_chunk = [0i16; SAMPLES_PER_FRAME];
 
-                    if len > 0 {
-                        self.buffer.extend_from_slice(&decoded_chunk[..len]);
+                        let len = match maybe_packet {
+                            Some(packet) => {
+                                match self.decoder.decode(&packet, &mut decoded_chunk, false) {
+                                    Ok(size) => size,
+                                    Err(e) => {
+                                        log::error!("Opus Decode Error: {:?}", e);
+                                        0
+                                    }
+                                }
+                            },
+                            None => {
+                                match self.decoder.decode(&[], &mut decoded_chunk, true) {
+                                    Ok(size) => size,
+                                    Err(_) => 0
+                                }
+                            }
+                        };
+
+                        if len > 0 {
+                            self.buffer.extend_from_slice(&decoded_chunk[..len]);
+                        } else {
+                            self.buffer.extend(std::iter::repeat(0).take(SAMPLES_PER_FRAME));
+                        }
                     } else {
+                        let remaining = samples_needed - samples_filled;
+                        for i in 0..remaining { frames[samples_filled + i] = 0; }
+                        samples_filled += remaining;
                         break;
                     }
                 }
@@ -304,16 +338,13 @@ mod real_impl {
                         frames[samples_filled + i] = *sample;
                     }
                     samples_filled += to_copy;
-                } else {
-                    break;
                 }
             }
 
             if samples_filled < samples_needed {
-                for i in samples_filled..samples_needed {
-                    frames[i] = 0;
-                }
+                for i in samples_filled..samples_needed { frames[i] = 0; }
             }
+
             DataCallbackResult::Continue
         }
     }

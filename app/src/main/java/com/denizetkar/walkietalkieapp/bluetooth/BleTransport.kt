@@ -9,6 +9,7 @@ import com.denizetkar.walkietalkieapp.network.TransportEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,7 +41,10 @@ class BleTransport(
         .map { it.keys }
         .stateIn(scope, SharingStarted.Eagerly, emptySet())
 
-    private val _events = MutableSharedFlow<TransportEvent>()
+    private val _events = MutableSharedFlow<TransportEvent>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     override val events = _events.asSharedFlow()
 
     private val _isScanning = MutableStateFlow(false)
