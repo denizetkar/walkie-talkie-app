@@ -20,9 +20,9 @@ object Config {
 
     // Timing
     const val SCAN_PERIOD_AGGRESSIVE = 10000L
-    const val SCAN_PAUSE_AGGRESSIVE = 500L
-    const val SCAN_PERIOD_LAZY = 5000L
-    const val SCAN_INTERVAL_LAZY = 30000L
+    const val SCAN_PAUSE_AGGRESSIVE = 1000L
+    const val SCAN_PERIOD_LAZY = 2000L
+    const val SCAN_INTERVAL_LAZY = 10000L
 
     const val CLEANUP_PERIOD = 2000L
     const val PACKET_CACHE_TIMEOUT = 4000L
