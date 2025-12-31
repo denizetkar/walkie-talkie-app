@@ -119,10 +119,7 @@ class BleTransport(
         client.connect()
 
         val success = connectionResult.await()
-        if (!success) {
-            cleanupClient(address)
-            throw java.io.IOException("Connection Failed or Timed Out")
-        }
+        if (!success) cleanupClient(address)
     }
 
     private fun cleanupClient(address: String) {
