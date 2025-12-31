@@ -56,6 +56,7 @@ class MeshNetworkManager(
     private val foundGroupsMap = ConcurrentHashMap<String, DiscoveredGroup>()
 
     val isScanning = transport.isScanning
+    private val _isTalking = MutableStateFlow(false)
 
     // Deduplication Cache
     private val seenPackets = ConcurrentHashMap<Int, Long>()
@@ -85,19 +86,13 @@ class MeshNetworkManager(
         }
 
         scope.launch {
-            transport.connectedPeers.collect { connectedIds ->
-                if (!isMeshMode) return@collect
-
-                val count = connectedIds.size
-                updateScanStrategy(count)
-                if (isAdvertisingAllowed) {
-                    val isAvailable = count < Config.MAX_PEERS
-                    // Only restart advertising if the state actually changed (e.g., Available -> Full)
-                    if (isAvailable != lastAdvertisedAvailability) {
-                        Log.d("MeshManager", "Availability Changed: $isAvailable. Updating Advertisement.")
-                        refreshAdvertising()
-                    }
-                }
+            combine(
+                transport.connectedPeers.map { it.size },
+                _isTalking
+            ) { count, isTalking ->
+                Pair(count, isTalking)
+            }.collectLatest { (count, isTalking) ->
+                manageScanningState(count, isTalking)
             }
         }
 
@@ -110,6 +105,7 @@ class MeshNetworkManager(
 
     fun startTalking() {
         if (!isMeshMode) return
+        _isTalking.value = true
         try {
             audioEngine.startRecording()
             Log.d("MeshManager", "PTT Pressed: Recording Started")
@@ -119,6 +115,7 @@ class MeshNetworkManager(
     }
 
     fun stopTalking() {
+        _isTalking.value = false
         try {
             audioEngine.stopRecording()
             Log.d("MeshManager", "PTT Released: Recording Stopped")
@@ -404,6 +401,23 @@ class MeshNetworkManager(
     // ===========================================================================
     // SCANNING LOOP
     // ===========================================================================
+
+    private suspend fun manageScanningState(count: Int, isTalking: Boolean) {
+        if (isTalking) {
+            Log.d("MeshManager", "State: TALKING. Pausing Scan.")
+            transport.stopDiscovery()
+            return
+        }
+
+        if (!isMeshMode) return
+        updateScanStrategy(count)
+        if (!isAdvertisingAllowed) return
+
+        val isAvailable = count < Config.MAX_PEERS
+        if (isAvailable != lastAdvertisedAvailability) {
+            refreshAdvertising()
+        }
+    }
 
     private fun updateScanStrategy(count: Int) {
         scanJob?.cancel()
