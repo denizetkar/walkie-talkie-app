@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -40,6 +42,12 @@ class BleTransport(
     private val activeClientHandlers = ConcurrentHashMap<String, GattClientHandler>()
     private val activeClientJobs = ConcurrentHashMap<String, Job>()
 
+    private val _isScanning = MutableStateFlow(false)
+    override val isScanning = _isScanning.asStateFlow()
+
+    private val _scanIntent = MutableStateFlow(false)
+    private val _activeConnectionAttempts = MutableStateFlow(0)
+
     // --- Public API ---
     override val connectedPeers: StateFlow<Set<Int>> = _peerMap.map { it.keys }
         .stateIn(scope, SharingStarted.Eagerly, emptySet())
@@ -49,9 +57,6 @@ class BleTransport(
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     override val events = _events.asSharedFlow()
-
-    private val _isScanning = MutableStateFlow(false)
-    override val isScanning = _isScanning.asStateFlow()
 
     // --- Config ---
     private var myAccessCode: String = ""
@@ -65,6 +70,24 @@ class BleTransport(
     init {
         scope.launch {
             serverHandler.serverEvents.collect { event -> handleServerEvent(event) }
+        }
+
+        scope.launch {
+            combine(_scanIntent, _activeConnectionAttempts) { wantToScan, attempts ->
+                Pair(wantToScan, attempts > 0)
+            }.collectLatest { (wantToScan, isBusy) ->
+                if (wantToScan && !isBusy) {
+                    Log.d("BleTransport", "Radio Free: Starting Discovery")
+                    discoveryModule.start()
+                } else {
+                    if (isBusy) {
+                        Log.d("BleTransport", "Radio Busy (Connecting): Pausing Discovery")
+                    } else {
+                        Log.d("BleTransport", "Scan Intent Stopped")
+                    }
+                    discoveryModule.stop()
+                }
+            }
         }
     }
 
@@ -82,51 +105,53 @@ class BleTransport(
 
     override suspend fun connect(address: String, nodeId: Int) {
         val connectionResult = CompletableDeferred<Boolean>()
+        _activeConnectionAttempts.update { it + 1 }
+        try {
+            connectMutex.withLock {
+                if (_peerMap.value.containsKey(nodeId)) return
+                if (activeClientHandlers.containsKey(address)) return
 
-        connectMutex.withLock {
-            if (_peerMap.value.containsKey(nodeId)) return
-            if (activeClientHandlers.containsKey(address)) return
+                val device = adapter.getRemoteDevice(address)
+                val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode)
 
-            val device = adapter.getRemoteDevice(address)
-            val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode)
-
-            val job = scope.launch {
-                client.clientEvents.collect { event ->
-                    when (event) {
-                        is ClientEvent.Authenticated -> {
-                            registerPeer(
-                                nodeId = nodeId,
-                                address = address,
-                                sender = { data, type -> client.sendMessage(type, data) },
-                                disconnector = { client.disconnect() }
-                            )
-                            if (connectionResult.isActive) connectionResult.complete(true)
+                val job = scope.launch {
+                    client.clientEvents.collect { event ->
+                        when (event) {
+                            is ClientEvent.Authenticated -> {
+                                registerPeer(
+                                    nodeId = nodeId,
+                                    address = address,
+                                    sender = { data, type -> client.sendMessage(type, data) },
+                                    disconnector = { client.disconnect() }
+                                )
+                                if (connectionResult.isActive) connectionResult.complete(true)
+                            }
+                            is ClientEvent.MessageReceived -> {
+                                handleIncomingData(nodeId, event.data, event.type)
+                            }
+                            is ClientEvent.Error, is ClientEvent.Disconnected -> {
+                                if (connectionResult.isActive) connectionResult.complete(false)
+                                cleanupClient(address)
+                                this.cancel()
+                            }
+                            else -> {}
                         }
-                        is ClientEvent.MessageReceived -> {
-                            handleIncomingData(nodeId, event.data, event.type)
-                        }
-                        is ClientEvent.Error, is ClientEvent.Disconnected -> {
-                            if (connectionResult.isActive) connectionResult.complete(false)
-                            cleanupClient(address)
-                            this.cancel()
-                        }
-                        else -> {}
                     }
                 }
+
+                activeClientHandlers[address] = client
+                activeClientJobs[address] = job
+
+                client.connect()
             }
 
-            activeClientHandlers[address] = client
-            activeClientJobs[address] = job
-
-            client.connect()
-        }
-
-        try {
             val success = connectionResult.await()
             if (!success) cleanupClient(address)
         } catch (e: Exception) {
             cleanupClient(address)
             throw e
+        } finally {
+            _activeConnectionAttempts.update { it - 1 }
         }
     }
 
@@ -234,8 +259,12 @@ class BleTransport(
         serverHandler.stopServer()
     }
 
-    override suspend fun startDiscovery() = discoveryModule.start()
-    override suspend fun stopDiscovery() = discoveryModule.stop()
+    override suspend fun startDiscovery() {
+        _scanIntent.value = true
+    }
+    override suspend fun stopDiscovery() {
+        _scanIntent.value = false
+    }
     override suspend fun startAdvertising(groupName: String, networkId: Int, hops: Int, isAvailable: Boolean) =
         advertiserModule.start(groupName, myNodeId, networkId, hops, isAvailable)
     override suspend fun stopAdvertising() = advertiserModule.stop()

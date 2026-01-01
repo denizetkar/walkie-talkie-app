@@ -146,7 +146,7 @@ class GattClientHandler(
                 return
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d("GattClient", "Connected. Requesting High Priority & Starting Discovery...")
+                Log.d("GattClient", "Connected. Requesting High Priority & Starting Service Discovery...")
                 scope.launch { _clientEvents.emit(ClientEvent.Connected(targetDevice)) }
 
                 gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
