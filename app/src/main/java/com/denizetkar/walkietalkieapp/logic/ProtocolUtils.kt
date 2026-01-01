@@ -4,35 +4,32 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 
 object ProtocolUtils {
-    /**
-     * Generates the response payload for the Challenge-Response handshake.
-     * Payload = [First 16 bytes of SHA256(AccessCode + Nonce + NodeID)] + [NodeID (4 bytes)]
-     */
+    // CHANGED: Reduced hash size to 12 bytes to fit in default MTU (23)
+    // 2 (Header) + 12 (Hash) + 4 (NodeID) = 18 bytes < 20 bytes limit
+    private const val HASH_SIZE = 12
+
     fun generateHandshakeResponse(accessCode: String, nonce: String, ownNodeId: Int): ByteArray {
         val input = accessCode + nonce + ownNodeId.toString()
         val fullHash = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
-        val hashBytes = fullHash.copyOfRange(0, 16)
+        val hashBytes = fullHash.copyOfRange(0, HASH_SIZE)
         val nodeIdBytes = ByteBuffer.allocate(4).putInt(ownNodeId).array()
         return hashBytes + nodeIdBytes
     }
 
-    /**
-     * Verifies a received handshake payload.
-     */
     fun verifyHandshake(
         payload: ByteArray,
         accessCode: String,
         nonce: String
     ): Int? {
-        if (payload.size != 20) return null
+        if (payload.size != HASH_SIZE + 4) return null
 
-        val receivedHash = payload.copyOfRange(0, 16)
-        val nodeIdBytes = payload.copyOfRange(16, 20)
+        val receivedHash = payload.copyOfRange(0, HASH_SIZE)
+        val nodeIdBytes = payload.copyOfRange(HASH_SIZE, HASH_SIZE + 4)
         val nodeId = ByteBuffer.wrap(nodeIdBytes).int
 
         val input = accessCode + nonce + nodeId.toString()
         val fullHash = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
-        val expectedHash = fullHash.copyOfRange(0, 16)
+        val expectedHash = fullHash.copyOfRange(0, HASH_SIZE)
 
         return if (receivedHash.contentEquals(expectedHash)) {
             nodeId

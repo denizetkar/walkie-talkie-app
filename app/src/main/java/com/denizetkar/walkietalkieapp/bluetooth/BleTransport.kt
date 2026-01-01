@@ -59,7 +59,7 @@ class BleTransport(
 
     // --- Modules ---
     private val serverHandler = GattServerHandler(this.context, scope)
-    private val discoveryModule = BleDiscoveryModule(adapter, scope, _events, _isScanning) // Re-linked below
+    private val discoveryModule = BleDiscoveryModule(adapter, scope, _events, _isScanning)
     private val advertiserModule = BleAdvertiserModule(adapter, serverHandler)
 
     init {
@@ -80,46 +80,54 @@ class BleTransport(
 
     private val connectMutex = Mutex()
 
-    override suspend fun connect(address: String, nodeId: Int) = connectMutex.withLock {
-        if (_peerMap.value.containsKey(nodeId)) return
-        if (activeClientHandlers.containsKey(address)) return
-
-        val device = adapter.getRemoteDevice(address)
-        val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode)
+    override suspend fun connect(address: String, nodeId: Int) {
         val connectionResult = CompletableDeferred<Boolean>()
-        val job = scope.launch {
-            client.clientEvents.collect { event ->
-                when (event) {
-                    is ClientEvent.Authenticated -> {
-                        registerPeer(
-                            nodeId = nodeId,
-                            address = address,
-                            sender = { data, type -> client.sendMessage(type, data) },
-                            disconnector = { client.disconnect() }
-                        )
-                        if (connectionResult.isActive) connectionResult.complete(true)
+
+        connectMutex.withLock {
+            if (_peerMap.value.containsKey(nodeId)) return
+            if (activeClientHandlers.containsKey(address)) return
+
+            val device = adapter.getRemoteDevice(address)
+            val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode)
+
+            val job = scope.launch {
+                client.clientEvents.collect { event ->
+                    when (event) {
+                        is ClientEvent.Authenticated -> {
+                            registerPeer(
+                                nodeId = nodeId,
+                                address = address,
+                                sender = { data, type -> client.sendMessage(type, data) },
+                                disconnector = { client.disconnect() }
+                            )
+                            if (connectionResult.isActive) connectionResult.complete(true)
+                        }
+                        is ClientEvent.MessageReceived -> {
+                            handleIncomingData(nodeId, event.data, event.type)
+                        }
+                        is ClientEvent.Error, is ClientEvent.Disconnected -> {
+                            if (connectionResult.isActive) connectionResult.complete(false)
+                            cleanupClient(address)
+                            this.cancel()
+                        }
+                        else -> {}
                     }
-                    is ClientEvent.MessageReceived -> {
-                        handleIncomingData(nodeId, event.data, event.type)
-                    }
-                    is ClientEvent.Error, is ClientEvent.Disconnected -> {
-                        // Any error (Timeout, Permission, GATT) ends the attempt
-                        if (connectionResult.isActive) connectionResult.complete(false)
-                        cleanupClient(address)
-                        this.cancel()
-                    }
-                    else -> {} // Ignore intermediate states like 'Connected'
                 }
             }
+
+            activeClientHandlers[address] = client
+            activeClientJobs[address] = job
+
+            client.connect()
         }
 
-        activeClientHandlers[address] = client
-        activeClientJobs[address] = job
-
-        client.connect()
-
-        val success = connectionResult.await()
-        if (!success) cleanupClient(address)
+        try {
+            val success = connectionResult.await()
+            if (!success) cleanupClient(address)
+        } catch (e: Exception) {
+            cleanupClient(address)
+            throw e
+        }
     }
 
     private fun cleanupClient(address: String) {
@@ -204,8 +212,7 @@ class BleTransport(
 
     override suspend fun disconnectAll() {
         activeClientHandlers.keys.forEach { cleanupClient(it) }
-        serverHandler.stopServer()
-        serverHandler.startServer()
+        serverHandler.disconnectAll()
 
         _peerMap.value = emptyMap()
     }

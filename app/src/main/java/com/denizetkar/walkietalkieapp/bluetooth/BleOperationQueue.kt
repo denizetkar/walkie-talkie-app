@@ -1,18 +1,21 @@
 package com.denizetkar.walkietalkieapp.bluetooth
 
 import android.util.Log
+import com.denizetkar.walkietalkieapp.Config
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.util.concurrent.Executors
 import java.util.concurrent.PriorityBlockingQueue
 
-data class PrioritizedRunnable(
+data class PrioritizedOperation(
     val priority: Int,
     val timestamp: Long,
-    val action: Runnable
-) : Comparable<PrioritizedRunnable> {
-    override fun compareTo(other: PrioritizedRunnable): Int {
+    val action: suspend () -> Unit
+) : Comparable<PrioritizedOperation> {
+    override fun compareTo(other: PrioritizedOperation): Int {
         if (this.priority != other.priority) {
             return this.priority - other.priority
         }
@@ -20,15 +23,19 @@ data class PrioritizedRunnable(
     }
 }
 
-class BleOperationQueue {
-    private val queue = PriorityBlockingQueue<PrioritizedRunnable>()
+class BleOperationQueue(
+    dispatcher: CoroutineDispatcher,
+    private val onFatalError: () -> Unit
+) {
+    private val queue = PriorityBlockingQueue<PrioritizedOperation>()
     private var isBusy = false
-    private val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    private val scope = CoroutineScope(dispatcher)
+    private val scope = CoroutineScope(dispatcher + SupervisorJob())
+
+    private var timeoutJob: Job? = null
 
     @Synchronized
-    fun enqueue(priority: Int, operation: Runnable) {
-        queue.add(PrioritizedRunnable(priority, System.nanoTime(), operation))
+    fun enqueue(priority: Int, operation: suspend () -> Unit) {
+        queue.add(PrioritizedOperation(priority, System.nanoTime(), operation))
         if (!isBusy) {
             processNext()
         }
@@ -36,6 +43,7 @@ class BleOperationQueue {
 
     @Synchronized
     fun operationCompleted() {
+        timeoutJob?.cancel()
         isBusy = false
         processNext()
     }
@@ -43,22 +51,29 @@ class BleOperationQueue {
     @Synchronized
     private fun processNext() {
         if (isBusy) return
-        val item = queue.poll()
-        if (item != null) {
-            isBusy = true
-            scope.launch {
-                try {
-                    item.action.run()
-                } catch (e: Exception) {
-                    Log.e("BleQueue", "Operation failed", e)
-                    isBusy = false
-                    processNext()
-                }
+        val item = queue.poll() ?: return
+
+        isBusy = true
+        timeoutJob = scope.launch {
+            delay(Config.BLE_OPERATION_TIMEOUT)
+            Log.e("BleQueue", "Operation STALLED (Timeout). Stack is wedged. Disconnecting.")
+            isBusy = false
+            onFatalError()
+        }
+
+        scope.launch {
+            try {
+                item.action()
+            } catch (e: Exception) {
+                Log.e("BleQueue", "Operation failed", e)
+                operationCompleted()
             }
         }
     }
 
+    @Synchronized
     fun clear() {
+        timeoutJob?.cancel()
         queue.clear()
         isBusy = false
     }

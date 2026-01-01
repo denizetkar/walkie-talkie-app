@@ -41,6 +41,7 @@ class BleAdvertiserModule(
 
         val mainData = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
             .addServiceData(pUuid, payload.array())
             .build()
 

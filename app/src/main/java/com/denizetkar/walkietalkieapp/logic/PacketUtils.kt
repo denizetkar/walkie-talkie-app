@@ -8,7 +8,9 @@ object PacketUtils {
     const val TYPE_AUTH_CHALLENGE: Byte = 0x01
     const val TYPE_AUTH_RESPONSE: Byte = 0x02
     const val TYPE_AUTH_RESULT: Byte = 0x03
+    const val TYPE_CLIENT_HELLO: Byte = 0x04
     const val TYPE_HEARTBEAT: Byte = 0x10
+    const val TYPE_PING: Byte = 0xA0.toByte()
 
     // Header: [Version(4bits)|Flags(4bits)] [Type]
     // We use Version 1 (0x10)

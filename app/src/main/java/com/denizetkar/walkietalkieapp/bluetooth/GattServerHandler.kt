@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import android.util.Log
@@ -22,6 +23,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -44,11 +46,63 @@ class GattServerHandler(
     private val authenticatedSessions = ConcurrentHashMap<String, Int>()
     private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
 
+    private val pendingDisconnects = ConcurrentHashMap.newKeySet<String>()
+
     private val _serverEvents = MutableSharedFlow<ServerEvent>(
         extraBufferCapacity = 256,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val serverEvents: SharedFlow<ServerEvent> = _serverEvents
+
+    @SuppressLint("MissingPermission")
+    private val gattCallback = object : BluetoothGattServerCallback() {
+        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            val address = device.address.uppercase()
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                Log.d("GattServer", "New Connection: $address")
+                connectedDevices[address] = device
+                scope.launch { _serverEvents.emit(ServerEvent.ClientConnected(device)) }
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.d("GattServer", "Disconnected: $address")
+                cleanupDevice(device)
+                scope.launch { _serverEvents.emit(ServerEvent.ClientDisconnected(device)) }
+            }
+        }
+
+        override fun onDescriptorWriteRequest(
+            device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
+            preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
+        ) {
+            Log.d("GattServer", "Descriptor Write Request: ${descriptor.uuid} from ${device.address}")
+            if (responseNeeded) {
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+            }
+        }
+
+        override fun onCharacteristicWriteRequest(
+            device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
+            preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
+        ) {
+            if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+
+            when (characteristic.uuid) {
+                Config.CHAR_DATA_UUID -> {
+                    if (authenticatedSessions.containsKey(device.address.uppercase())) {
+                        scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.AUDIO)) }
+                    }
+                }
+                Config.CHAR_CONTROL_UUID -> handleControlMessage(device, value)
+            }
+        }
+
+        override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            if (pendingDisconnects.contains(device.address.uppercase())) {
+                Log.i("GattServer", "Packet flushed. Closing connection for ${device.address}")
+                gattServer?.cancelConnection(device)
+                pendingDisconnects.remove(device.address.uppercase())
+            }
+        }
+    }
 
     companion object {
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -58,60 +112,7 @@ class GattServerHandler(
     fun startServer() {
         if (gattServer != null) return
 
-        val callback = object : BluetoothGattServerCallback() {
-            override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    Log.d("GattServer", "New Connection: ${device.address}")
-                    connectedDevices[device.address.uppercase()] = device
-                    scope.launch { _serverEvents.emit(ServerEvent.ClientConnected(device)) }
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    Log.d("GattServer", "Disconnected: ${device.address}")
-                    cleanupDevice(device)
-                    scope.launch { _serverEvents.emit(ServerEvent.ClientDisconnected(device)) }
-                }
-            }
-
-            override fun onDescriptorWriteRequest(
-                device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
-                preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
-            ) {
-                if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-
-                if (descriptor.uuid == CCCD_UUID) {
-                    if (descriptor.characteristic.uuid == Config.CHAR_CONTROL_UUID) {
-                        Log.d("GattServer", "Client subscribed to CONTROL.")
-                        if (value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
-                            Log.d("GattServer", "Client subscribed to Control. Sending Challenge to ${device.address}")
-                            scope.launch {
-                                sendChallenge(device)
-                            }
-                        }
-                    }
-                    else if (descriptor.characteristic.uuid == Config.CHAR_DATA_UUID) {
-                        Log.d("GattServer", "Client subscribed to DATA (Audio).")
-                    }
-                }
-            }
-
-            override fun onCharacteristicWriteRequest(
-                device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
-                preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
-            ) {
-                if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-
-                when (characteristic.uuid) {
-                    Config.CHAR_DATA_UUID -> {
-                        if (authenticatedSessions.containsKey(device.address.uppercase())) {
-                            scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.AUDIO)) }
-                        }
-                    }
-                    Config.CHAR_CONTROL_UUID -> {
-                        handleControlMessage(device, value)
-                    }
-                }
-            }
-        }
-        gattServer = bluetoothManager.openGattServer(context, callback)
+        gattServer = bluetoothManager.openGattServer(context, gattCallback)
         setupService()
         Log.d("GattServer", "GATT Server Started")
     }
@@ -120,6 +121,13 @@ class GattServerHandler(
         val (type, payload) = PacketUtils.parseControlPacket(data) ?: return
 
         when (type) {
+            PacketUtils.TYPE_PING -> {
+                Log.d("GattServer", "Received PING from ${device.address}")
+            }
+            PacketUtils.TYPE_CLIENT_HELLO -> {
+                Log.d("GattServer", "Received HELLO from ${device.address}. Sending Challenge.")
+                scope.launch { sendChallenge(device) }
+            }
             PacketUtils.TYPE_AUTH_RESPONSE -> handleAuthResponse(device, payload)
             PacketUtils.TYPE_HEARTBEAT -> {
                 if (authenticatedSessions.containsKey(device.address.uppercase())) {
@@ -130,73 +138,90 @@ class GattServerHandler(
     }
 
     @SuppressLint("MissingPermission")
-    private fun sendChallenge(device: BluetoothDevice) {
+    private suspend fun sendChallenge(device: BluetoothDevice) {
         val nonce = UUID.randomUUID().toString().substring(0, 8)
         pendingChallenges[device.address.uppercase()] = nonce
-
         val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_CHALLENGE, nonce.toByteArray(Charsets.UTF_8))
         notifyDevice(device, packet, TransportDataType.CONTROL)
     }
 
     @SuppressLint("MissingPermission")
     private fun handleAuthResponse(device: BluetoothDevice, payload: ByteArray) {
-        val nonce = pendingChallenges[device.address.uppercase()]
+        val address = device.address.uppercase()
+        val nonce = pendingChallenges[address]
         val code = currentAccessCode
         if (nonce == null || code == null) return
 
         val clientNodeId = ProtocolUtils.verifyHandshake(payload, code, nonce)
 
-        if (clientNodeId != null) {
-            Log.i("GattServer", "Authenticated Node: $clientNodeId")
-            pendingChallenges.remove(device.address.uppercase())
-            authenticatedSessions[device.address.uppercase()] = clientNodeId
+        scope.launch {
+            if (clientNodeId != null) {
+                Log.i("GattServer", "Authenticated Node: $clientNodeId")
+                pendingChallenges.remove(address)
+                authenticatedSessions[address] = clientNodeId
 
-            // Send Success
-            val successPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x01))
-            notifyDevice(device, successPacket, TransportDataType.CONTROL)
+                val successPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x01))
+                notifyDevice(device, successPacket, TransportDataType.CONTROL)
+                _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId))
+            } else {
+                Log.w("GattServer", "Auth Failed. Sending NACK and Disconnecting.")
+                val failPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x00))
+                pendingDisconnects.add(address)
+                val sent = notifyDevice(device, failPacket, TransportDataType.CONTROL)
 
-            scope.launch { _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId)) }
-        } else {
-            Log.w("GattServer", "Auth Failed")
-            // Send Fail
-            val failPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x00))
-            notifyDevice(device, failPacket, TransportDataType.CONTROL)
-            gattServer?.cancelConnection(device)
+                if (!sent) {
+                    gattServer?.cancelConnection(device)
+                    pendingDisconnects.remove(address)
+                }
+            }
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun sendTo(address: String, data: ByteArray, type: TransportDataType) {
+    suspend fun sendTo(address: String, data: ByteArray, type: TransportDataType) {
         val device = connectedDevices[address.uppercase()] ?: return
         if (!authenticatedSessions.containsKey(address.uppercase())) return
 
         val packet = if (type == TransportDataType.CONTROL) {
             PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, data)
         } else {
-            // For Audio, we might send raw or wrap. Let's send raw for speed as per architecture
             data
         }
-
         notifyDevice(device, packet, type)
     }
 
     @SuppressLint("MissingPermission")
-    private fun notifyDevice(device: BluetoothDevice, data: ByteArray, type: TransportDataType) {
+    private suspend fun notifyDevice(device: BluetoothDevice, data: ByteArray, type: TransportDataType): Boolean {
+        val server = gattServer ?: return false
+        val service = server.getService(Config.APP_SERVICE_UUID) ?: return false
         val uuid = if (type == TransportDataType.AUDIO) Config.CHAR_DATA_UUID else Config.CHAR_CONTROL_UUID
-        val service = gattServer?.getService(Config.APP_SERVICE_UUID) ?: return
-        val char = service.getCharacteristic(uuid) ?: return
+        val char = service.getCharacteristic(uuid) ?: return false
 
-        val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gattServer?.notifyCharacteristicChanged(device, char, false, data)
-        } else {
-            @Suppress("DEPRECATION")
-            char.value = data
-            @Suppress("DEPRECATION")
-            gattServer?.notifyCharacteristicChanged(device, char, false)
+        if (type == TransportDataType.AUDIO) {
+            return server.notifyCompat(device, char, data)
         }
 
-        if (success != true && type == TransportDataType.AUDIO) {
-            Log.w("GattServer", "Notification DROPPED (Buffer Full?) for ${device.address}")
+        repeat(3) {
+            if (server.notifyCompat(device, char, data)) return true
+            yield()
+        }
+
+        Log.e("GattServer", "CRITICAL: Failed to queue Control Packet for ${device.address}")
+        return false
+    }
+
+    @SuppressLint("MissingPermission")
+    @Suppress("DEPRECATION")
+    private fun BluetoothGattServer.notifyCompat(
+        device: BluetoothDevice,
+        characteristic: BluetoothGattCharacteristic,
+        data: ByteArray
+    ): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifyCharacteristicChanged(device, characteristic, false, data) == BluetoothStatusCodes.SUCCESS
+        } else {
+            characteristic.value = data
+            notifyCharacteristicChanged(device, characteristic, false)
         }
     }
 
@@ -204,14 +229,12 @@ class GattServerHandler(
     private fun setupService() {
         val service = BluetoothGattService(Config.APP_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
 
-        // Data (Audio): WriteNoResp | Notify
         val dataChar = BluetoothGattCharacteristic(Config.CHAR_DATA_UUID,
             BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_WRITE)
         dataChar.addDescriptor(BluetoothGattDescriptor(CCCD_UUID, BluetoothGattDescriptor.PERMISSION_WRITE or BluetoothGattDescriptor.PERMISSION_READ))
         service.addCharacteristic(dataChar)
 
-        // Control: Write | Notify
         val controlChar = BluetoothGattCharacteristic(Config.CHAR_CONTROL_UUID,
             BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_WRITE)
@@ -223,14 +246,20 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     fun disconnect(address: String) {
-        val device = connectedDevices[address.uppercase()]
-        if (device != null) gattServer?.cancelConnection(device)
+        val device = connectedDevices[address.uppercase()] ?: return
+
+        gattServer?.cancelConnection(device)
+        cleanupDevice(device)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun disconnectAll() {
+        connectedDevices.keys.forEach { address -> disconnect(address) }
     }
 
     @SuppressLint("MissingPermission")
     fun stopServer() {
-        connectedDevices.forEach { (_, device) -> gattServer!!.cancelConnection(device) }
-        gattServer?.clearServices()
+        disconnectAll()
         gattServer?.close()
         gattServer = null
         cleanupDevice(null)
@@ -238,13 +267,16 @@ class GattServerHandler(
 
     private fun cleanupDevice(device: BluetoothDevice?) {
         if (device != null) {
-            connectedDevices.remove(device.address.uppercase())
-            pendingChallenges.remove(device.address.uppercase())
-            authenticatedSessions.remove(device.address.uppercase())
+            val address = device.address.uppercase()
+            connectedDevices.remove(address)
+            pendingChallenges.remove(address)
+            authenticatedSessions.remove(address)
+            pendingDisconnects.remove(address)
         } else {
             connectedDevices.clear()
             pendingChallenges.clear()
             authenticatedSessions.clear()
+            pendingDisconnects.clear()
         }
     }
 }

@@ -8,8 +8,11 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.logic.PacketUtils
@@ -17,6 +20,7 @@ import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -24,7 +28,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-// Events specific to a Client connection
 sealed class ClientEvent {
     data class Connected(val device: BluetoothDevice) : ClientEvent()
     data class Authenticated(val device: BluetoothDevice) : ClientEvent()
@@ -41,7 +44,9 @@ class GattClientHandler(
     private val accessCode: String
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
-    private val operationQueue = BleOperationQueue()
+    private val handlerThread = HandlerThread("BleClient-${targetDevice.address}").apply { start() }
+    private val clientHandler = Handler(handlerThread.looper)
+    private val operationQueue = BleOperationQueue(clientHandler.asCoroutineDispatcher()) { disconnect() }
 
     private var currentMtu = 23
 
@@ -58,7 +63,14 @@ class GattClientHandler(
         Log.d("GattClient", "Connecting to ${targetDevice.address}...")
         startHandshakeTimeout()
         try {
-            bluetoothGatt = targetDevice.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            bluetoothGatt = targetDevice.connectGatt(
+                context,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK,
+                clientHandler
+            )
         } catch (_: SecurityException) {
             scope.launch { _clientEvents.emit(ClientEvent.Error(targetDevice, "Permission Missing")) }
         }
@@ -80,9 +92,25 @@ class GattClientHandler(
         operationQueue.clear()
         try {
             bluetoothGatt?.disconnect()
+        } catch (_: Exception) { }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun safeCloseAndQuit() {
+        try {
             bluetoothGatt?.close()
-        } catch (_: Exception) { /* Ignore */ }
+        } catch (_: Exception) {}
         bluetoothGatt = null
+
+        // CRITICAL FIX: Do not quit immediately.
+        // Android often fires multiple callbacks (e.g. DISCONNECTED then CLOSED) in rapid succession.
+        // If we quit now, the second callback hits a dead thread and crashes the app.
+        // We give it 1000ms to flush any pending messages.
+        clientHandler.postDelayed({
+            if (handlerThread.isAlive) {
+                handlerThread.quitSafely()
+            }
+        }, 1000)
     }
 
     fun sendMessage(type: TransportDataType, data: ByteArray) {
@@ -90,31 +118,22 @@ class GattClientHandler(
             TransportDataType.AUDIO -> Triple(
                 Config.CHAR_DATA_UUID,
                 BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
-                1 // Low Priority
+                1
             )
             TransportDataType.CONTROL -> Triple(
                 Config.CHAR_CONTROL_UUID,
                 BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                0 // High Priority
+                0
             )
         }
 
-        // Wrap Control messages
         val payload = if (type == TransportDataType.CONTROL) {
             PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, data)
         } else {
             data
         }
 
-        // TODO: In the future, check payload.size vs currentMtu here and fragment if needed
-
-        queueWrite(uuid, payload, writeType, priority)
-    }
-
-    private fun queueWrite(uuid: UUID, data: ByteArray, writeType: Int, priority: Int) {
-        operationQueue.enqueue(priority) {
-            writeCharacteristicInternal(uuid, data, writeType)
-        }
+        operationQueue.enqueue(priority) { writeCharacteristicInternal(uuid, payload, writeType) }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -123,50 +142,75 @@ class GattClientHandler(
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e("GattClient", "Connection Error: $status")
                 scope.launch { _clientEvents.emit(ClientEvent.Error(targetDevice, "Connection Error: $status")) }
-                disconnect()
+                safeCloseAndQuit()
                 return
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d("GattClient", "Connected. Requesting MTU...")
+                Log.d("GattClient", "Connected. Requesting High Priority & Starting Discovery...")
                 scope.launch { _clientEvents.emit(ClientEvent.Connected(targetDevice)) }
+
                 gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                if (!gatt.requestMtu(Config.BLE_MTU)) gatt.discoverServices()
+
+                operationQueue.enqueue(0) {
+                    if (!gatt.discoverServices()) {
+                        Log.e("GattClient", "Service Discovery Failed to Start")
+                        disconnect()
+                    }
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d("GattClient", "Disconnected from ${targetDevice.address}")
                 scope.launch { _clientEvents.emit(ClientEvent.Disconnected(targetDevice)) }
+                safeCloseAndQuit()
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            operationQueue.operationCompleted()
+
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.e("GattClient", "Service Discovery Failed: $status")
                 disconnect()
+                return
+            }
+
+            val service = gatt.getService(Config.APP_SERVICE_UUID) ?: run {
+                Log.e("GattClient", "Target does not have the WalkieTalkie Service!")
+                disconnect()
+                return
+            }
+
+            Log.d("GattClient", "Services Discovered. Queueing Subscriptions (MTU 23)...")
+            operationQueue.enqueue(0) {
+                delay(300)
+                subscribeToCharacteristic(gatt, service, Config.CHAR_CONTROL_UUID)
+            }
+            operationQueue.enqueue(0) { subscribeToCharacteristic(gatt, service, Config.CHAR_DATA_UUID) }
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            Log.d("GattClient", "Descriptor Write: ${descriptor.characteristic.uuid}, $status")
+            operationQueue.operationCompleted()
+
+            if (status == BluetoothGatt.GATT_SUCCESS && descriptor.characteristic.uuid == Config.CHAR_CONTROL_UUID) {
+                sendHello()
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            operationQueue.operationCompleted()
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 currentMtu = mtu
                 Log.d("GattClient", "MTU Negotiated: $mtu")
+            } else {
+                Log.w("GattClient", "MTU Request Failed. Proceeding with default MTU.")
             }
-            gatt.discoverServices()
-        }
-
-        @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                val service = gatt.getService(Config.APP_SERVICE_UUID)
-                if (service != null) {
-                    Log.d("GattClient", "Services Discovered. Queueing Subscriptions...")
-                    operationQueue.enqueue(0) { enableNotificationInternal(gatt, service, Config.CHAR_CONTROL_UUID) }
-                    operationQueue.enqueue(0) { enableNotificationInternal(gatt, service, Config.CHAR_DATA_UUID) }
-                } else {
-                    Log.e("GattClient", "Target does not have the WalkieTalkie Service!")
-                    disconnect()
-                }
-            }
-        }
-
-        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            operationQueue.operationCompleted()
+            scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            Log.d("GattClient", "Characteristic Write: ${characteristic.uuid}, $status")
             operationQueue.operationCompleted()
         }
 
@@ -181,6 +225,53 @@ class GattClientHandler(
         }
     }
 
+    private fun sendHello() {
+        Log.d("GattClient", "Subscription Confirmed. Sending HELLO.")
+        val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_CLIENT_HELLO, ByteArray(0))
+        operationQueue.enqueue(0) {
+            writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun subscribeToCharacteristic(gatt: BluetoothGatt, service: BluetoothGattService, charUUID: UUID) {
+        val characteristic = service.getCharacteristic(charUUID) ?: run {
+            Log.e("GattClient", "Characteristic not found for $charUUID")
+            operationQueue.operationCompleted()
+            return
+        }
+
+        if (!gatt.setCharacteristicNotification(characteristic, true)) {
+            Log.e("GattClient", "setCharacteristicNotification failed for $charUUID")
+            operationQueue.operationCompleted()
+            return
+        }
+
+        Log.d("GattClient", "Getting CCCD for $charUUID")
+        val descriptor = characteristic.getDescriptor(GattServerHandler.CCCD_UUID) ?: run {
+            Log.e("GattClient", "CCCD not found for $charUUID")
+            operationQueue.operationCompleted()
+            return
+        }
+
+        Log.d("GattClient", "Subscribing to $charUUID")
+        val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(descriptor)
+        }
+
+        if (!success) {
+            Log.e("GattClient", "writeDescriptor failed for $charUUID")
+            operationQueue.operationCompleted()
+        } else {
+            Log.d("GattClient", "writeDescriptor succeeded for $charUUID")
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun handleIncomingData(uuid: UUID, data: ByteArray) {
         when (uuid) {
@@ -192,10 +283,16 @@ class GattClientHandler(
                         solveChallenge(nonce)
                     }
                     PacketUtils.TYPE_AUTH_RESULT -> {
-                        Log.d("GattClient", "Received Handshake Result: ${payload.getOrNull(0)}")
                         if (payload.isNotEmpty() && payload[0] == 1.toByte()) {
                             handshakeTimeoutJob?.cancel()
-                            scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
+
+                            Log.d("GattClient", "Auth Success. Requesting MTU...")
+                            operationQueue.enqueue(0) {
+                                if (!bluetoothGatt?.requestMtu(Config.BLE_MTU)!!) {
+                                    Log.e("GattClient", "MTU Request Failed")
+                                    scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
+                                }
+                            }
                         } else {
                             disconnect()
                         }
@@ -214,32 +311,8 @@ class GattClientHandler(
     private fun solveChallenge(nonce: String) {
         val responsePayload = ProtocolUtils.generateHandshakeResponse(accessCode, nonce, ownNodeId)
         val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESPONSE, responsePayload)
-
         Log.d("GattClient", "Sending Challenge Response...")
-        queueWrite(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, 0)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun enableNotificationInternal(gatt: BluetoothGatt, service: BluetoothGattService, charUUID: UUID) {
-        val characteristic = service.getCharacteristic(charUUID) ?: run {
-            operationQueue.operationCompleted()
-            return
-        }
-        gatt.setCharacteristicNotification(characteristic, true)
-        val descriptor = characteristic.getDescriptor(GattServerHandler.CCCD_UUID)
-        if (descriptor == null) {
-            operationQueue.operationCompleted()
-            return
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-        } else {
-            @Suppress("DEPRECATION")
-            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            @Suppress("DEPRECATION")
-            gatt.writeDescriptor(descriptor)
-        }
+        operationQueue.enqueue(0) { writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) }
     }
 
     @SuppressLint("MissingPermission")
@@ -253,15 +326,23 @@ class GattClientHandler(
             return
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            bluetoothGatt?.writeCharacteristic(char, data, writeType)
+        Log.d("GattClient", "Writing to $uuid")
+        val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            bluetoothGatt?.writeCharacteristic(char, data, writeType) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             char.writeType = writeType
             @Suppress("DEPRECATION")
             char.value = data
             @Suppress("DEPRECATION")
-            bluetoothGatt?.writeCharacteristic(char)
+            bluetoothGatt?.writeCharacteristic(char) == true
+        }
+
+        if (!success) {
+            Log.e("GattClient", "writeCharacteristic failed for $uuid")
+            operationQueue.operationCompleted()
+        } else {
+            Log.d("GattClient", "writeCharacteristic succeeded for $uuid")
         }
     }
 }
