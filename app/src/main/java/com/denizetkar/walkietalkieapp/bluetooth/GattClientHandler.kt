@@ -12,7 +12,6 @@ import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import android.os.Handler
-import android.os.HandlerThread
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.logic.PacketUtils
@@ -41,11 +40,11 @@ class GattClientHandler(
     private val scope: CoroutineScope,
     private val targetDevice: BluetoothDevice,
     private val ownNodeId: Int,
-    private val accessCode: String
+    private val accessCode: String,
+    looper: android.os.Looper
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
-    private val handlerThread = HandlerThread("BleClient-${targetDevice.address}").apply { start() }
-    private val clientHandler = Handler(handlerThread.looper)
+    private val clientHandler = Handler(looper)
     private val operationQueue = BleOperationQueue(clientHandler.asCoroutineDispatcher()) { disconnect() }
 
     private var currentMtu = 23
@@ -96,21 +95,11 @@ class GattClientHandler(
     }
 
     @SuppressLint("MissingPermission")
-    private fun safeCloseAndQuit() {
+    private fun safeClose() {
         try {
             bluetoothGatt?.close()
         } catch (_: Exception) {}
         bluetoothGatt = null
-
-        // CRITICAL FIX: Do not quit immediately.
-        // Android often fires multiple callbacks (e.g. DISCONNECTED then CLOSED) in rapid succession.
-        // If we quit now, the second callback hits a dead thread and crashes the app.
-        // We give it 1000ms to flush any pending messages.
-        clientHandler.postDelayed({
-            if (handlerThread.isAlive) {
-                handlerThread.quitSafely()
-            }
-        }, 1000)
     }
 
     fun sendMessage(type: TransportDataType, data: ByteArray) {
@@ -142,7 +131,7 @@ class GattClientHandler(
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e("GattClient", "Connection Error: $status")
                 scope.launch { _clientEvents.emit(ClientEvent.Error(targetDevice, "Connection Error: $status")) }
-                safeCloseAndQuit()
+                safeClose()
                 return
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -160,7 +149,7 @@ class GattClientHandler(
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d("GattClient", "Disconnected from ${targetDevice.address}")
                 scope.launch { _clientEvents.emit(ClientEvent.Disconnected(targetDevice)) }
-                safeCloseAndQuit()
+                safeClose()
             }
         }
 

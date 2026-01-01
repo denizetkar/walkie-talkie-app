@@ -2,6 +2,7 @@ package com.denizetkar.walkietalkieapp.bluetooth
 
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.os.HandlerThread
 import android.util.Log
 import com.denizetkar.walkietalkieapp.network.NetworkTransport
 import com.denizetkar.walkietalkieapp.network.TransportDataType
@@ -61,6 +62,7 @@ class BleTransport(
     // --- Config ---
     private var myAccessCode: String = ""
     private var myNodeId: Int = 0
+    private val clientWorkerThread = HandlerThread("BleClientWorker").apply { start() }
 
     // --- Modules ---
     private val serverHandler = GattServerHandler(this.context, scope)
@@ -112,7 +114,7 @@ class BleTransport(
                 if (activeClientHandlers.containsKey(address)) return
 
                 val device = adapter.getRemoteDevice(address)
-                val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode)
+                val client = GattClientHandler(context, scope, device, myNodeId, myAccessCode, clientWorkerThread.looper)
 
                 val job = scope.launch {
                     client.clientEvents.collect { event ->
@@ -257,6 +259,7 @@ class BleTransport(
         advertiserModule.stop()
         disconnectAll()
         serverHandler.stopServer()
+        clientWorkerThread.quitSafely()
     }
 
     override suspend fun startDiscovery() {
