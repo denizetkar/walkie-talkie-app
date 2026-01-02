@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.denizetkar.walkietalkieapp.logic.MeshNetworkManager
 import kotlinx.coroutines.CoroutineScope
@@ -35,13 +36,25 @@ class WalkieTalkieService : Service() {
         startForegroundService()
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_NOT_STICKY
+    }
+
     override fun onBind(intent: Intent): IBinder {
         return binder
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // User swiped the app from Recents. Stop the service.
+        Log.i("WalkieTalkieService", "Task Removed (App Swiped). Stopping Service.")
+        stopSelf()
+    }
+
     override fun onDestroy() {
-        meshManager.stopMesh()
         serviceScope.cancel()
+        meshManager.stopMesh()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 

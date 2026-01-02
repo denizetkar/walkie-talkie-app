@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.denizetkar.walkietalkieapp.logic.DiscoveredGroup
@@ -67,9 +68,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_appState.value.isServiceBound) return
 
         val context = getApplication<Application>()
-        val intent = Intent(context, WalkieTalkieService::class.java)
-        context.startForegroundService(intent)
-        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        try {
+            val intent = Intent(context, WalkieTalkieService::class.java)
+            context.startForegroundService(intent)
+            context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Failed to start service", e)
+        }
     }
 
     private fun subscribeToManager() {
