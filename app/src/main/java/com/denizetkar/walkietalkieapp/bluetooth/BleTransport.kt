@@ -254,11 +254,14 @@ class BleTransport(
         }
     }
 
-    override suspend fun shutdown() {
+    override suspend fun stop() {
         discoveryModule.stop()
         advertiserModule.stop()
         disconnectAll()
         serverHandler.stopServer()
+    }
+
+    override fun cleanup() {
         clientWorkerThread.quitSafely()
     }
 

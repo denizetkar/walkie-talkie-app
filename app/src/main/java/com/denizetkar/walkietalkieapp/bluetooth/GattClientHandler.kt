@@ -199,7 +199,6 @@ class GattClientHandler(
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            Log.d("GattClient", "Characteristic Write: ${characteristic.uuid}, $status")
             operationQueue.operationCompleted()
         }
 
@@ -315,7 +314,6 @@ class GattClientHandler(
             return
         }
 
-        Log.d("GattClient", "Writing to $uuid")
         val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             bluetoothGatt?.writeCharacteristic(char, data, writeType) == BluetoothStatusCodes.SUCCESS
         } else {
@@ -330,8 +328,6 @@ class GattClientHandler(
         if (!success) {
             Log.e("GattClient", "writeCharacteristic failed for $uuid")
             operationQueue.operationCompleted()
-        } else {
-            Log.d("GattClient", "writeCharacteristic succeeded for $uuid")
         }
     }
 }

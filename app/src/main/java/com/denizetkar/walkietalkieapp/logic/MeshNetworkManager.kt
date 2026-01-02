@@ -197,7 +197,7 @@ class MeshNetworkManager(
         startAdvertisementJob?.cancel()
         heartbeatJob?.cancel()
         scanJob?.cancel()
-        scope.launch { transport.shutdown() }
+        scope.launch { transport.stop() }
         audioSession.stopSession()
         try { audioEngine.shutdown() } catch (_: Exception) {}
         try { audioEngine.stopRecording() } catch (_: Exception) {}
@@ -457,5 +457,13 @@ class MeshNetworkManager(
                 seenPackets.entries.removeIf { (now - it.value) > Config.PACKET_CACHE_TIMEOUT }
             }
         }
+    }
+
+    // ===========================================================================
+    // LIFECYCLE FUNCTIONS
+    // ===========================================================================
+
+    fun destroy() {
+        transport.cleanup()
     }
 }

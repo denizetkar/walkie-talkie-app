@@ -54,6 +54,7 @@ class WalkieTalkieService : Service() {
     override fun onDestroy() {
         serviceScope.cancel()
         meshManager.stopMesh()
+        meshManager.destroy()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
@@ -62,7 +63,6 @@ class WalkieTalkieService : Service() {
         val channelId = "WalkieTalkieChannel"
         val manager = getSystemService(NotificationManager::class.java)
 
-        // Safe to call on API 28+
         val channel = NotificationChannel(channelId, "Walkie Talkie Service", NotificationManager.IMPORTANCE_LOW)
         manager.createNotificationChannel(channel)
 
