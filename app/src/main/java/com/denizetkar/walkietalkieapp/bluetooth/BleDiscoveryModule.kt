@@ -9,78 +9,125 @@ import android.bluetooth.le.ScanSettings
 import android.os.ParcelUuid
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
-import com.denizetkar.walkietalkieapp.network.TransportEvent
 import com.denizetkar.walkietalkieapp.network.TransportNode
+import com.denizetkar.walkietalkieapp.utils.ScanRateLimiter
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicReference
 
 class BleDiscoveryModule(
-    private val adapter: BluetoothAdapter,
-    private val scope: CoroutineScope,
-    private val events: MutableSharedFlow<TransportEvent>,
-    private val isScanning: MutableStateFlow<Boolean>
+    private val adapter: BluetoothAdapter?,
+    private val scope: CoroutineScope
 ) {
-    private var scanCallback: ScanCallback? = null
+    private val _events = MutableSharedFlow<TransportNode>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val events: SharedFlow<TransportNode> = _events.asSharedFlow()
+
+    private val activeSession = AtomicReference<ScanSession?>(null)
+    private val rateLimiter = ScanRateLimiter()
 
     @SuppressLint("MissingPermission")
     fun start() {
-        if (scanCallback != null) return
+        if (adapter == null) return
 
-        val scanner = adapter.bluetoothLeScanner ?: return
-        val filters = listOf(
-            ScanFilter.Builder()
-                .setServiceData(ParcelUuid(Config.APP_SERVICE_UUID), null)
-                .build()
-        )
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-
-        scanCallback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult?) {
-                result?.let { processScanResult(it) }
-            }
-            override fun onBatchScanResults(results: MutableList<ScanResult>?) {
-                results?.forEach { processScanResult(it) }
-            }
-            override fun onScanFailed(errorCode: Int) {
-                Log.e("BleDiscovery", "Scan Failed: $errorCode")
-                isScanning.value = false
-            }
+        if (activeSession.get() != null) {
+            Log.d("BleDiscovery", "Ignored: Scan already in progress.")
+            return
         }
 
-        try {
-            scanner.startScan(filters, settings, scanCallback)
-            isScanning.value = true
-            Log.d("BleDiscovery", "Discovery Started")
-        } catch (e: Exception) {
-            isScanning.value = false
-            Log.e("BleDiscovery", "Start Scan Error", e)
+        if (!rateLimiter.canStartScan()) {
+            Log.w("BleDiscovery", "Ignored: Rate limit reached.")
+            return
+        }
+
+        val newSession = ScanSession()
+        if (activeSession.compareAndSet(null, newSession)) {
+            val success = newSession.start()
+            if (!success) {
+                activeSession.set(null)
+            }
         }
     }
 
     @SuppressLint("MissingPermission")
     fun stop() {
-        val scanner = adapter.bluetoothLeScanner ?: return
-        scanCallback?.let {
-            try { scanner.stopScan(it) }
-            catch (e: Exception) { Log.e("BleDiscovery", "Stop Scan Error", e) }
+        val session = activeSession.getAndSet(null)
+        if (session != null) {
+            session.stop()
+            Log.d("BleDiscovery", "Discovery Stopped")
         }
-        scanCallback = null
-        isScanning.value = false
-        Log.d("BleDiscovery", "Discovery Stopped")
     }
 
-    @SuppressLint("MissingPermission")
+    /**
+     * Encapsulates the lifecycle of a single scan operation.
+     * This solves the "Correlated Variables" problem.
+     * The callback and the logic are bound together.
+     */
+    private inner class ScanSession {
+        private val scanner = adapter?.bluetoothLeScanner
+
+        private val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult?) {
+                result?.let { processScanResult(it) }
+            }
+
+            override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+                results?.forEach { processScanResult(it) }
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                Log.e("BleDiscovery", "Scan Failed with error: $errorCode")
+                // Self-destruct: If the system kills our scan, we must update state
+                activeSession.compareAndSet(this@ScanSession, null)
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        fun start(): Boolean {
+            if (scanner == null) return false
+
+            val filters = listOf(
+                ScanFilter.Builder()
+                    .setServiceData(ParcelUuid(Config.APP_SERVICE_UUID), null)
+                    .build()
+            )
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build()
+
+            return try {
+                scanner.startScan(filters, settings, callback)
+                Log.d("BleDiscovery", "Discovery Started")
+                true
+            } catch (e: Exception) {
+                Log.e("BleDiscovery", "Start Scan Error", e)
+                false
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        fun stop() {
+            try {
+                scanner?.stopScan(callback)
+                Log.d("BleDiscovery", "Hardware Scan Stopped")
+            } catch (e: Exception) {
+                Log.w("BleDiscovery", "Error stopping scan", e)
+            }
+        }
+    }
+
     private fun processScanResult(result: ScanResult) {
         val record = result.scanRecord ?: return
         val device = result.device
         val rssi = result.rssi
-
         val serviceData = record.serviceData?.get(ParcelUuid(Config.APP_SERVICE_UUID)) ?: return
 
         // Expected: [NodeID(4)] [NetworkID(4)] [Hops(1)] [Avail(1)] = 10 bytes
@@ -109,6 +156,6 @@ class BleDiscoveryModule(
             hopsToRoot = hops,
             isAvailable = isAvailable
         )
-        scope.launch { events.emit(TransportEvent.NodeDiscovered(node)) }
+        scope.launch { _events.emit(node) }
     }
 }

@@ -12,16 +12,18 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.denizetkar.walkietalkieapp.logic.MeshNetworkManager
+import com.denizetkar.walkietalkieapp.logic.MeshController
+import com.denizetkar.walkietalkieapp.network.BleDriver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlin.random.Random
 
 class WalkieTalkieService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    lateinit var meshManager: MeshNetworkManager
+    lateinit var meshController: MeshController
         private set
 
     private val binder = LocalBinder()
@@ -32,7 +34,9 @@ class WalkieTalkieService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        meshManager = MeshNetworkManager(this, serviceScope)
+        val driver = BleDriver(this, serviceScope)
+        val myNodeId = Random.nextInt(1, Int.MAX_VALUE)
+        meshController = MeshController(this, driver, serviceScope, myNodeId)
         startForegroundService()
     }
 
@@ -46,13 +50,13 @@ class WalkieTalkieService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.i("WalkieTalkieService", "Task Removed (App Swiped). Service continuing in background.")
+        Log.i("WalkieTalkieService", "Task Removed. Service continuing.")
     }
 
     override fun onDestroy() {
+        meshController.leave()
+        meshController.destroy()
         serviceScope.cancel()
-        meshManager.stopMesh()
-        meshManager.destroy()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
@@ -69,7 +73,7 @@ class WalkieTalkieService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Walkie Talkie Active")
-            .setContentText("Radio is ON. Ready to transmit.")
+            .setContentText("Radio is ON.")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -77,22 +81,14 @@ class WalkieTalkieService : Service() {
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    1,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                )
+                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                startForeground(
-                    1,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                )
+                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             } else {
                 startForeground(1, notification)
             }
         } catch (e: Exception) {
-            Log.w("WalkieTalkieService", "Could not promote to Foreground. Running as background service.", e)
+            Log.w("WalkieTalkieService", "Could not promote to Foreground.", e)
         }
     }
 }

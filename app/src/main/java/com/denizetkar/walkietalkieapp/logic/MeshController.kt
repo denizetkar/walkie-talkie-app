@@ -1,0 +1,367 @@
+package com.denizetkar.walkietalkieapp.logic
+
+import android.content.Context
+import android.util.Log
+import com.denizetkar.walkietalkieapp.Config
+import com.denizetkar.walkietalkieapp.network.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import uniffi.walkie_talkie_engine.AudioEngine
+import uniffi.walkie_talkie_engine.PacketTransport
+import uniffi.walkie_talkie_engine.initLogger
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
+
+sealed class EngineState {
+    data object Idle : EngineState()
+    data object Discovering : EngineState()
+    data class Joining(val groupName: String) : EngineState()
+    data class RadioActive(val groupName: String, val peerCount: Int) : EngineState()
+}
+
+class MeshController(
+    context: Context,
+    private val driver: BleDriver,
+    private val scope: CoroutineScope,
+    private val ownNodeId: Int
+) {
+    // --- State ---
+    private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
+    val state = _state.asStateFlow()
+
+    private val _discoveredGroups = MutableStateFlow<List<DiscoveredGroup>>(emptyList())
+    val discoveredGroups = _discoveredGroups.asStateFlow()
+    private val foundGroupsMap = ConcurrentHashMap<String, DiscoveredGroup>()
+
+    // --- Logic & Subsystems ---
+    private val topology = TopologyEngine(ownNodeId)
+    private val audioSession = AudioSessionManager(context)
+
+    private val seenPackets = ConcurrentHashMap<Int, Long>()
+    private val pendingConnections = ConcurrentHashMap.newKeySet<Int>()
+
+    private val packetTransport = object : PacketTransport {
+        override fun sendPacket(data: ByteArray) {
+            scope.launch(Dispatchers.IO) {
+                driver.broadcast(data, TransportDataType.AUDIO)
+            }
+        }
+    }
+    private val audioEngine = AudioEngine(packetTransport)
+
+    // --- Jobs ---
+    private var heartbeatJob: Job? = null
+    private var scanLoopJob: Job? = null
+    private var cleanupJob: Job? = null
+    private var packetCleanupJob: Job? = null
+
+    init {
+        try { initLogger() } catch (_: Exception) {}
+
+        scope.launch {
+            driver.events.collect { event -> handleDriverEvent(event) }
+        }
+
+        startPacketCleanup()
+    }
+
+    fun checkSystemRequirements(): Result<Unit> = driver.validateCapabilities()
+
+    // ===========================================================================
+    // Public API
+    // ===========================================================================
+
+    fun startGroupScan() {
+        Log.d("MeshController", "Action: Start Group Scan")
+        transitionTo(EngineState.Discovering)
+    }
+
+    fun stopGroupScan() {
+        if (_state.value is EngineState.Discovering) {
+            transitionTo(EngineState.Idle)
+        }
+    }
+
+    fun createGroup(name: String, code: String) {
+        Log.d("MeshController", "Action: Create Group $name")
+        driver.setCredentials(code, ownNodeId)
+        transitionTo(EngineState.RadioActive(name, 0))
+    }
+
+    fun joinGroup(name: String, code: String) {
+        Log.d("MeshController", "Action: Join Group $name")
+        driver.setCredentials(code, ownNodeId)
+        transitionTo(EngineState.Joining(name))
+    }
+
+    fun leave() {
+        Log.d("MeshController", "Action: Leave")
+        transitionTo(EngineState.Idle)
+    }
+
+    fun startTalking() {
+        if (_state.value is EngineState.RadioActive) {
+            scope.launch(Dispatchers.IO) {
+                try { audioEngine.startRecording() } catch (e: Exception) { Log.e("MeshController", "Mic Error", e) }
+            }
+        }
+    }
+
+    fun stopTalking() {
+        scope.launch(Dispatchers.IO) {
+            try { audioEngine.stopRecording() } catch (e: Exception) { Log.e("MeshController", "Mic Error", e) }
+        }
+    }
+
+    // ===========================================================================
+    // State Machine
+    // ===========================================================================
+
+    private fun transitionTo(newState: EngineState) {
+        val oldState = _state.value
+        if (oldState == newState) return
+
+        _state.value = newState
+        Log.i("MeshController", "State Change: $oldState -> $newState")
+
+        if (oldState is EngineState.RadioActive) stopRadioLogic()
+        if (oldState is EngineState.Discovering || oldState is EngineState.Joining) {
+            driver.stopScanning()
+            stopGroupCleanup()
+        }
+
+        when (newState) {
+            is EngineState.Idle -> {
+                driver.stop()
+                foundGroupsMap.clear()
+                _discoveredGroups.value = emptyList()
+            }
+            is EngineState.Discovering -> {
+                foundGroupsMap.clear()
+                _discoveredGroups.value = emptyList()
+                startGroupCleanup()
+                driver.startScanning()
+            }
+            is EngineState.Joining -> {
+                driver.startScanning()
+            }
+            is EngineState.RadioActive -> {
+                startRadioLogic(newState.groupName)
+            }
+        }
+    }
+
+    fun destroy() {
+        driver.destroy()
+    }
+
+    // ===========================================================================
+    // Radio Logic
+    // ===========================================================================
+
+    private fun startRadioLogic(groupName: String) {
+        scope.launch(Dispatchers.IO) { audioSession.startSession() }
+
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                if (topology.checkTimeout()) {
+                    refreshAdvertising(groupName)
+                }
+                val packet = topology.generateHeartbeat()
+                if (packet != null) {
+                    driver.broadcast(packet, TransportDataType.CONTROL)
+                }
+                delay(Config.HEARTBEAT_INTERVAL)
+            }
+        }
+
+        scanLoopJob = scope.launch {
+            while (isActive) {
+                val peers = driver.connectedPeers.value.size
+                val scanDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PERIOD_AGGRESSIVE else Config.SCAN_PERIOD_LAZY
+                val pauseDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PAUSE_AGGRESSIVE else Config.SCAN_INTERVAL_LAZY
+
+                Log.d("MeshController", "Scan Loop: Starting Scan")
+                driver.startScanning()
+                delay(scanDuration)
+                Log.d("MeshController", "Scan Loop: Stopping Scan")
+                driver.stopScanning()
+                delay(pauseDuration)
+            }
+        }
+
+        refreshAdvertising(groupName)
+    }
+
+    private fun stopRadioLogic() {
+        heartbeatJob?.cancel()
+        scanLoopJob?.cancel()
+
+        scope.launch(Dispatchers.IO) {
+            audioEngine.stopRecording()
+            audioSession.stopSession()
+            driver.disconnectAll()
+        }
+
+        driver.stopScanning()
+        driver.stopAdvertising()
+    }
+
+    private fun refreshAdvertising(groupName: String) {
+        val topo = topology.getCurrentState()
+        val isAvailable = driver.connectedPeers.value.size < Config.MAX_PEERS
+
+        val config = AdvertisingConfig(
+            groupName = groupName,
+            ownNodeId = ownNodeId,
+            networkId = topo.currentNetworkId,
+            hopsToRoot = topo.hopsToRoot,
+            isAvailable = isAvailable
+        )
+        driver.startAdvertising(config)
+    }
+
+    private fun startGroupCleanup() {
+        cleanupJob?.cancel()
+        cleanupJob = scope.launch {
+            while (isActive) {
+                delay(Config.CLEANUP_PERIOD)
+                val now = System.currentTimeMillis()
+                val removed = foundGroupsMap.values.removeIf { now - it.lastSeen > Config.GROUP_ADVERTISEMENT_TIMEOUT }
+                if (removed) {
+                    _discoveredGroups.value = foundGroupsMap.values.sortedByDescending { it.highestRssi }
+                }
+            }
+        }
+    }
+
+    private fun stopGroupCleanup() {
+        cleanupJob?.cancel()
+        cleanupJob = null
+    }
+
+    private fun startPacketCleanup() {
+        packetCleanupJob?.cancel()
+        packetCleanupJob = scope.launch {
+            while (isActive) {
+                delay(Config.CLEANUP_PERIOD)
+                val now = System.currentTimeMillis()
+                seenPackets.entries.removeIf { (now - it.value) > Config.PACKET_CACHE_TIMEOUT }
+            }
+        }
+    }
+
+    // ===========================================================================
+    // Event Handling
+    // ===========================================================================
+
+    private fun handleDriverEvent(event: BleDriverEvent) {
+        when (event) {
+            is BleDriverEvent.PeerDiscovered -> handleDiscovery(event.node)
+            is BleDriverEvent.PeerConnected -> updatePeerCount()
+            is BleDriverEvent.PeerDisconnected -> updatePeerCount()
+            is BleDriverEvent.DataReceived -> handleData(event)
+            else -> {}
+        }
+    }
+
+    private fun updatePeerCount() {
+        val s = _state.value
+        val count = driver.connectedPeers.value.size
+
+        if (s is EngineState.RadioActive) {
+            _state.value = s.copy(peerCount = count)
+            refreshAdvertising(s.groupName)
+        } else if (s is EngineState.Joining && count > 0) {
+            transitionTo(EngineState.RadioActive(s.groupName, count))
+        }
+    }
+
+    private fun handleDiscovery(node: TransportNode) {
+        val s = _state.value
+
+        // 1. Discovery Mode
+        if (s is EngineState.Discovering) {
+            val existing = foundGroupsMap[node.name]
+            val rssi = max(node.rssi, existing?.highestRssi ?: Config.WORST_RSSI)
+            foundGroupsMap[node.name] = DiscoveredGroup(node.name, rssi)
+            _discoveredGroups.value = foundGroupsMap.values.sortedByDescending { it.highestRssi }
+            return
+        }
+
+        // 2. Joining Mode
+        if (s is EngineState.Joining && node.name == s.groupName) {
+            connectSafely(node)
+            return
+        }
+
+        // 3. Radio Mode (Mesh Logic)
+        if (s is EngineState.RadioActive && node.name == s.groupName) {
+            val topo = topology.getCurrentState()
+            val currentPeers = driver.connectedPeers.value
+            if (currentPeers.contains(node.nodeId)) return
+
+            var shouldConnect = false
+
+            // Priority 1: Merge Up (They have a better Root)
+            if (node.networkId > topo.currentNetworkId) {
+                shouldConnect = true
+            }
+            // Priority 2: Fill Slots (We are lonely)
+            else if (currentPeers.size < Config.TARGET_PEERS) {
+                // Connect if they are available OR if we can absorb them (Merge Down)
+                if (node.isAvailable || node.networkId < topo.currentNetworkId) {
+                    shouldConnect = true
+                }
+            }
+            // Priority 3: Absorb (Merge Down - RESTORED)
+            else if (currentPeers.size < Config.MAX_PEERS) {
+                if (node.networkId < topo.currentNetworkId) {
+                    shouldConnect = true
+                }
+            }
+
+            if (shouldConnect) {
+                connectSafely(node)
+            }
+        }
+    }
+
+    private fun connectSafely(node: TransportNode) {
+        if (pendingConnections.contains(node.nodeId)) return
+
+        pendingConnections.add(node.nodeId)
+        scope.launch {
+            try {
+                driver.connectTo(node.id, node.nodeId)
+            } finally {
+                pendingConnections.remove(node.nodeId)
+            }
+        }
+    }
+
+    private fun handleData(event: BleDriverEvent.DataReceived) {
+        val packetHash = event.data.contentHashCode()
+        if (seenPackets.containsKey(packetHash)) return
+        seenPackets[packetHash] = System.currentTimeMillis()
+
+        if (event.type == TransportDataType.CONTROL) {
+            val (type, payload) = PacketUtils.parseControlPacket(event.data) ?: return
+            if (type == PacketUtils.TYPE_HEARTBEAT) {
+                val (netId, seq, hops) = PacketUtils.parseHeartbeatPayload(payload) ?: return
+
+                if (topology.onHeartbeatReceived(netId, seq, hops)) {
+                    val s = _state.value
+                    if (s is EngineState.RadioActive) refreshAdvertising(s.groupName)
+
+                    val newPayload = PacketUtils.createHeartbeatPayload(netId, seq, hops + 1)
+                    val newPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, newPayload)
+                    scope.launch { driver.broadcast(newPacket, TransportDataType.CONTROL) }
+                }
+            }
+        } else {
+            try { audioEngine.pushIncomingPacket(event.data) } catch (e: Exception) { Log.e("MeshController", "Audio Error", e) }
+            scope.launch { driver.broadcast(event.data, TransportDataType.AUDIO) }
+        }
+    }
+}

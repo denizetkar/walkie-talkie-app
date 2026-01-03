@@ -19,17 +19,19 @@ object Config {
     const val WORST_RSSI = -100
 
     // Timing
-    const val SCAN_PERIOD_AGGRESSIVE = 5000L
-    const val SCAN_PAUSE_AGGRESSIVE = 2000L
+    const val SCAN_PERIOD_AGGRESSIVE = 4000L
+    const val SCAN_PAUSE_AGGRESSIVE = 4000L
     const val SCAN_PERIOD_LAZY = 2000L
-    const val SCAN_INTERVAL_LAZY = 5000L
+    const val SCAN_INTERVAL_LAZY = 10000L
+
+
+    const val HEARTBEAT_INTERVAL = 1000L
 
     const val CLEANUP_PERIOD = 2000L
     const val PACKET_CACHE_TIMEOUT = 4000L
     const val GROUP_ADVERTISEMENT_TIMEOUT = 4000L
     const val GROUP_JOIN_TIMEOUT = 15000L
-    const val BLE_OPERATION_TIMEOUT = 2000L
-
-    const val HEARTBEAT_INTERVAL = 1000L
-    const val HEARTBEAT_TIMEOUT = 3000L
+    const val PEER_CONNECT_TIMEOUT = 5000L
+    const val BLE_OPERATION_TIMEOUT = 3000L
+    const val HEARTBEAT_TIMEOUT = 4000L
 }

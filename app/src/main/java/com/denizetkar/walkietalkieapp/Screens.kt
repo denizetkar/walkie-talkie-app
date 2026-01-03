@@ -45,7 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.denizetkar.walkietalkieapp.logic.DiscoveredGroup
+import com.denizetkar.walkietalkieapp.network.DiscoveredGroup
 
 @Composable
 fun ServiceErrorScreen(onRetry: () -> Unit) {
@@ -95,8 +95,23 @@ fun LoadingScreen(message: String) {
 }
 
 @Composable
-fun CreateGroupScreen(onCreate: (String) -> Unit) {
+fun CreateGroupScreen(
+    onCreate: (String) -> Unit,
+    error: String?,
+    onErrorAck: () -> Unit
+) {
     var text by remember { mutableStateOf("") }
+
+    if (error != null) {
+        AlertDialog(
+            onDismissRequest = onErrorAck,
+            title = { Text("Cannot Create Group") },
+            text = { Text(error) },
+            confirmButton = {
+                Button(onClick = onErrorAck) { Text("OK") }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),

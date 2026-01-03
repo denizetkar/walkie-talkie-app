@@ -211,6 +211,11 @@ class GattServerHandler(
     }
 
     @SuppressLint("MissingPermission")
+    suspend fun broadcast(data: ByteArray, type: TransportDataType) {
+        connectedDevices.keys.forEach { address -> sendTo(address, data, type) }
+    }
+
+    @SuppressLint("MissingPermission")
     @Suppress("DEPRECATION")
     private fun BluetoothGattServer.notifyCompat(
         device: BluetoothDevice,
