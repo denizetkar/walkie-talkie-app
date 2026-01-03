@@ -48,6 +48,18 @@ import androidx.compose.ui.unit.sp
 import com.denizetkar.walkietalkieapp.logic.DiscoveredGroup
 
 @Composable
+fun ServiceErrorScreen(onRetry: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Radio Service Failed to Start")
+        Button(onClick = onRetry) { Text("Retry") }
+    }
+}
+
+@Composable
 fun PermissionRequiredScreen(onGrantClick: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),

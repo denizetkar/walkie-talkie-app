@@ -59,6 +59,14 @@ fun WalkieTalkieApp() {
     val viewModel: MainViewModel = viewModel()
     val state by viewModel.appState.collectAsState()
 
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.addObserver(viewModel)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(viewModel)
+        }
+    }
+
     val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,
@@ -99,6 +107,11 @@ fun WalkieTalkieApp() {
                 onGrantClick = { permissionLauncher.launch(permissionsToRequest) }
             )
         }
+
+        state.serviceStartupFailed -> {
+            ServiceErrorScreen(onRetry = { viewModel.retryConnection() })
+        }
+
         !state.isServiceBound -> { LoadingScreen("Starting Audio Engine...") }
         else -> {
             WalkieTalkieNavHost(viewModel, state)

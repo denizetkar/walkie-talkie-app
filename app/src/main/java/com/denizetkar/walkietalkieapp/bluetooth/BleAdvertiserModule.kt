@@ -2,9 +2,10 @@ package com.denizetkar.walkietalkieapp.bluetooth
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
-import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.AdvertisingSet
+import android.bluetooth.le.AdvertisingSetCallback
+import android.bluetooth.le.AdvertisingSetParameters
 import android.os.ParcelUuid
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
@@ -16,24 +17,15 @@ class BleAdvertiserModule(
     private val adapter: BluetoothAdapter,
     private val serverHandler: GattServerHandler
 ) {
-    private var advertiseCallback: AdvertiseCallback? = null
+    private var currentAdvertisingSet: AdvertisingSet? = null
+    private var advertisingSetCallback: AdvertisingSetCallback? = null
 
     @SuppressLint("MissingPermission")
     fun start(groupName: String, myNodeId: Int, networkId: Int, hops: Int, isAvailable: Boolean) {
-        // If already advertising, stop first (to update data)
-        stop()
-
         val advertiser = adapter.bluetoothLeAdvertiser ?: return
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-            .setConnectable(true)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .build()
-        val pUuid = ParcelUuid(Config.APP_SERVICE_UUID)
 
-        // Payload: [NodeID(4)] [NetworkID(4)] [Hops(1)] [Avail(1)]
-        val payload = ByteBuffer.allocate(10)
-        payload.order(ByteOrder.LITTLE_ENDIAN)
+        val pUuid = ParcelUuid(Config.APP_SERVICE_UUID)
+        val payload = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
         payload.putInt(myNodeId)
         payload.putInt(networkId)
         payload.put(hops.toByte())
@@ -50,29 +42,60 @@ class BleAdvertiserModule(
             .addManufacturerData(0xFFFF, nameBytes)
             .build()
 
-        advertiseCallback = object : AdvertiseCallback() {
-            override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                Log.d("BleAdvertiser", "Advertising Started: $groupName (NetID: $networkId)")
+        if (currentAdvertisingSet != null) {
+            Log.d("BleAdvertiser", "Updating existing Advertising Set (NetID: $networkId)")
+            currentAdvertisingSet?.setAdvertisingData(mainData)
+            currentAdvertisingSet?.setScanResponseData(scanResponseData)
+            return
+        }
+
+        val parameters = AdvertisingSetParameters.Builder()
+            .setLegacyMode(true)
+            .setConnectable(true)
+            .setScannable(true)
+            .setInterval(AdvertisingSetParameters.INTERVAL_LOW)
+            .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_HIGH)
+            .build()
+
+        advertisingSetCallback = object : AdvertisingSetCallback() {
+            override fun onAdvertisingSetStarted(advertisingSet: AdvertisingSet?, txPower: Int, status: Int) {
+                if (status == ADVERTISE_SUCCESS) {
+                    Log.d("BleAdvertiser", "Advertising Set Started: $groupName (NetID: $networkId)")
+                    currentAdvertisingSet = advertisingSet
+                    serverHandler.startServer()
+                } else {
+                    Log.e("BleAdvertiser", "Failed to start advertising set: $status")
+                }
             }
-            override fun onStartFailure(errorCode: Int) {
-                Log.e("BleAdvertiser", "Advertising Failed: $errorCode")
+
+            override fun onAdvertisingSetStopped(advertisingSet: AdvertisingSet?) {
+                Log.d("BleAdvertiser", "Advertising Set Stopped")
+                currentAdvertisingSet = null
             }
         }
 
-        try {
-            advertiser.startAdvertising(settings, mainData, scanResponseData, advertiseCallback)
-            serverHandler.startServer()
-        } catch (e: Exception) {
-            Log.e("BleAdvertiser", "Start Advertising Error", e)
-        }
+        advertiser.startAdvertisingSet(
+            parameters,
+            mainData,
+            scanResponseData,
+            null,
+            null,
+            advertisingSetCallback
+        )
     }
 
     @SuppressLint("MissingPermission")
     fun stop() {
         val advertiser = adapter.bluetoothLeAdvertiser ?: return
-        advertiseCallback?.let {
-            try { advertiser.stopAdvertising(it) } catch (_: Exception) {}
+        val cb = advertisingSetCallback ?: return
+
+        try {
+            advertiser.stopAdvertisingSet(cb)
+        } catch (e: Exception) {
+            Log.e("BleAdvertiser", "Error stopping advertising set", e)
         }
-        advertiseCallback = null
+
+        advertisingSetCallback = null
+        currentAdvertisingSet = null
     }
 }

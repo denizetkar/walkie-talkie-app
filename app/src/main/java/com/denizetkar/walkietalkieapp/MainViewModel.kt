@@ -8,6 +8,8 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.denizetkar.walkietalkieapp.logic.DiscoveredGroup
 import com.denizetkar.walkietalkieapp.logic.MeshNetworkManager
@@ -25,6 +27,7 @@ data class AppState(
     // Gatekeeper States
     val hasPermissions: Boolean = false,
     val isServiceBound: Boolean = false,
+    val serviceStartupFailed: Boolean = false,
 
     // App States
     val groupName: String? = null,
@@ -36,7 +39,8 @@ data class AppState(
     val joinError: String? = null
 )
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
+class MainViewModel(application: Application) : AndroidViewModel(application),
+    DefaultLifecycleObserver {
 
     private var meshManager: MeshNetworkManager? = null
     private var managerCollectionJob: Job? = null
@@ -48,7 +52,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as WalkieTalkieService.LocalBinder
             meshManager = binder.getService().meshManager
-            _appState.update { it.copy(isServiceBound = true) }
+            _appState.update { it.copy(isServiceBound = true, serviceStartupFailed = false) }
             subscribeToManager()
         }
 
@@ -57,6 +61,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             meshManager = null
             _appState.update { it.copy(isServiceBound = false) }
         }
+
+        override fun onBindingDied(name: ComponentName?) {
+            _appState.update { it.copy(isServiceBound = false) }
+        }
+    }
+
+    override fun onStart(owner: LifecycleOwner) {
+        super.onStart(owner)
+        if (_appState.value.hasPermissions && !_appState.value.isServiceBound) {
+            bindService()
+        }
     }
 
     fun onPermissionsGranted() {
@@ -64,16 +79,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         bindService()
     }
 
-    private fun bindService() {
-        if (_appState.value.isServiceBound) return
+    fun retryConnection() {
+        bindService()
+    }
 
+    private fun bindService() {
         val context = getApplication<Application>()
+        val intent = Intent(context, WalkieTalkieService::class.java)
+
         try {
-            val intent = Intent(context, WalkieTalkieService::class.java)
             context.startForegroundService(intent)
             context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            _appState.update { it.copy(serviceStartupFailed = false) }
         } catch (e: Exception) {
             Log.e("MainViewModel", "Failed to start service", e)
+            _appState.update { it.copy(serviceStartupFailed = true) }
         }
     }
 
@@ -136,6 +156,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        getApplication<Application>().unbindService(serviceConnection)
+        if (!_appState.value.isServiceBound) return
+
+        try {
+            val context = getApplication<Application>()
+            context.unbindService(serviceConnection)
+        } catch (e: IllegalArgumentException) {
+            Log.w("MainViewModel", "Service was not registered when unbinding", e)
+        }
     }
 }
