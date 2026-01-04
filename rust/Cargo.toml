@@ -19,6 +19,7 @@ log = "0.4"
 bytes = "1.11"
 anyhow = "1.0"
 byteorder = "1.5"
+crossbeam-channel = "0.5"
 
 # --- Android Only Dependencies ---
 # We moved opus-codec here so it doesn't break Windows builds

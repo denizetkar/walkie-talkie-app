@@ -695,7 +695,7 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_walkie_talkie_engine_fn_free_audioengine(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`transport`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`config`: RustBuffer.ByValue,`transport`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_ensure_output_running(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -848,7 +848,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_recording() != 13011.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new() != 17914.toShort()) {
+    if (lib.uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new() != 35197.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_walkie_talkie_engine_checksum_method_packettransport_send_packet() != 58023.toShort()) {
@@ -1040,6 +1040,29 @@ private class JavaLangRefCleanable(
     val cleanable: java.lang.ref.Cleaner.Cleanable
 ) : UniffiCleaner.Cleanable {
     override fun clean() = cleanable.clean()
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterInt: FfiConverter<Int, Int> {
+    override fun lift(value: Int): Int {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Int {
+        return buf.getInt()
+    }
+
+    override fun lower(value: Int): Int {
+        return value
+    }
+
+    override fun allocationSize(value: Int) = 4UL
+
+    override fun write(value: Int, buf: ByteBuffer) {
+        buf.putInt(value)
+    }
 }
 
 /**
@@ -1254,12 +1277,12 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
         this.handle = 0
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
-    constructor(`transport`: PacketTransport) :
+    constructor(`config`: AudioConfig, `transport`: PacketTransport) :
         this(UniffiWithHandle, 
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(
     
-        FfiConverterTypePacketTransport.lower(`transport`),_status)
+        FfiConverterTypeAudioConfig.lower(`config`),FfiConverterTypePacketTransport.lower(`transport`),_status)
 }
     )
 
@@ -1432,6 +1455,47 @@ public object FfiConverterTypeAudioEngine: FfiConverter<AudioEngine, Long> {
 
     override fun write(value: AudioEngine, buf: ByteBuffer) {
         buf.putLong(lower(value))
+    }
+}
+
+
+
+data class AudioConfig (
+    var `sampleRate`: kotlin.Int
+    , 
+    var `frameSizeMs`: kotlin.Int
+    , 
+    var `jitterBufferMs`: kotlin.Int
+    
+){
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAudioConfig: FfiConverterRustBuffer<AudioConfig> {
+    override fun read(buf: ByteBuffer): AudioConfig {
+        return AudioConfig(
+            FfiConverterInt.read(buf),
+            FfiConverterInt.read(buf),
+            FfiConverterInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AudioConfig) = (
+            FfiConverterInt.allocationSize(value.`sampleRate`) +
+            FfiConverterInt.allocationSize(value.`frameSizeMs`) +
+            FfiConverterInt.allocationSize(value.`jitterBufferMs`)
+    )
+
+    override fun write(value: AudioConfig, buf: ByteBuffer) {
+            FfiConverterInt.write(value.`sampleRate`, buf)
+            FfiConverterInt.write(value.`frameSizeMs`, buf)
+            FfiConverterInt.write(value.`jitterBufferMs`, buf)
     }
 }
 

@@ -6,6 +6,7 @@ import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import uniffi.walkie_talkie_engine.AudioConfig
 import uniffi.walkie_talkie_engine.AudioEngine
 import uniffi.walkie_talkie_engine.PacketTransport
 import uniffi.walkie_talkie_engine.initLogger
@@ -47,7 +48,12 @@ class MeshController(
             broadcastGeneratedPacket(data, TransportDataType.AUDIO)
         }
     }
-    private val audioEngine = AudioEngine(packetTransport)
+    private val audioConfig = AudioConfig(
+        sampleRate = Config.AUDIO_SAMPLE_RATE,
+        frameSizeMs = Config.AUDIO_FRAME_SIZE_MS,
+        jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS
+    )
+    private val audioEngine = AudioEngine(audioConfig, packetTransport)
 
     // --- Jobs ---
     private var heartbeatJob: Job? = null
