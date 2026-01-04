@@ -29,7 +29,7 @@ mod real_impl {
 
     use oboe::{
         AudioInputCallback, AudioOutputCallback, AudioStreamBuilder, AudioStreamAsync,
-        PerformanceMode, SharingMode, Mono, Stereo, DataCallbackResult, InputPreset, Usage,
+        PerformanceMode, SharingMode, Mono, DataCallbackResult, InputPreset, Usage,
         Input, Output, AudioInputStreamSafe, AudioOutputStreamSafe,
         AudioStream
     };
@@ -37,7 +37,7 @@ mod real_impl {
 
     const FRAME_SIZE_MS: i32 = 40;
     const SAMPLE_RATE_INT: i32 = 48000;
-    const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE_INT / 1000 * FRAME_SIZE_MS) as usize; // 960
+    const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE_INT / 1000 * FRAME_SIZE_MS) as usize;
 
     const MIN_BUFFER_TO_START: usize = 4;
     const MAX_BUFFER_PACKETS: usize = 50;
@@ -102,7 +102,7 @@ mod real_impl {
                 buffer: Vec::with_capacity(SAMPLES_PER_FRAME * 2),
             };
 
-            // 3. CHANGE: Request MONO explicitly
+            // 3. Request MONO explicitly
             let mut stream = AudioStreamBuilder::default()
                 .set_direction::<Input>()
                 .set_format::<i16>()
@@ -196,10 +196,8 @@ mod real_impl {
     }
 
     impl AudioInputCallback for InputCallback {
-        // CHANGE: FrameType is now (i16, Mono)
         type FrameType = (i16, Mono);
 
-        // CHANGE: Signature accepts Mono frames (just i16, not tuples)
         fn on_audio_ready(&mut self, _stream: &mut dyn AudioInputStreamSafe, frames: &[i16]) -> DataCallbackResult {
 
             const GAIN_MULTIPLIER: f32 = 1.0;
@@ -249,18 +247,22 @@ mod real_impl {
                     let action: Option<Option<Vec<u8>>> = {
                         let mut queue = self.queue.lock().unwrap();
 
-                        while queue.len() > 15 {
+                        // 1. Overflow Protection
+                        while queue.len() > 25 {
                             if let Some(&first) = queue.keys().next() {
                                 queue.remove(&first);
                                 self.next_expected_seq = Some(first.wrapping_add(1));
+                                log::warn!("[AudioTrace] JitterBuffer Overflow! Dropped packet {}", first);
                             }
                         }
 
+                        // 2. Buffering Logic
                         if self.buffering {
                             if queue.len() >= MIN_BUFFER_TO_START {
                                 self.buffering = false;
                                 if let Some(&first_seq) = queue.keys().next() {
                                     self.next_expected_seq = Some(first_seq);
+                                    log::info!("[AudioTrace] Buffering Complete. Starting at Seq {}", first_seq);
                                 }
                             }
                         }
@@ -270,20 +272,30 @@ mod real_impl {
                         } else {
                             if let Some(expected) = self.next_expected_seq {
                                 if let Some(data) = queue.remove(&expected) {
+                                    // CASE A: Perfect Packet
                                     self.next_expected_seq = Some(expected.wrapping_add(1));
                                     Some(Some(data))
                                 } else {
+                                    // CASE B: Packet Missing
                                     if let Some(&next_available) = queue.keys().next() {
                                         let gap = next_available.wrapping_sub(expected);
-                                        if gap > 50 {
+
+                                        // FIX: Improved Reset Logic
+                                        if gap > 3000 {
+                                            log::info!("[AudioTrace] Seq Reset Detected! Jump {} -> {}", expected, next_available);
                                             self.next_expected_seq = Some(next_available.wrapping_add(1));
                                             let data = queue.remove(&next_available);
                                             data.map(Some)
-                                        } else {
+                                        } else if gap > 0 {
+                                            // Small gap: PLC (Silence)
                                             self.next_expected_seq = Some(expected.wrapping_add(1));
-                                            Some(None) // PLC
+                                            Some(None)
+                                        } else {
+                                            None
                                         }
                                     } else {
+                                        // Queue empty -> Re-enter buffering
+                                        log::info!("[AudioTrace] Queue Drained. Buffering...");
                                         self.buffering = true;
                                         None
                                     }
@@ -308,6 +320,7 @@ mod real_impl {
                                 }
                             },
                             None => {
+                                // PLC
                                 match self.decoder.decode(&[], &mut decoded_chunk, true) {
                                     Ok(size) => size,
                                     Err(_) => 0
@@ -321,6 +334,7 @@ mod real_impl {
                             self.buffer.extend(std::iter::repeat(0).take(SAMPLES_PER_FRAME));
                         }
                     } else {
+                        // Output Silence while buffering
                         let remaining = samples_needed - samples_filled;
                         for i in 0..remaining { frames[samples_filled + i] = 0; }
                         samples_filled += remaining;

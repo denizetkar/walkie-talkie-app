@@ -42,9 +42,7 @@ class MeshController(
 
     private val packetTransport = object : PacketTransport {
         override fun sendPacket(data: ByteArray) {
-            scope.launch(Dispatchers.IO) {
-                driver.broadcast(data, TransportDataType.AUDIO)
-            }
+            broadcastGeneratedPacket(data, TransportDataType.AUDIO)
         }
     }
     private val audioEngine = AudioEngine(packetTransport)
@@ -169,7 +167,7 @@ class MeshController(
                 }
                 val packet = topology.generateHeartbeat()
                 if (packet != null) {
-                    driver.broadcast(packet, TransportDataType.CONTROL)
+                    broadcastGeneratedPacket(packet, TransportDataType.CONTROL)
                 }
                 delay(Config.HEARTBEAT_INTERVAL)
             }
@@ -221,6 +219,13 @@ class MeshController(
         driver.startAdvertising(config)
     }
 
+    private fun broadcastGeneratedPacket(data: ByteArray, type: TransportDataType) {
+        markPacketAsSeen(data)
+        scope.launch(Dispatchers.IO) {
+            driver.broadcast(data, type)
+        }
+    }
+
     private fun startGroupCleanup() {
         cleanupJob?.cancel()
         cleanupJob = scope.launch {
@@ -249,6 +254,11 @@ class MeshController(
                 seenPackets.entries.removeIf { (now - it.value) > Config.PACKET_CACHE_TIMEOUT }
             }
         }
+    }
+
+    private fun markPacketAsSeen(data: ByteArray) {
+        val hash = data.contentHashCode()
+        seenPackets[hash] = System.currentTimeMillis()
     }
 
     // ===========================================================================
@@ -314,7 +324,7 @@ class MeshController(
                     shouldConnect = true
                 }
             }
-            // Priority 3: Absorb (Merge Down - RESTORED)
+            // Priority 3: Absorb (Merge Down)
             else if (currentPeers.size < Config.MAX_PEERS) {
                 if (node.networkId < topo.currentNetworkId) {
                     shouldConnect = true
@@ -356,7 +366,7 @@ class MeshController(
 
                     val newPayload = PacketUtils.createHeartbeatPayload(netId, seq, hops + 1)
                     val newPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, newPayload)
-                    scope.launch { driver.broadcast(newPacket, TransportDataType.CONTROL) }
+                    broadcastGeneratedPacket(newPacket, TransportDataType.CONTROL)
                 }
             }
         } else {

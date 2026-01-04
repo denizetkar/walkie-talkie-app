@@ -192,6 +192,7 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppState) {
                 RadioScreen(
                     groupName = state.groupName,
                     accessCode = state.accessCode,
+                    peerCount = state.peerCount,
                     onLeave = {
                         viewModel.leaveGroup()
                         navController.navigate("create") { popUpTo("create") { inclusive = true } }

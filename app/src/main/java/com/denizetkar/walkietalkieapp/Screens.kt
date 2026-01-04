@@ -241,12 +241,14 @@ fun JoinGroupScreen(
 fun RadioScreen(
     groupName: String?,
     accessCode: String?,
+    peerCount: Int,
     onLeave: () -> Unit,
     onTalkStart: () -> Unit,
     onTalkStop: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    val isNetworkReady = peerCount > 0
 
     LaunchedEffect(isPressed) {
         if (isPressed) onTalkStart() else onTalkStop()
@@ -274,21 +276,37 @@ fun RadioScreen(
             modifier = Modifier
                 .size(200.dp)
                 .clip(CircleShape)
-                .background(if (isPressed) Color.Red else MaterialTheme.colorScheme.primary)
+                .background(
+                    when {
+                        !isNetworkReady -> Color.Gray
+                        isPressed -> Color.Red
+                        else -> MaterialTheme.colorScheme.primary
+                    }
+                )
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
+                    enabled = isNetworkReady,
                     onClick = {}
                 )
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White, modifier = Modifier.size(48.dp))
                 Text(
-                    text = if (isPressed) "TALKING" else "HOLD TO TALK",
+                    text = when {
+                        !isNetworkReady -> "SEARCHING..."
+                        isPressed -> "TALKING"
+                        else -> "HOLD TO TALK"
+                    },
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 20.sp
                 )
+
+                if (isNetworkReady) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("$peerCount Peers Online", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                }
             }
         }
 

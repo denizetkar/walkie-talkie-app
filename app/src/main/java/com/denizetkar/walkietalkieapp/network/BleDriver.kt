@@ -29,6 +29,7 @@ class BleDriver(
 
     private val activeClientHandlers = ConcurrentHashMap<String, GattClientHandler>()
     private val activeClientJobs = ConcurrentHashMap<String, Job>()
+    private val serverConnections = ConcurrentHashMap<String, Int>()
 
     private var myAccessCode: String = ""
     private var myNodeId: Int = 0
@@ -45,12 +46,26 @@ class BleDriver(
                 when (event) {
                     is ServerEvent.ClientAuthenticated -> {
                         Log.i("BleDriver", "Server: Peer Authenticated ${event.nodeId}")
+                        serverConnections[event.device.address] = event.nodeId
                         _connectedPeers.update { it + event.nodeId }
                         _events.emit(BleDriverEvent.PeerConnected(event.nodeId))
                     }
-                    is ServerEvent.MessageReceived -> { }
+                    is ServerEvent.MessageReceived -> {
+                        val nodeId = serverConnections[event.device.address]
+                        if (nodeId != null) {
+                            _events.emit(BleDriverEvent.DataReceived(nodeId, event.data, event.type))
+                        } else {
+                            Log.w("BleDriver", "Server: Received data from unknown device ${event.device.address}")
+                        }
+                    }
                     is ServerEvent.ClientDisconnected -> {
                         Log.i("BleDriver", "Server: Client Disconnected")
+                        // FIX 4: Cleanup
+                        val nodeId = serverConnections.remove(event.device.address)
+                        if (nodeId != null) {
+                            _connectedPeers.update { it - nodeId }
+                            _events.emit(BleDriverEvent.PeerDisconnected(nodeId))
+                        }
                     }
                     else -> {}
                 }
@@ -155,6 +170,7 @@ class BleDriver(
         serverHandler.disconnectAll()
         activeClientHandlers.values.forEach { it.disconnect() }
         activeClientHandlers.clear()
+        serverConnections.clear()
         _connectedPeers.value = emptySet()
     }
 
@@ -165,7 +181,6 @@ class BleDriver(
         }
     }
 
-    // NEW: Soft Stop (Called when leaving a group)
     fun stop() {
         Log.d("BleDriver", "CMD: Stop (Soft)")
         stopScanning()
