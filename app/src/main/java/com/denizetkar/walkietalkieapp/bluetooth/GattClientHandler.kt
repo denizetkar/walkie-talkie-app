@@ -41,7 +41,8 @@ class GattClientHandler(
     private val targetDevice: BluetoothDevice,
     private val ownNodeId: Int,
     private val accessCode: String,
-    looper: android.os.Looper
+    looper: android.os.Looper,
+    val targetNodeId: Int
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
     private val clientHandler = Handler(looper)

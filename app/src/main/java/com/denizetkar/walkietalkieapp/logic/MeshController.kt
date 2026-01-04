@@ -40,6 +40,8 @@ class MeshController(
     private val seenPackets = ConcurrentHashMap<Int, Long>()
     private val pendingConnections = ConcurrentHashMap.newKeySet<Int>()
 
+    private val lastHeardFrom = ConcurrentHashMap<Int, Long>()
+
     private val packetTransport = object : PacketTransport {
         override fun sendPacket(data: ByteArray) {
             broadcastGeneratedPacket(data, TransportDataType.AUDIO)
@@ -52,6 +54,7 @@ class MeshController(
     private var scanLoopJob: Job? = null
     private var cleanupJob: Job? = null
     private var packetCleanupJob: Job? = null
+    private var livenessJob: Job? = null
 
     init {
         try { initLogger() } catch (_: Exception) {}
@@ -160,6 +163,23 @@ class MeshController(
     private fun startRadioLogic(groupName: String) {
         scope.launch(Dispatchers.IO) { audioSession.startSession() }
 
+        livenessJob = scope.launch {
+            while (isActive) {
+                delay(Config.CLEANUP_PERIOD)
+                val now = System.currentTimeMillis()
+                val peers = driver.connectedPeers.value
+
+                for (peerId in peers) {
+                    val lastTime = lastHeardFrom[peerId] ?: now
+                    if (now - lastTime > Config.PEER_CONNECT_TIMEOUT) {
+                        Log.w("MeshController", "Peer $peerId timed out (Liveness Check). Disconnecting.")
+                        driver.disconnectNode(peerId)
+                        lastHeardFrom.remove(peerId)
+                    }
+                }
+            }
+        }
+
         heartbeatJob = scope.launch {
             while (isActive) {
                 if (topology.checkTimeout()) {
@@ -194,6 +214,7 @@ class MeshController(
     private fun stopRadioLogic() {
         heartbeatJob?.cancel()
         scanLoopJob?.cancel()
+        livenessJob?.cancel()
 
         scope.launch(Dispatchers.IO) {
             audioEngine.stopRecording()
@@ -268,8 +289,14 @@ class MeshController(
     private fun handleDriverEvent(event: BleDriverEvent) {
         when (event) {
             is BleDriverEvent.PeerDiscovered -> handleDiscovery(event.node)
-            is BleDriverEvent.PeerConnected -> updatePeerCount()
-            is BleDriverEvent.PeerDisconnected -> updatePeerCount()
+            is BleDriverEvent.PeerConnected -> {
+                lastHeardFrom[event.nodeId] = System.currentTimeMillis()
+                updatePeerCount()
+            }
+            is BleDriverEvent.PeerDisconnected -> {
+                lastHeardFrom.remove(event.nodeId)
+                updatePeerCount()
+            }
             is BleDriverEvent.DataReceived -> handleData(event)
             else -> {}
         }
@@ -351,6 +378,8 @@ class MeshController(
     }
 
     private fun handleData(event: BleDriverEvent.DataReceived) {
+        lastHeardFrom[event.fromNodeId] = System.currentTimeMillis()
+
         val packetHash = event.data.contentHashCode()
         if (seenPackets.containsKey(packetHash)) return
         seenPackets[packetHash] = System.currentTimeMillis()

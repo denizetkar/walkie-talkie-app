@@ -46,12 +46,13 @@ class BleDriver(
                 when (event) {
                     is ServerEvent.ClientAuthenticated -> {
                         Log.i("BleDriver", "Server: Peer Authenticated ${event.nodeId}")
-                        serverConnections[event.device.address] = event.nodeId
+                        ensureSingleConnection(event.nodeId, event.device.address)
+                        serverConnections[event.device.address.uppercase()] = event.nodeId
                         _connectedPeers.update { it + event.nodeId }
                         _events.emit(BleDriverEvent.PeerConnected(event.nodeId))
                     }
                     is ServerEvent.MessageReceived -> {
-                        val nodeId = serverConnections[event.device.address]
+                        val nodeId = serverConnections[event.device.address.uppercase()]
                         if (nodeId != null) {
                             _events.emit(BleDriverEvent.DataReceived(nodeId, event.data, event.type))
                         } else {
@@ -60,8 +61,7 @@ class BleDriver(
                     }
                     is ServerEvent.ClientDisconnected -> {
                         Log.i("BleDriver", "Server: Client Disconnected")
-                        // FIX 4: Cleanup
-                        val nodeId = serverConnections.remove(event.device.address)
+                        val nodeId = serverConnections.remove(event.device.address.uppercase())
                         if (nodeId != null) {
                             _connectedPeers.update { it - nodeId }
                             _events.emit(BleDriverEvent.PeerDisconnected(nodeId))
@@ -76,6 +76,29 @@ class BleDriver(
             discoveryModule.events.collect { node ->
                 _events.emit(BleDriverEvent.PeerDiscovered(node))
             }
+        }
+    }
+
+    /**
+     * Checks if the given NodeID is already connected via a DIFFERENT MAC address.
+     * If so, it disconnects the old (stale) connection to prevent zombie states.
+     */
+    private fun ensureSingleConnection(nodeId: Int, currentAddress: String) {
+        val normalizedAddress = currentAddress.uppercase()
+
+        // 1. Check Server connections
+        val oldServerEntry = serverConnections.entries.find { it.value == nodeId && it.key != normalizedAddress }
+        if (oldServerEntry != null) {
+            Log.w("BleDriver", "Duplicate Node ID $nodeId detected (Old: ${oldServerEntry.key}, New: $normalizedAddress). Killing old Server connection.")
+            serverHandler.disconnect(oldServerEntry.key)
+            serverConnections.remove(oldServerEntry.key)
+        }
+
+        // 2. Check Client connections
+        val oldClientEntry = activeClientHandlers.entries.find { it.value.targetNodeId == nodeId && it.key != normalizedAddress }
+        if (oldClientEntry != null) {
+            Log.w("BleDriver", "Duplicate Node ID $nodeId detected (Old: ${oldClientEntry.key}, New: $normalizedAddress). Killing old Client connection.")
+            cleanupClient(oldClientEntry.key)
         }
     }
 
@@ -98,10 +121,12 @@ class BleDriver(
     fun stopAdvertising() = advertiserModule.stop()
 
     suspend fun connectTo(address: String, nodeId: Int) {
-        if (activeClientHandlers.containsKey(address)) return
-        Log.d("BleDriver", "CMD: Connect to $address (Node $nodeId)")
+        val normalizedAddress = address.uppercase()
+        if (activeClientHandlers.containsKey(normalizedAddress)) return
+        ensureSingleConnection(nodeId, normalizedAddress)
 
-        val device = adapter.getRemoteDevice(address)
+        Log.d("BleDriver", "CMD: Connect to $normalizedAddress (Node $nodeId)")
+        val device = adapter.getRemoteDevice(normalizedAddress)
 
         if (!clientWorkerThread.isAlive) {
             Log.e("BleDriver", "CRITICAL: Client thread is dead. Cannot connect.")
@@ -114,7 +139,8 @@ class BleDriver(
             device,
             myNodeId,
             myAccessCode,
-            clientWorkerThread.looper
+            clientWorkerThread.looper,
+            nodeId
         )
 
         val connectionResult = CompletableDeferred<Boolean>()
@@ -124,6 +150,8 @@ class BleDriver(
                 when (event) {
                     is ClientEvent.Authenticated -> {
                         Log.i("BleDriver", "Client: Authenticated with $nodeId")
+                        ensureSingleConnection(nodeId, normalizedAddress)
+
                         _connectedPeers.update { it + nodeId }
                         _events.emit(BleDriverEvent.PeerConnected(nodeId))
                         if (connectionResult.isActive) connectionResult.complete(true)
@@ -136,34 +164,60 @@ class BleDriver(
                         _connectedPeers.update { it - nodeId }
                         _events.emit(BleDriverEvent.PeerDisconnected(nodeId))
                         if (connectionResult.isActive) connectionResult.complete(false)
-                        cleanupClient(address)
+                        cleanupClient(normalizedAddress)
                     }
                     else -> {}
                 }
             }
         }
 
-        activeClientHandlers[address] = client
-        activeClientJobs[address] = job
+        activeClientHandlers[normalizedAddress] = client
+        activeClientJobs[normalizedAddress] = job
 
         client.connect()
 
         try {
             withTimeout(Config.PEER_CONNECT_TIMEOUT) {
                 val success = connectionResult.await()
-                if (!success) cleanupClient(address)
+                if (!success) cleanupClient(normalizedAddress)
             }
         } catch (e: TimeoutCancellationException) {
-            Log.w("BleDriver", "Connection Timed Out for $address", e)
-            cleanupClient(address)
+            Log.w("BleDriver", "Connection Timed Out for $normalizedAddress", e)
+            cleanupClient(normalizedAddress)
         }
     }
 
     private fun cleanupClient(address: String) {
-        activeClientJobs[address]?.cancel()
-        activeClientJobs.remove(address)
-        activeClientHandlers[address]?.disconnect()
-        activeClientHandlers.remove(address)
+        val normalizedAddress = address.uppercase()
+        activeClientJobs[normalizedAddress]?.cancel()
+        activeClientJobs.remove(normalizedAddress)
+        activeClientHandlers[normalizedAddress]?.disconnect()
+        activeClientHandlers.remove(normalizedAddress)
+    }
+
+    /**
+     * Forcefully disconnects a specific Node ID (both client and server side).
+     * Used by MeshController when Liveness Check fails.
+     */
+    fun disconnectNode(nodeId: Int) {
+        Log.w("BleDriver", "Force Disconnecting Node $nodeId")
+
+        // 1. Disconnect Server Link
+        val serverEntry = serverConnections.entries.find { it.value == nodeId }
+        if (serverEntry != null) {
+            serverHandler.disconnect(serverEntry.key)
+            serverConnections.remove(serverEntry.key)
+        }
+
+        // 2. Disconnect Client Link
+        val clientEntry = activeClientHandlers.entries.find { it.value.targetNodeId == nodeId }
+        if (clientEntry != null) {
+            cleanupClient(clientEntry.key)
+        }
+
+        // 3. Force State Update
+        _connectedPeers.update { it - nodeId }
+        scope.launch { _events.emit(BleDriverEvent.PeerDisconnected(nodeId)) }
     }
 
     fun disconnectAll() {
