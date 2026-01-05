@@ -38,11 +38,10 @@ sealed class ClientEvent {
 class GattClientHandler(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val targetDevice: BluetoothDevice,
+    val targetDevice: BluetoothDevice,
     private val ownNodeId: Int,
     private val accessCode: String,
-    looper: android.os.Looper,
-    val targetNodeId: Int
+    looper: android.os.Looper
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
     private val clientHandler = Handler(looper)

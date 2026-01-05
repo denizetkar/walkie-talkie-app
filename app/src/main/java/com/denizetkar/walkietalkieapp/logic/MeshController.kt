@@ -23,7 +23,7 @@ sealed class EngineState {
 class MeshController(
     context: Context,
     private val driver: BleDriver,
-    private val scope: CoroutineScope,
+    private val scope: CoroutineScope, // Already Dispatchers.IO from Service
     private val ownNodeId: Int
 ) {
     // --- State ---
@@ -75,7 +75,7 @@ class MeshController(
     fun checkSystemRequirements(): Result<Unit> = driver.validateCapabilities()
 
     // ===========================================================================
-    // Public API
+    // Public API (Called from Main Thread)
     // ===========================================================================
 
     fun startGroupScan() {
@@ -108,52 +108,59 @@ class MeshController(
 
     fun startTalking() {
         if (_state.value is EngineState.RadioActive) {
-            scope.launch(Dispatchers.IO) {
+            scope.launch {
                 try { audioEngine.startRecording() } catch (e: Exception) { Log.e("MeshController", "Mic Error", e) }
             }
         }
     }
 
     fun stopTalking() {
-        scope.launch(Dispatchers.IO) {
+        scope.launch {
             try { audioEngine.stopRecording() } catch (e: Exception) { Log.e("MeshController", "Mic Error", e) }
         }
     }
 
     // ===========================================================================
-    // State Machine
+    // State Machine (Async & Flattened)
     // ===========================================================================
 
     private fun transitionTo(newState: EngineState) {
         val oldState = _state.value
         if (oldState == newState) return
 
+        // 1. Update UI State Immediately
         _state.value = newState
         Log.i("MeshController", "State Change: $oldState -> $newState")
 
-        if (oldState is EngineState.RadioActive) stopRadioLogic()
-        if (oldState is EngineState.Discovering || oldState is EngineState.Joining) {
-            driver.stopScanning()
-            stopGroupCleanup()
-        }
+        // 2. Offload Hardware Operations to IO Scope
+        // This prevents blocking the Main Thread with Binder calls.
+        scope.launch {
+            // A. Teardown Old State
+            if (oldState is EngineState.RadioActive) stopRadioLogic()
+            if (oldState is EngineState.Discovering || oldState is EngineState.Joining) {
+                driver.stopScanning()
+                stopGroupCleanup()
+            }
 
-        when (newState) {
-            is EngineState.Idle -> {
-                driver.stop()
-                foundGroupsMap.clear()
-                _discoveredGroups.value = emptyList()
-            }
-            is EngineState.Discovering -> {
-                foundGroupsMap.clear()
-                _discoveredGroups.value = emptyList()
-                startGroupCleanup()
-                driver.startScanning()
-            }
-            is EngineState.Joining -> {
-                driver.startScanning()
-            }
-            is EngineState.RadioActive -> {
-                startRadioLogic(newState.groupName)
+            // B. Setup New State
+            when (newState) {
+                is EngineState.Idle -> {
+                    driver.stop()
+                    foundGroupsMap.clear()
+                    _discoveredGroups.value = emptyList()
+                }
+                is EngineState.Discovering -> {
+                    foundGroupsMap.clear()
+                    _discoveredGroups.value = emptyList()
+                    startGroupCleanup()
+                    driver.startScanning()
+                }
+                is EngineState.Joining -> {
+                    driver.startScanning()
+                }
+                is EngineState.RadioActive -> {
+                    startRadioLogic(newState.groupName)
+                }
             }
         }
     }
@@ -163,73 +170,83 @@ class MeshController(
     }
 
     // ===========================================================================
-    // Radio Logic
+    // Radio Logic (Suspend Functions)
     // ===========================================================================
 
     private fun startRadioLogic(groupName: String) {
-        scope.launch(Dispatchers.IO) { audioSession.startSession() }
+        // 1. Audio Setup (Blocking IO)
+        audioSession.startSession()
 
-        livenessJob = scope.launch {
-            while (isActive) {
-                delay(Config.CLEANUP_PERIOD)
-                val now = System.currentTimeMillis()
-                val peers = driver.connectedPeers.value
+        // 2. Start Concurrent Background Jobs
+        // These must run in parallel to the rest of the logic, so we launch new jobs.
+        livenessJob = scope.launch { runLivenessCheck() }
+        heartbeatJob = scope.launch { runHeartbeatLoop(groupName) }
+        scanLoopJob = scope.launch { runScanLoop() }
 
-                for (peerId in peers) {
-                    val lastTime = lastHeardFrom[peerId] ?: now
-                    if (now - lastTime > Config.PEER_CONNECT_TIMEOUT) {
-                        Log.w("MeshController", "Peer $peerId timed out (Liveness Check). Disconnecting.")
-                        driver.disconnectNode(peerId)
-                        lastHeardFrom.remove(peerId)
-                    }
-                }
-            }
-        }
-
-        heartbeatJob = scope.launch {
-            while (isActive) {
-                if (topology.checkTimeout()) {
-                    refreshAdvertising(groupName)
-                }
-                val packet = topology.generateHeartbeat()
-                if (packet != null) {
-                    broadcastGeneratedPacket(packet, TransportDataType.CONTROL)
-                }
-                delay(Config.HEARTBEAT_INTERVAL)
-            }
-        }
-
-        scanLoopJob = scope.launch {
-            while (isActive) {
-                val peers = driver.connectedPeers.value.size
-                val scanDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PERIOD_AGGRESSIVE else Config.SCAN_PERIOD_LAZY
-                val pauseDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PAUSE_AGGRESSIVE else Config.SCAN_INTERVAL_LAZY
-
-                Log.d("MeshController", "Scan Loop: Starting Scan")
-                driver.startScanning()
-                delay(scanDuration)
-                Log.d("MeshController", "Scan Loop: Stopping Scan")
-                driver.stopScanning()
-                delay(pauseDuration)
-            }
-        }
-
+        // 3. Initial Advertising (Blocking IO)
         refreshAdvertising(groupName)
     }
 
-    private fun stopRadioLogic() {
+    private suspend fun stopRadioLogic() {
+        // 1. Cancel Background Jobs
         heartbeatJob?.cancel()
         scanLoopJob?.cancel()
         livenessJob?.cancel()
 
-        scope.launch(Dispatchers.IO) {
-            audioEngine.stopRecording()
-            audioSession.stopSession()
-            driver.disconnectAll()
-        }
+        // 2. Wait for jobs to actually finish (optional, but cleaner)
+        joinAll(heartbeatJob, scanLoopJob, livenessJob)
 
+        // 3. Teardown Hardware (Blocking IO)
+        audioEngine.stopRecording()
+        audioSession.stopSession()
+        driver.disconnectAll()
         driver.stopScanning()
         driver.stopAdvertising()
+    }
+
+    private suspend fun CoroutineScope.runLivenessCheck() {
+        while (isActive) {
+            delay(Config.CLEANUP_PERIOD)
+            val now = System.currentTimeMillis()
+            val peers = driver.connectedPeers.value
+
+            for (peerId in peers) {
+                val lastTime = lastHeardFrom[peerId] ?: now
+                if (now - lastTime > Config.PEER_CONNECT_TIMEOUT) {
+                    Log.w("MeshController", "Peer $peerId timed out. Disconnecting.")
+                    driver.disconnectNode(peerId)
+                    lastHeardFrom.remove(peerId)
+                }
+            }
+        }
+    }
+
+    private suspend fun CoroutineScope.runHeartbeatLoop(groupName: String) {
+        while (isActive) {
+            if (topology.checkTimeout()) {
+                refreshAdvertising(groupName)
+            }
+            val packet = topology.generateHeartbeat()
+            if (packet != null) {
+                broadcastGeneratedPacket(packet, TransportDataType.CONTROL)
+            }
+            delay(Config.HEARTBEAT_INTERVAL)
+        }
+    }
+
+    private suspend fun CoroutineScope.runScanLoop() {
+        while (isActive) {
+            val peers = driver.connectedPeers.value.size
+            val scanDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PERIOD_AGGRESSIVE else Config.SCAN_PERIOD_LAZY
+            val pauseDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PAUSE_AGGRESSIVE else Config.SCAN_INTERVAL_LAZY
+
+            Log.d("MeshController", "Scan Loop: Starting Scan")
+            driver.startScanning()
+            delay(scanDuration)
+            Log.d("MeshController", "Scan Loop: Stopping Scan")
+            driver.stopScanning()
+            delay(pauseDuration)
+        }
     }
 
     private fun refreshAdvertising(groupName: String) {
@@ -248,10 +265,14 @@ class MeshController(
 
     private fun broadcastGeneratedPacket(data: ByteArray, type: TransportDataType) {
         markPacketAsSeen(data)
-        scope.launch(Dispatchers.IO) {
+        scope.launch {
             driver.broadcast(data, type)
         }
     }
+
+    // ===========================================================================
+    // Cleanup Helpers
+    // ===========================================================================
 
     private fun startGroupCleanup() {
         cleanupJob?.cancel()
@@ -408,5 +429,10 @@ class MeshController(
             try { audioEngine.pushIncomingPacket(event.data) } catch (e: Exception) { Log.e("MeshController", "Audio Error", e) }
             scope.launch { driver.broadcast(event.data, TransportDataType.AUDIO) }
         }
+    }
+
+    // Helper to join multiple jobs
+    private suspend fun joinAll(vararg jobs: Job?) {
+        jobs.filterNotNull().joinAll()
     }
 }

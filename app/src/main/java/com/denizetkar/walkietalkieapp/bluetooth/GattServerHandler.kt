@@ -43,7 +43,6 @@ class GattServerHandler(
     private var gattServer: BluetoothGattServer? = null
 
     private val pendingChallenges = ConcurrentHashMap<String, String>()
-    private val authenticatedSessions = ConcurrentHashMap<String, Int>()
     private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
 
     private val pendingDisconnects = ConcurrentHashMap.newKeySet<String>()
@@ -87,19 +86,18 @@ class GattServerHandler(
 
             when (characteristic.uuid) {
                 Config.CHAR_DATA_UUID -> {
-                    if (authenticatedSessions.containsKey(device.address.uppercase())) {
-                        scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.AUDIO)) }
-                    }
+                    scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.AUDIO)) }
                 }
                 Config.CHAR_CONTROL_UUID -> handleControlMessage(device, value)
             }
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-            if (pendingDisconnects.contains(device.address.uppercase())) {
-                Log.i("GattServer", "Packet flushed. Closing connection for ${device.address}")
+            val normalizedAddress = device.address.uppercase()
+            if (pendingDisconnects.contains(normalizedAddress)) {
+                Log.i("GattServer", "Packet flushed. Closing connection for $normalizedAddress")
                 gattServer?.cancelConnection(device)
-                pendingDisconnects.remove(device.address.uppercase())
+                pendingDisconnects.remove(normalizedAddress)
             }
         }
     }
@@ -130,9 +128,7 @@ class GattServerHandler(
             }
             PacketUtils.TYPE_AUTH_RESPONSE -> handleAuthResponse(device, payload)
             PacketUtils.TYPE_HEARTBEAT -> {
-                if (authenticatedSessions.containsKey(device.address.uppercase())) {
-                    scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, payload, TransportDataType.CONTROL)) }
-                }
+                scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, payload, TransportDataType.CONTROL)) }
             }
         }
     }
@@ -158,8 +154,6 @@ class GattServerHandler(
             if (clientNodeId != null) {
                 Log.i("GattServer", "Authenticated Node: $clientNodeId")
                 pendingChallenges.remove(address)
-                authenticatedSessions[address] = clientNodeId
-
                 val successPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x01))
                 notifyDevice(device, successPacket, TransportDataType.CONTROL)
                 _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId))
@@ -167,21 +161,13 @@ class GattServerHandler(
                 Log.w("GattServer", "Auth Failed. Sending NACK and Disconnecting.")
                 val failPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x00))
                 pendingDisconnects.add(address)
-                val sent = notifyDevice(device, failPacket, TransportDataType.CONTROL)
-
-                if (!sent) {
-                    gattServer?.cancelConnection(device)
-                    pendingDisconnects.remove(address)
-                }
+                notifyDevice(device, failPacket, TransportDataType.CONTROL)
             }
         }
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun sendTo(address: String, data: ByteArray, type: TransportDataType) {
-        val device = connectedDevices[address.uppercase()] ?: return
-        if (!authenticatedSessions.containsKey(address.uppercase())) return
-
+    suspend fun sendTo(device: BluetoothDevice, data: ByteArray, type: TransportDataType) {
         val packet = if (type == TransportDataType.CONTROL) {
             PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, data)
         } else {
@@ -201,6 +187,7 @@ class GattServerHandler(
             return server.notifyCompat(device, char, data)
         }
 
+        // Simple retry for control packets
         repeat(3) {
             if (server.notifyCompat(device, char, data)) return true
             yield()
@@ -208,11 +195,6 @@ class GattServerHandler(
 
         Log.e("GattServer", "CRITICAL: Failed to queue Control Packet for ${device.address}")
         return false
-    }
-
-    @SuppressLint("MissingPermission")
-    suspend fun broadcast(data: ByteArray, type: TransportDataType) {
-        connectedDevices.keys.forEach { address -> sendTo(address, data, type) }
     }
 
     @SuppressLint("MissingPermission")
@@ -250,16 +232,15 @@ class GattServerHandler(
     }
 
     @SuppressLint("MissingPermission")
-    fun disconnect(address: String) {
-        val device = connectedDevices[address.uppercase()] ?: return
-
+    fun disconnect(device: BluetoothDevice) {
         gattServer?.cancelConnection(device)
         cleanupDevice(device)
     }
 
     @SuppressLint("MissingPermission")
     fun disconnectAll() {
-        connectedDevices.keys.forEach { address -> disconnect(address) }
+        connectedDevices.values.forEach { device -> gattServer?.cancelConnection(device) }
+        cleanupDevice(null)
     }
 
     @SuppressLint("MissingPermission")
@@ -275,12 +256,10 @@ class GattServerHandler(
             val address = device.address.uppercase()
             connectedDevices.remove(address)
             pendingChallenges.remove(address)
-            authenticatedSessions.remove(address)
             pendingDisconnects.remove(address)
         } else {
             connectedDevices.clear()
             pendingChallenges.clear()
-            authenticatedSessions.clear()
             pendingDisconnects.clear()
         }
     }
