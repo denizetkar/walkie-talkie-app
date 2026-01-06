@@ -6,8 +6,6 @@ import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import uniffi.walkie_talkie_engine.AudioConfig
-import uniffi.walkie_talkie_engine.AudioEngine
 import uniffi.walkie_talkie_engine.PacketTransport
 import uniffi.walkie_talkie_engine.initLogger
 import java.util.concurrent.ConcurrentHashMap
@@ -23,7 +21,7 @@ sealed class EngineState {
 class MeshController(
     context: Context,
     private val driver: BleDriver,
-    private val scope: CoroutineScope, // Already Dispatchers.IO from Service
+    private val scope: CoroutineScope,
     private val ownNodeId: Int
 ) {
     // --- State ---
@@ -36,24 +34,20 @@ class MeshController(
 
     // --- Logic & Subsystems ---
     private val topology = TopologyEngine(ownNodeId)
-    private val audioSession = AudioSessionManager(context)
 
     private val seenPackets = ConcurrentHashMap<Int, Long>()
     private val pendingConnections = ConcurrentHashMap.newKeySet<Int>()
-
     private val lastHeardFrom = ConcurrentHashMap<Int, Long>()
 
+    // 1. Define Transport Callback (Rust -> Kotlin -> BLE)
     private val packetTransport = object : PacketTransport {
         override fun sendPacket(data: ByteArray) {
             broadcastGeneratedPacket(data, TransportDataType.AUDIO)
         }
     }
-    private val audioConfig = AudioConfig(
-        sampleRate = Config.AUDIO_SAMPLE_RATE,
-        frameSizeMs = Config.AUDIO_FRAME_SIZE_MS,
-        jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS
-    )
-    private val audioEngine = AudioEngine(audioConfig, packetTransport)
+
+    // 2. Voice Manager (Single Source of Truth for Audio)
+    private val voiceManager = VoiceManager(context, packetTransport)
 
     // --- Jobs ---
     private var heartbeatJob: Job? = null
@@ -108,32 +102,25 @@ class MeshController(
 
     fun startTalking() {
         if (_state.value is EngineState.RadioActive) {
-            scope.launch {
-                try { audioEngine.startRecording() } catch (e: Exception) { Log.e("MeshController", "Mic Error", e) }
-            }
+            voiceManager.setMicrophoneEnabled(true)
         }
     }
 
     fun stopTalking() {
-        scope.launch {
-            try { audioEngine.stopRecording() } catch (e: Exception) { Log.e("MeshController", "Mic Error", e) }
-        }
+        voiceManager.setMicrophoneEnabled(false)
     }
 
     // ===========================================================================
-    // State Machine (Async & Flattened)
+    // State Machine
     // ===========================================================================
 
     private fun transitionTo(newState: EngineState) {
         val oldState = _state.value
         if (oldState == newState) return
 
-        // 1. Update UI State Immediately
         _state.value = newState
         Log.i("MeshController", "State Change: $oldState -> $newState")
 
-        // 2. Offload Hardware Operations to IO Scope
-        // This prevents blocking the Main Thread with Binder calls.
         scope.launch {
             // A. Teardown Old State
             if (oldState is EngineState.RadioActive) stopRadioLogic()
@@ -174,16 +161,15 @@ class MeshController(
     // ===========================================================================
 
     private fun startRadioLogic(groupName: String) {
-        // 1. Audio Setup (Blocking IO)
-        audioSession.startSession()
+        // 1. Audio Setup (Encapsulated)
+        voiceManager.start()
 
         // 2. Start Concurrent Background Jobs
-        // These must run in parallel to the rest of the logic, so we launch new jobs.
         livenessJob = scope.launch { runLivenessCheck() }
         heartbeatJob = scope.launch { runHeartbeatLoop(groupName) }
         scanLoopJob = scope.launch { runScanLoop() }
 
-        // 3. Initial Advertising (Blocking IO)
+        // 3. Initial Advertising
         refreshAdvertising(groupName)
     }
 
@@ -192,13 +178,12 @@ class MeshController(
         heartbeatJob?.cancel()
         scanLoopJob?.cancel()
         livenessJob?.cancel()
-
-        // 2. Wait for jobs to actually finish (optional, but cleaner)
         joinAll(heartbeatJob, scanLoopJob, livenessJob)
 
-        // 3. Teardown Hardware (Blocking IO)
-        audioEngine.stopRecording()
-        audioSession.stopSession()
+        // 2. Teardown Audio (Encapsulated)
+        voiceManager.stop()
+
+        // 3. Teardown Hardware
         driver.disconnectAll()
         driver.stopScanning()
         driver.stopAdvertising()
@@ -240,10 +225,8 @@ class MeshController(
             val scanDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PERIOD_AGGRESSIVE else Config.SCAN_PERIOD_LAZY
             val pauseDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PAUSE_AGGRESSIVE else Config.SCAN_INTERVAL_LAZY
 
-            Log.d("MeshController", "Scan Loop: Starting Scan")
             driver.startScanning()
             delay(scanDuration)
-            Log.d("MeshController", "Scan Loop: Stopping Scan")
             driver.stopScanning()
             delay(pauseDuration)
         }
@@ -343,8 +326,6 @@ class MeshController(
 
     private fun handleDiscovery(node: TransportNode) {
         val s = _state.value
-
-        // 1. Discovery Mode
         if (s is EngineState.Discovering) {
             val existing = foundGroupsMap[node.name]
             val rssi = max(node.rssi, existing?.highestRssi ?: Config.WORST_RSSI)
@@ -352,55 +333,34 @@ class MeshController(
             _discoveredGroups.value = foundGroupsMap.values.sortedByDescending { it.highestRssi }
             return
         }
-
-        // 2. Joining Mode
         if (s is EngineState.Joining && node.name == s.groupName) {
             connectSafely(node)
             return
         }
-
-        // 3. Radio Mode (Mesh Logic)
         if (s is EngineState.RadioActive && node.name == s.groupName) {
             val topo = topology.getCurrentState()
             val currentPeers = driver.connectedPeers.value
             if (currentPeers.contains(node.nodeId)) return
 
             var shouldConnect = false
-
-            // Priority 1: Merge Up (They have a better Root)
             if (node.networkId > topo.currentNetworkId) {
                 shouldConnect = true
-            }
-            // Priority 2: Fill Slots (We are lonely)
-            else if (currentPeers.size < Config.TARGET_PEERS) {
-                // Connect if they are available OR if we can absorb them (Merge Down)
-                if (node.isAvailable || node.networkId < topo.currentNetworkId) {
-                    shouldConnect = true
-                }
-            }
-            // Priority 3: Absorb (Merge Down)
-            else if (currentPeers.size < Config.MAX_PEERS) {
-                if (node.networkId < topo.currentNetworkId) {
-                    shouldConnect = true
-                }
+            } else if (currentPeers.size < Config.TARGET_PEERS) {
+                if (node.isAvailable || node.networkId < topo.currentNetworkId) shouldConnect = true
+            } else if (currentPeers.size < Config.MAX_PEERS) {
+                if (node.networkId < topo.currentNetworkId) shouldConnect = true
             }
 
-            if (shouldConnect) {
-                connectSafely(node)
-            }
+            if (shouldConnect) connectSafely(node)
         }
     }
 
     private fun connectSafely(node: TransportNode) {
         if (pendingConnections.contains(node.nodeId)) return
-
         pendingConnections.add(node.nodeId)
         scope.launch {
-            try {
-                driver.connectTo(node.id, node.nodeId)
-            } finally {
-                pendingConnections.remove(node.nodeId)
-            }
+            try { driver.connectTo(node.id, node.nodeId) }
+            finally { pendingConnections.remove(node.nodeId) }
         }
     }
 
@@ -426,12 +386,14 @@ class MeshController(
                 }
             }
         } else {
-            try { audioEngine.pushIncomingPacket(event.data) } catch (e: Exception) { Log.e("MeshController", "Audio Error", e) }
+            // Forward audio to VoiceManager
+            voiceManager.processIncomingPacket(event.data)
+
+            // Flood to others
             scope.launch { driver.broadcast(event.data, TransportDataType.AUDIO) }
         }
     }
 
-    // Helper to join multiple jobs
     private suspend fun joinAll(vararg jobs: Job?) {
         jobs.filterNotNull().joinAll()
     }

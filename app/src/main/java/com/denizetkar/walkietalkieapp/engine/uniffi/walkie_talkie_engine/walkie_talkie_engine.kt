@@ -658,15 +658,17 @@ internal object IntegrityCheckingUniffiLib {
     }
     external fun uniffi_walkie_talkie_engine_checksum_func_init_logger(
     ): Short
-    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_ensure_output_running(
-    ): Short
     external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_push_incoming_packet(
     ): Short
-    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_shutdown(
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_set_mic_enabled(
     ): Short
-    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_start_recording(
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_start_input_stream(
     ): Short
-    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_recording(
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_start_output_stream(
+    ): Short
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_start_session(
+    ): Short
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_session(
     ): Short
     external fun uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new(
     ): Short
@@ -697,15 +699,17 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`config`: RustBuffer.ByValue,`transport`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_ensure_output_running(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_push_incoming_packet(`ptr`: Long,`data`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_shutdown(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_set_mic_enabled(`ptr`: Long,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_start_recording(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_start_input_stream(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_stop_recording(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_start_output_stream(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_start_session(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_stop_session(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_walkie_talkie_engine_fn_init_callback_vtable_packettransport(`vtable`: UniffiVTableCallbackInterfacePacketTransport,
     ): Unit
@@ -833,19 +837,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_walkie_talkie_engine_checksum_func_init_logger() != 21797.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_ensure_output_running() != 588.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
     if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_push_incoming_packet() != 14335.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_shutdown() != 19774.toShort()) {
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_set_mic_enabled() != 33852.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_start_recording() != 3609.toShort()) {
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_start_input_stream() != 21684.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_recording() != 13011.toShort()) {
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_start_output_stream() != 45253.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_start_session() != 51869.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_session() != 5573.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new() != 35197.toShort()) {
@@ -1068,6 +1075,29 @@ public object FfiConverterInt: FfiConverter<Int, Int> {
 /**
  * @suppress
  */
+public object FfiConverterBoolean: FfiConverter<Boolean, Byte> {
+    override fun lift(value: Byte): Boolean {
+        return value.toInt() != 0
+    }
+
+    override fun read(buf: ByteBuffer): Boolean {
+        return lift(buf.get())
+    }
+
+    override fun lower(value: Boolean): Byte {
+        return if (value) 1.toByte() else 0.toByte()
+    }
+
+    override fun allocationSize(value: Boolean) = 1UL
+
+    override fun write(value: Boolean, buf: ByteBuffer) {
+        buf.put(lower(value))
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     // Note: we don't inherit from FfiConverterRustBuffer, because we use a
     // special encoding when lowering/lifting.  We can use `RustBuffer.len` to
@@ -1240,15 +1270,25 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 //
 public interface AudioEngineInterface {
     
-    fun `ensureOutputRunning`()
-    
     fun `pushIncomingPacket`(`data`: kotlin.ByteArray)
     
-    fun `shutdown`()
+    fun `setMicEnabled`(`enabled`: kotlin.Boolean)
     
-    fun `startRecording`()
+    fun `startInputStream`()
     
-    fun `stopRecording`()
+    fun `startOutputStream`()
+    
+    /**
+     * Starts BOTH Input and Output streams.
+     * Call this when joining a group.
+     */
+    fun `startSession`()
+    
+    /**
+     * Stops BOTH streams.
+     * Call this when leaving a group.
+     */
+    fun `stopSession`()
     
     companion object
 }
@@ -1357,19 +1397,6 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
         }
     }
 
-    
-    @Throws(AudioException::class)override fun `ensureOutputRunning`()
-        = 
-    callWithHandle {
-    uniffiRustCallWithError(AudioException) { _status ->
-    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_ensure_output_running(
-        it,
-        _status)
-}
-    }
-    
-    
-
     override fun `pushIncomingPacket`(`data`: kotlin.ByteArray)
         = 
     callWithHandle {
@@ -1382,11 +1409,24 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
     
     
 
-    override fun `shutdown`()
+    override fun `setMicEnabled`(`enabled`: kotlin.Boolean)
         = 
     callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_shutdown(
+    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_set_mic_enabled(
+        it,
+        FfiConverterBoolean.lower(`enabled`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(AudioException::class)override fun `startInputStream`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(AudioException) { _status ->
+    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_start_input_stream(
         it,
         _status)
 }
@@ -1395,11 +1435,11 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
     
 
     
-    @Throws(AudioException::class)override fun `startRecording`()
+    @Throws(AudioException::class)override fun `startOutputStream`()
         = 
     callWithHandle {
     uniffiRustCallWithError(AudioException) { _status ->
-    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_start_recording(
+    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_start_output_stream(
         it,
         _status)
 }
@@ -1408,11 +1448,32 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
     
 
     
-    @Throws(AudioException::class)override fun `stopRecording`()
+    /**
+     * Starts BOTH Input and Output streams.
+     * Call this when joining a group.
+     */
+    @Throws(AudioException::class)override fun `startSession`()
         = 
     callWithHandle {
     uniffiRustCallWithError(AudioException) { _status ->
-    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_stop_recording(
+    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_start_session(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Stops BOTH streams.
+     * Call this when leaving a group.
+     */
+    @Throws(AudioException::class)override fun `stopSession`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(AudioException) { _status ->
+    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_stop_session(
         it,
         _status)
 }
