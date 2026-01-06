@@ -43,17 +43,24 @@ class BleDiscoveryModule(
             return
         }
 
-        if (!rateLimiter.canStartScan()) {
+        val token = rateLimiter.tryAcquire() ?: run {
             Log.w("BleDiscovery", "Ignored: Rate limit reached.")
             return
         }
 
         val newSession = ScanSession()
         if (activeSession.compareAndSet(null, newSession)) {
+            // We won the race to set the session. Now talk to hardware.
             val success = newSession.start()
             if (!success) {
+                // Hardware failed. Cleanup and Refund this specific token.
                 activeSession.set(null)
+                rateLimiter.rollback(token)
             }
+        } else {
+            // We lost the race (another thread started a session).
+            // Refund our specific token.
+            rateLimiter.rollback(token)
         }
     }
 
@@ -66,11 +73,6 @@ class BleDiscoveryModule(
         }
     }
 
-    /**
-     * Encapsulates the lifecycle of a single scan operation.
-     * This solves the "Correlated Variables" problem.
-     * The callback and the logic are bound together.
-     */
     private inner class ScanSession {
         private val scanner = adapter?.bluetoothLeScanner
 
@@ -85,7 +87,6 @@ class BleDiscoveryModule(
 
             override fun onScanFailed(errorCode: Int) {
                 Log.e("BleDiscovery", "Scan Failed with error: $errorCode")
-                // Self-destruct: If the system kills our scan, we must update state
                 activeSession.compareAndSet(this@ScanSession, null)
             }
         }

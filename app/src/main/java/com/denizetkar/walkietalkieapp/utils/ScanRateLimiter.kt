@@ -1,6 +1,5 @@
 package com.denizetkar.walkietalkieapp.utils
 
-import android.util.Log
 import java.util.ArrayDeque
 
 /**
@@ -15,24 +14,34 @@ class ScanRateLimiter {
     private val windowMs = 30_000L
     private val maxAttempts = 5
 
+    /**
+     * Atomically checks quota and reserves a slot if available.
+     * Returns the timestamp (Token) if reserved, or null if quota exceeded.
+     */
     @Synchronized
-    fun canStartScan(): Boolean {
-        val now = System.currentTimeMillis()
+    fun tryAcquire(): Long? {
+        val nowTimeMs = System.currentTimeMillis()
+        prune(nowTimeMs)
+        if (history.size >= maxAttempts) {
+            return null
+        }
 
-        // 1. Prune old entries
-        while (history.isNotEmpty() && (now - history.first) > windowMs) {
+        history.addLast(nowTimeMs)
+        return nowTimeMs
+    }
+
+    /**
+     * Returns a specific token to the pool.
+     * Handles the case where multiple threads acquire tokens in parallel.
+     */
+    @Synchronized
+    fun rollback(token: Long) {
+        history.remove(token)
+    }
+
+    private fun prune(timeNowMs: Long) {
+        while (history.isNotEmpty() && (timeNowMs - history.first) > windowMs) {
             history.removeFirst()
         }
-
-        // 2. Check capacity
-        if (history.size >= maxAttempts) {
-            val waitTime = windowMs - (now - history.first)
-            Log.w("ScanRateLimiter", "Rate Limit Hit! Waiting ${waitTime/1000}s before next scan.")
-            return false
-        }
-
-        // 3. Record this attempt
-        history.addLast(now)
-        return true
     }
 }
