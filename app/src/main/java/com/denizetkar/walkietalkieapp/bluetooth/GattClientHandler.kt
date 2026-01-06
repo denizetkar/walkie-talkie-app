@@ -11,15 +11,14 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
-import android.os.Handler
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.logic.PacketUtils
 import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -41,11 +40,10 @@ class GattClientHandler(
     val targetDevice: BluetoothDevice,
     private val ownNodeId: Int,
     private val accessCode: String,
-    looper: android.os.Looper
+    dispatcher: CoroutineDispatcher
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
-    private val clientHandler = Handler(looper)
-    private val operationQueue = BleOperationQueue(clientHandler.asCoroutineDispatcher()) { disconnect() }
+    private val operationQueue = BleOperationQueue(dispatcher) { disconnect() }
 
     private var currentMtu = 23
 
@@ -68,7 +66,7 @@ class GattClientHandler(
                 gattCallback,
                 BluetoothDevice.TRANSPORT_LE,
                 BluetoothDevice.PHY_LE_1M_MASK,
-                clientHandler
+                null
             )
         } catch (_: SecurityException) {
             scope.launch { _clientEvents.emit(ClientEvent.Error(targetDevice, "Permission Missing")) }
