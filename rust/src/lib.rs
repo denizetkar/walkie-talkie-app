@@ -111,10 +111,8 @@ mod real_impl {
         /// Call this when joining a group.
         pub fn start_session(&self) -> Result<(), AudioError> {
             log::info!("Starting Audio Session (Hot Mic Architecture)...");
-
             self.start_output_stream()?;
             self.start_input_stream()?;
-
             Ok(())
         }
 
@@ -125,7 +123,16 @@ mod real_impl {
             *self.input_stream.lock().unwrap() = None;
             *self.output_stream.lock().unwrap() = None;
             *self.incoming_tx.lock().unwrap() = None;
+            self.is_mic_enabled.store(false, Ordering::Relaxed);
             Ok(())
+        }
+
+        // --- SSOT Methods ---
+
+        pub fn is_session_active(&self) -> bool {
+            let input_active = self.input_stream.lock().unwrap().is_some();
+            let output_active = self.output_stream.lock().unwrap().is_some();
+            input_active && output_active
         }
 
         pub fn set_mic_enabled(&self, enabled: bool) {
@@ -138,8 +145,6 @@ mod real_impl {
         }
 
         pub fn push_incoming_packet(&self, data: Vec<u8>) {
-            // Much simpler now: We assume the session is running.
-            // If it's not, we just drop the packet.
             let tx_guard = self.incoming_tx.lock().unwrap();
             if let Some(tx) = tx_guard.as_ref() {
                 let _ = tx.try_send(data);
@@ -359,34 +364,47 @@ mod real_impl {
                     }
                 }
 
-                // Get Packet Logic
+                // Smart Packet Selection
                 let packet_to_decode = if let Some(expected) = self.next_expected_seq {
                     if let Some(data) = self.jitter_buffer.remove(&expected) {
                         // Happy Path: We found the exact packet we wanted
                         self.next_expected_seq = Some(expected.wrapping_add(1));
                         Some(Some(data))
                     } else {
-                        // Packet Missing. Check the next available one.
-                        if let Some(&next_available) = self.jitter_buffer.keys().next() {
-                            let gap = next_available.wrapping_sub(expected);
-                            if gap > 3000 {
-                                // Huge gap means stream reset or massive loss. Resync.
-                                log::warn!("[Audio] Large Gap Detected ({} -> {}). Resetting.", expected, next_available);
-                                self.next_expected_seq = Some(next_available.wrapping_add(1));
-                                let data = self.jitter_buffer.remove(&next_available);
-                                data.map(Some)
-                            } else {
-                                // Small gap (e.g. 1 or 2 packets).
-                                // Return None to tell Opus to generate "PLC" (Packet Loss Concealment) audio.
-                                // We increment expected seq to try and catch the next one.
-                                self.next_expected_seq = Some(expected.wrapping_add(1));
-                                Some(None)
-                            }
+                        // MISSING PACKET LOGIC
+                        // Check if we have future packets (e.g. expected+1, expected+2)
+                        // This tells us if "expected" is truly lost or just late.
+
+                        let has_future = self.jitter_buffer.contains_key(&expected.wrapping_add(1))
+                                      || self.jitter_buffer.contains_key(&expected.wrapping_add(2));
+
+                        if has_future {
+                            // It's definitely lost. Use PLC.
+                            log::debug!("[Audio] Packet {} LOST (Future arrived). Doing PLC.", expected);
+                            self.next_expected_seq = Some(expected.wrapping_add(1));
+                            Some(None) // Trigger PLC
                         } else {
-                            // Buffer is completely empty. Go back to buffering state.
-                            log::debug!("[Audio] Queue Drained. Buffering...");
-                            self.buffering = true;
-                            None
+                            // We don't have the next packet either. Buffer might be empty or everything is delayed.
+                            // If buffer is empty, go back to buffering.
+                            if self.jitter_buffer.is_empty() {
+                                log::debug!("[Audio] Underrun. Re-buffering...");
+                                self.buffering = true;
+                                None
+                            } else {
+                                // Buffer has data, but it's way in the future (gap > 2).
+                                // OR we just haven't received expected+1 yet.
+                                // For simplicity, if we have data but not the immediate next few, resync.
+                                if let Some(&next_available) = self.jitter_buffer.keys().next() {
+                                     log::warn!("[Audio] Resync: Jump {} -> {}", expected, next_available);
+                                     self.next_expected_seq = Some(next_available.wrapping_add(1));
+                                     let data = self.jitter_buffer.remove(&next_available);
+                                     data.map(Some)
+                                } else {
+                                     // Should be covered by is_empty() check, but safe fallback
+                                     self.buffering = true;
+                                     None
+                                }
+                            }
                         }
                     }
                 } else {
@@ -444,6 +462,7 @@ mod stub_impl {
         pub fn new(_config: AudioConfig, _transport: Box<dyn PacketTransport>) -> Self { Self }
         pub fn start_session(&self) -> Result<(), AudioError> { Ok(()) }
         pub fn stop_session(&self) -> Result<(), AudioError> { Ok(()) }
+        pub fn is_session_active(&self) -> bool { false }
         pub fn set_mic_enabled(&self, _enabled: bool) {}
         pub fn push_incoming_packet(&self, _data: Vec<u8>) {}
     }

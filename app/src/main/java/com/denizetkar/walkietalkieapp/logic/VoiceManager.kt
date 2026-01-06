@@ -93,20 +93,28 @@ class VoiceManager(
      * This ensures the UI state and Rust Hardware state never drift apart.
      */
     fun setMicrophoneEnabled(enabled: Boolean) {
-        if (_isMicrophoneEnabled.value != enabled) {
-            // 1. Update Rust Hardware
-            // (Safe to call even if engine is stopped; it just sets an atomic bool)
-            engine.setMicEnabled(enabled)
-
-            // 2. Update Reactive State
-            _isMicrophoneEnabled.value = enabled
+        // LIVENESS GUARD:
+        // If the engine crashed or isn't running, we must not let the UI say "ON".
+        if (enabled && !engine.isSessionActive()) {
+            Log.w("VoiceManager", "Ignored mic toggle: Audio Engine is dead.")
+            _isMicrophoneEnabled.value = false
+            return
         }
+
+        // 1. Update Rust Hardware (Action)
+        engine.setMicEnabled(enabled)
+
+        // 2. Update Reactive State (State)
+        _isMicrophoneEnabled.value = enabled
     }
 
     /**
      * Feeds incoming BLE Audio Data into the Rust Jitter Buffer.
      */
     fun processIncomingPacket(data: ByteArray) {
+        // Optimization: Don't cross FFI boundary if session is dead
+        if (!engine.isSessionActive()) return
+
         try {
             engine.pushIncomingPacket(data)
         } catch (e: Exception) {

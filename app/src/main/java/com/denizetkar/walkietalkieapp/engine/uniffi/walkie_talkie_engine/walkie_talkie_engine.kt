@@ -658,6 +658,8 @@ internal object IntegrityCheckingUniffiLib {
     }
     external fun uniffi_walkie_talkie_engine_checksum_func_init_logger(
     ): Short
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_is_session_active(
+    ): Short
     external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_push_incoming_packet(
     ): Short
     external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_set_mic_enabled(
@@ -699,6 +701,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`config`: RustBuffer.ByValue,`transport`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_is_session_active(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_push_incoming_packet(`ptr`: Long,`data`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_set_mic_enabled(`ptr`: Long,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
@@ -835,6 +839,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_walkie_talkie_engine_checksum_func_init_logger() != 21797.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_is_session_active() != 47020.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_push_incoming_packet() != 14335.toShort()) {
@@ -1270,6 +1277,8 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 //
 public interface AudioEngineInterface {
     
+    fun `isSessionActive`(): kotlin.Boolean
+    
     fun `pushIncomingPacket`(`data`: kotlin.ByteArray)
     
     fun `setMicEnabled`(`enabled`: kotlin.Boolean)
@@ -1396,6 +1405,19 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
             UniffiLib.uniffi_walkie_talkie_engine_fn_clone_audioengine(handle, status)
         }
     }
+
+    override fun `isSessionActive`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_is_session_active(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
     override fun `pushIncomingPacket`(`data`: kotlin.ByteArray)
         = 
