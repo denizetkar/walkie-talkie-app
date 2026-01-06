@@ -18,13 +18,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlin.random.Random
 
 class WalkieTalkieService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    lateinit var meshController: MeshController
-        private set
+
+    private val _meshController = MutableStateFlow<MeshController?>(null)
+    val meshControllerState = _meshController.asStateFlow()
 
     private val binder = LocalBinder()
 
@@ -34,10 +38,22 @@ class WalkieTalkieService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        val driver = BleDriver(this, serviceScope)
-        val myNodeId = Random.nextInt(1, Int.MAX_VALUE)
-        meshController = MeshController(this, driver, serviceScope, myNodeId)
         startForegroundService()
+
+        // Async Initialization on IO Thread
+        serviceScope.launch {
+            try {
+                Log.i("WalkieTalkieService", "Initializing Engine in Background...")
+                val driver = BleDriver(this@WalkieTalkieService, serviceScope)
+                val myNodeId = Random.nextInt(1, Int.MAX_VALUE)
+                val controller = MeshController(this@WalkieTalkieService, driver, serviceScope, myNodeId)
+                _meshController.value = controller
+                Log.i("WalkieTalkieService", "Engine Initialized.")
+            } catch (e: Exception) {
+                Log.e("WalkieTalkieService", "Fatal Init Error", e)
+                // In a real app, you might emit a specific Error state here
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -54,8 +70,12 @@ class WalkieTalkieService : Service() {
     }
 
     override fun onDestroy() {
-        meshController.leave()
-        meshController.destroy()
+        // Synchronous cleanup using the current value of the StateFlow
+        _meshController.value?.let {
+            it.leave()
+            it.destroy()
+        }
+
         serviceScope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()

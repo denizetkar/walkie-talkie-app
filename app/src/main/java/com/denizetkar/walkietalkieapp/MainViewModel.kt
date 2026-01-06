@@ -18,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -49,9 +50,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as WalkieTalkieService.LocalBinder
-            meshController = binder.getService().meshController
-            _appState.update { it.copy(isServiceBound = true, serviceStartupFailed = false) }
-            subscribeToController()
+            val walkieService = binder.getService()
+            viewModelScope.launch {
+                try {
+                    meshController = walkieService.meshControllerState.filterNotNull().first()
+                    _appState.update { it.copy(isServiceBound = true, serviceStartupFailed = false) }
+                    subscribeToController()
+                } catch (e: Exception) {
+                    Log.e("MainViewModel", "Service Init Failed", e)
+                    _appState.update { it.copy(isServiceBound = false, serviceStartupFailed = true) }
+                }
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {

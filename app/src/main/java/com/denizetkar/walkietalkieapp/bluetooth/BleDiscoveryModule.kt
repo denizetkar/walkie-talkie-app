@@ -78,11 +78,13 @@ class BleDiscoveryModule(
 
         private val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult?) {
-                result?.let { processScanResult(it) }
+                if (result == null) return
+                scope.launch { processScanResult(result) }
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>?) {
-                results?.forEach { processScanResult(it) }
+                if (results == null) return
+                scope.launch { results.forEach { processScanResult(it) } }
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -118,7 +120,7 @@ class BleDiscoveryModule(
         fun stop() {
             try {
                 scanner?.stopScan(callback)
-                Log.d("BleDiscovery", "Hardware Scan Stopped")
+                Log.d("BleDiscovery", "Discovery Stopped")
             } catch (e: Exception) {
                 Log.w("BleDiscovery", "Error stopping scan", e)
             }
@@ -157,6 +159,7 @@ class BleDiscoveryModule(
             hopsToRoot = hops,
             isAvailable = isAvailable
         )
-        scope.launch { _events.emit(node) }
+
+        _events.tryEmit(node)
     }
 }
