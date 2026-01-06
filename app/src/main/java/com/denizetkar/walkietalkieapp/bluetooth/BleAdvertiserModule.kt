@@ -70,7 +70,7 @@ class BleAdvertiserModule(
             .setLegacyMode(true)
             .setConnectable(true)
             .setScannable(true)
-            .setInterval(AdvertisingSetParameters.INTERVAL_LOW)
+            .setInterval(AdvertisingSetParameters.INTERVAL_HIGH)
             .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_HIGH)
             .build()
 

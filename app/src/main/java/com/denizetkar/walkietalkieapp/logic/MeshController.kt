@@ -47,7 +47,6 @@ class MeshController(
     // --- Logic & Subsystems ---
     private val topology = TopologyEngine(ownNodeId)
     private val seenPackets = ConcurrentHashMap<Int, Long>()
-    private val pendingConnections = ConcurrentHashMap.newKeySet<Int>()
     private val lastHeardFrom = ConcurrentHashMap<Int, Long>()
 
     // Define Transport Callback (Rust -> Kotlin -> BLE)
@@ -76,7 +75,7 @@ class MeshController(
     fun checkSystemRequirements(): Result<Unit> = driver.validateCapabilities()
 
     // ===========================================================================
-    // Public API (Called from Main Thread)
+    // Public API
     // ===========================================================================
 
     fun startGroupScan() {
@@ -155,7 +154,7 @@ class MeshController(
     fun destroy() = driver.destroy()
 
     // ===========================================================================
-    // Radio Logic (Suspend Functions)
+    // Radio Logic
     // ===========================================================================
 
     private fun startRadioLogic(groupName: String) {
@@ -226,7 +225,6 @@ class MeshController(
                 // Action: STOP scanning immediately to free up radio bandwidth.
                 Log.d("MeshController", "Mic Active: Aborting Scan to prioritize Audio")
                 driver.stopScanning()
-                // We suspend here until isMicOn becomes false again.
             } else {
                 // Scenario: User is Listening/Idle.
                 // Action: Resume periodic scanning logic.
@@ -345,6 +343,9 @@ class MeshController(
         if (s is EngineState.RadioActive && node.name == s.groupName) {
             val topo = topology.getCurrentState()
             val currentPeers = driver.connectedPeers.value
+
+            // Check existing connection (simple optimization)
+            // BUT: We rely on Driver to deduplicate if we are wrong
             if (currentPeers.contains(node.nodeId)) return
 
             var shouldConnect = false
@@ -361,12 +362,7 @@ class MeshController(
     }
 
     private fun connectSafely(node: TransportNode) {
-        if (pendingConnections.contains(node.nodeId)) return
-        pendingConnections.add(node.nodeId)
-        scope.launch {
-            try { driver.connectTo(node.id, node.nodeId) }
-            finally { pendingConnections.remove(node.nodeId) }
-        }
+        scope.launch { driver.connectTo(node.id, node.nodeId) }
     }
 
     private fun handleData(event: BleDriverEvent.DataReceived) {

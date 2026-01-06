@@ -175,7 +175,6 @@ class GattClientHandler(
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             Log.d("GattClient", "Descriptor Write: ${descriptor.characteristic.uuid}, $status")
             operationQueue.operationCompleted()
-
             if (status == BluetoothGatt.GATT_SUCCESS && descriptor.characteristic.uuid == Config.CHAR_CONTROL_UUID) {
                 sendHello()
             }
@@ -211,7 +210,6 @@ class GattClientHandler(
     private fun sendHello() {
         Log.d("GattClient", "Subscription Confirmed. Sending HELLO.")
         val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_CLIENT_HELLO, ByteArray(0))
-
         operationQueue.enqueue(TransportDataType.CONTROL) {
             writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
         }

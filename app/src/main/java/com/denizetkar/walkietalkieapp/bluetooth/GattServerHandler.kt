@@ -144,10 +144,14 @@ class GattServerHandler(
     @SuppressLint("MissingPermission")
     private fun handleAuthResponse(device: BluetoothDevice, payload: ByteArray) {
         val address = device.address.uppercase()
-        val nonce = pendingChallenges[address]
-        val code = currentAccessCode
-        if (nonce == null || code == null) return
 
+        // ATOMIC OPERATION: Remove the nonce.
+        // If it returns null, either we never challenged them, OR another thread already processed it.
+        val nonce = pendingChallenges.remove(address) ?: run {
+            Log.w("GattServer", "Duplicate or invalid Auth Response from $address")
+            return
+        }
+        val code = currentAccessCode ?: return
         val clientNodeId = ProtocolUtils.verifyHandshake(payload, code, nonce)
 
         scope.launch {
@@ -158,7 +162,7 @@ class GattServerHandler(
                 notifyDevice(device, successPacket, TransportDataType.CONTROL)
                 _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId))
             } else {
-                Log.w("GattServer", "Auth Failed. Sending NACK and Disconnecting.")
+                Log.w("GattServer", "Auth Failed. Sending NACK.")
                 val failPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x00))
                 pendingDisconnects.add(address)
                 notifyDevice(device, failPacket, TransportDataType.CONTROL)
