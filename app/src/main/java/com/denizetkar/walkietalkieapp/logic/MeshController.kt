@@ -3,9 +3,21 @@ package com.denizetkar.walkietalkieapp.logic
 import android.content.Context
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
-import com.denizetkar.walkietalkieapp.network.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import com.denizetkar.walkietalkieapp.network.AdvertisingConfig
+import com.denizetkar.walkietalkieapp.network.BleDriver
+import com.denizetkar.walkietalkieapp.network.BleDriverEvent
+import com.denizetkar.walkietalkieapp.network.DiscoveredGroup
+import com.denizetkar.walkietalkieapp.network.TransportDataType
+import com.denizetkar.walkietalkieapp.network.TransportNode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import uniffi.walkie_talkie_engine.PacketTransport
 import uniffi.walkie_talkie_engine.initLogger
 import java.util.concurrent.ConcurrentHashMap
@@ -34,19 +46,18 @@ class MeshController(
 
     // --- Logic & Subsystems ---
     private val topology = TopologyEngine(ownNodeId)
-
     private val seenPackets = ConcurrentHashMap<Int, Long>()
     private val pendingConnections = ConcurrentHashMap.newKeySet<Int>()
     private val lastHeardFrom = ConcurrentHashMap<Int, Long>()
 
-    // 1. Define Transport Callback (Rust -> Kotlin -> BLE)
+    // Define Transport Callback (Rust -> Kotlin -> BLE)
     private val packetTransport = object : PacketTransport {
         override fun sendPacket(data: ByteArray) {
             broadcastGeneratedPacket(data, TransportDataType.AUDIO)
         }
     }
 
-    // 2. Voice Manager (Single Source of Truth for Audio)
+    // Voice Manager (Single Source of Truth for Audio)
     private val voiceManager = VoiceManager(context, packetTransport)
 
     // --- Jobs ---
@@ -58,11 +69,7 @@ class MeshController(
 
     init {
         try { initLogger() } catch (_: Exception) {}
-
-        scope.launch {
-            driver.events.collect { event -> handleDriverEvent(event) }
-        }
-
+        scope.launch { driver.events.collect { handleDriverEvent(it) } }
         startPacketCleanup()
     }
 
@@ -100,15 +107,8 @@ class MeshController(
         transitionTo(EngineState.Idle)
     }
 
-    fun startTalking() {
-        if (_state.value is EngineState.RadioActive) {
-            voiceManager.setMicrophoneEnabled(true)
-        }
-    }
-
-    fun stopTalking() {
-        voiceManager.setMicrophoneEnabled(false)
-    }
+    fun startTalking() = voiceManager.setMicrophoneEnabled(true)
+    fun stopTalking() = voiceManager.setMicrophoneEnabled(false)
 
     // ===========================================================================
     // State Machine
@@ -152,9 +152,7 @@ class MeshController(
         }
     }
 
-    fun destroy() {
-        driver.destroy()
-    }
+    fun destroy() = driver.destroy()
 
     // ===========================================================================
     // Radio Logic (Suspend Functions)
@@ -194,7 +192,6 @@ class MeshController(
             delay(Config.CLEANUP_PERIOD)
             val now = System.currentTimeMillis()
             val peers = driver.connectedPeers.value
-
             for (peerId in peers) {
                 val lastTime = lastHeardFrom[peerId] ?: now
                 if (now - lastTime > Config.PEER_CONNECT_TIMEOUT) {
@@ -208,9 +205,7 @@ class MeshController(
 
     private suspend fun CoroutineScope.runHeartbeatLoop(groupName: String) {
         while (isActive) {
-            if (topology.checkTimeout()) {
-                refreshAdvertising(groupName)
-            }
+            if (topology.checkTimeout()) refreshAdvertising(groupName)
             val packet = topology.generateHeartbeat()
             if (packet != null) {
                 broadcastGeneratedPacket(packet, TransportDataType.CONTROL)
@@ -219,38 +214,49 @@ class MeshController(
         }
     }
 
+    /**
+     * REACTIVE SCAN LOOP
+     * Observes VoiceManager.isMicrophoneEnabled.
+     * Uses collectLatest to automatically cancel the scanning loop when the user starts talking.
+     */
     private suspend fun CoroutineScope.runScanLoop() {
-        while (isActive) {
-            val peers = driver.connectedPeers.value.size
-            val scanDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PERIOD_AGGRESSIVE else Config.SCAN_PERIOD_LAZY
-            val pauseDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PAUSE_AGGRESSIVE else Config.SCAN_INTERVAL_LAZY
+        voiceManager.isMicrophoneEnabled.collectLatest { isMicOn ->
+            if (isMicOn) {
+                // Scenario: User started Talking.
+                // Action: STOP scanning immediately to free up radio bandwidth.
+                Log.d("MeshController", "Mic Active: Aborting Scan to prioritize Audio")
+                driver.stopScanning()
+                // We suspend here until isMicOn becomes false again.
+            } else {
+                // Scenario: User is Listening/Idle.
+                // Action: Resume periodic scanning logic.
+                Log.d("MeshController", "Mic Idle: Resuming Background Scanning")
 
-            driver.startScanning()
-            delay(scanDuration)
-            driver.stopScanning()
-            delay(pauseDuration)
+                // This loop will run until isMicOn changes (causing collectLatest to cancel this block)
+                while (isActive) {
+                    val peers = driver.connectedPeers.value.size
+                    val scanDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PERIOD_AGGRESSIVE else Config.SCAN_PERIOD_LAZY
+                    val pauseDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PAUSE_AGGRESSIVE else Config.SCAN_INTERVAL_LAZY
+
+                    driver.startScanning()
+                    delay(scanDuration)
+                    driver.stopScanning()
+                    delay(pauseDuration)
+                }
+            }
         }
     }
 
     private fun refreshAdvertising(groupName: String) {
         val topo = topology.getCurrentState()
         val isAvailable = driver.connectedPeers.value.size < Config.MAX_PEERS
-
-        val config = AdvertisingConfig(
-            groupName = groupName,
-            ownNodeId = ownNodeId,
-            networkId = topo.currentNetworkId,
-            hopsToRoot = topo.hopsToRoot,
-            isAvailable = isAvailable
-        )
+        val config = AdvertisingConfig(groupName, ownNodeId, topo.currentNetworkId, topo.hopsToRoot, isAvailable)
         driver.startAdvertising(config)
     }
 
     private fun broadcastGeneratedPacket(data: ByteArray, type: TransportDataType) {
         markPacketAsSeen(data)
-        scope.launch {
-            driver.broadcast(data, type)
-        }
+        scope.launch { driver.broadcast(data, type) }
     }
 
     // ===========================================================================
@@ -315,7 +321,6 @@ class MeshController(
     private fun updatePeerCount() {
         val s = _state.value
         val count = driver.connectedPeers.value.size
-
         if (s is EngineState.RadioActive) {
             _state.value = s.copy(peerCount = count)
             refreshAdvertising(s.groupName)
@@ -366,7 +371,6 @@ class MeshController(
 
     private fun handleData(event: BleDriverEvent.DataReceived) {
         lastHeardFrom[event.fromNodeId] = System.currentTimeMillis()
-
         val packetHash = event.data.contentHashCode()
         if (seenPackets.containsKey(packetHash)) return
         seenPackets[packetHash] = System.currentTimeMillis()
@@ -375,21 +379,16 @@ class MeshController(
             val (type, payload) = PacketUtils.parseControlPacket(event.data) ?: return
             if (type == PacketUtils.TYPE_HEARTBEAT) {
                 val (netId, seq, hops) = PacketUtils.parseHeartbeatPayload(payload) ?: return
-
                 if (topology.onHeartbeatReceived(netId, seq, hops)) {
                     val s = _state.value
                     if (s is EngineState.RadioActive) refreshAdvertising(s.groupName)
-
                     val newPayload = PacketUtils.createHeartbeatPayload(netId, seq, hops + 1)
                     val newPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, newPayload)
                     broadcastGeneratedPacket(newPacket, TransportDataType.CONTROL)
                 }
             }
         } else {
-            // Forward audio to VoiceManager
             voiceManager.processIncomingPacket(event.data)
-
-            // Flood to others
             scope.launch { driver.broadcast(event.data, TransportDataType.AUDIO) }
         }
     }

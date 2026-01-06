@@ -8,6 +8,8 @@ import android.media.AudioManager
 import android.os.Build
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import uniffi.walkie_talkie_engine.AudioConfig
 import uniffi.walkie_talkie_engine.AudioEngine
 import uniffi.walkie_talkie_engine.PacketTransport
@@ -21,19 +23,22 @@ import uniffi.walkie_talkie_engine.PacketTransport
  */
 class VoiceManager(
     context: Context,
-    packetTransport: PacketTransport // Callback to send data to BLE
+    packetTransport: PacketTransport
 ) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusRequest: AudioFocusRequest? = null
 
-    // Rust Engine Configuration
+    // This Boolean is the Source of Truth for the UI and MeshController.
+    // The Rust Engine simply mirrors this value.
+    private val _isMicrophoneEnabled = MutableStateFlow(false)
+    val isMicrophoneEnabled = _isMicrophoneEnabled.asStateFlow()
+
     private val rustConfig = AudioConfig(
         sampleRate = Config.AUDIO_SAMPLE_RATE,
         frameSizeMs = Config.AUDIO_FRAME_SIZE_MS,
         jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS
     )
 
-    // The Rust Engine is private. Only this class manages its lifecycle.
     private val engine = AudioEngine(rustConfig, packetTransport)
 
     /**
@@ -53,8 +58,9 @@ class VoiceManager(
 
         // 2. Hardware Setup (Rust)
         try {
-            engine.startSession() // Starts Oboe streams. Latency hit happens here once.
-            engine.setMicEnabled(false) // Start Muted
+            engine.startSession()
+            // Initialize state to False (Muted) via the standard setter
+            setMicrophoneEnabled(false)
         } catch (e: Exception) {
             Log.e("VoiceManager", "Failed to start Rust Engine", e)
         }
@@ -66,25 +72,35 @@ class VoiceManager(
     fun stop() {
         Log.i("VoiceManager", "Stopping Voice System...")
 
-        // 1. Teardown Hardware
+        // 1. Reset State via the standard setter (Keeps logic consistent)
+        setMicrophoneEnabled(false)
+
+        // 2. Teardown Hardware
         try {
             engine.stopSession()
         } catch (e: Exception) {
             Log.e("VoiceManager", "Error stopping engine", e)
         }
 
-        // 2. Teardown Android System
+        // 3. Teardown Android System
         abandonAudioFocus()
         setSpeakerphone(false)
         audioManager.mode = AudioManager.MODE_NORMAL
     }
 
     /**
-     * Push-to-Talk Logic.
-     * @param enabled true = Broadcast audio, false = Mute (Hardware stays running)
+     * The ONLY place where _isMicrophoneEnabled is modified.
+     * This ensures the UI state and Rust Hardware state never drift apart.
      */
     fun setMicrophoneEnabled(enabled: Boolean) {
-        engine.setMicEnabled(enabled)
+        if (_isMicrophoneEnabled.value != enabled) {
+            // 1. Update Rust Hardware
+            // (Safe to call even if engine is stopped; it just sets an atomic bool)
+            engine.setMicEnabled(enabled)
+
+            // 2. Update Reactive State
+            _isMicrophoneEnabled.value = enabled
+        }
     }
 
     /**
