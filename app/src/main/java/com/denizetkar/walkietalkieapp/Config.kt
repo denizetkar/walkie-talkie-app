@@ -16,7 +16,9 @@ object Config {
     const val AUDIO_FRAME_SIZE_MS = 60
 
     // Max depth of the jitter buffer before we drop packets to catch up.
-    const val AUDIO_JITTER_BUFFER_MS = 500
+    const val AUDIO_JITTER_BUFFER_MS = 1000
+
+    const val MAX_AUDIO_QUEUE_CAPACITY = 5
 
     // Mesh Topology Constraints
     const val TARGET_PEERS = 3

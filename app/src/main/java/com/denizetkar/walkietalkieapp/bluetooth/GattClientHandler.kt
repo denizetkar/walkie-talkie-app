@@ -103,17 +103,9 @@ class GattClientHandler(
     }
 
     fun sendMessage(type: TransportDataType, data: ByteArray) {
-        val (uuid, writeType, priority) = when (type) {
-            TransportDataType.AUDIO -> Triple(
-                Config.CHAR_DATA_UUID,
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
-                1
-            )
-            TransportDataType.CONTROL -> Triple(
-                Config.CHAR_CONTROL_UUID,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-                0
-            )
+        val (uuid, writeType) = when (type) {
+            TransportDataType.AUDIO -> Config.CHAR_DATA_UUID to BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            TransportDataType.CONTROL -> Config.CHAR_CONTROL_UUID to BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
 
         val payload = if (type == TransportDataType.CONTROL) {
@@ -122,7 +114,9 @@ class GattClientHandler(
             data
         }
 
-        operationQueue.enqueue(priority) { writeCharacteristicInternal(uuid, payload, writeType) }
+        operationQueue.enqueue(type) {
+            writeCharacteristicInternal(uuid, payload, writeType)
+        }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -140,7 +134,7 @@ class GattClientHandler(
 
                 gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
 
-                operationQueue.enqueue(0) {
+                operationQueue.enqueue(TransportDataType.CONTROL) {
                     if (!gatt.discoverServices()) {
                         Log.e("GattClient", "Service Discovery Failed to Start")
                         disconnect()
@@ -170,11 +164,14 @@ class GattClientHandler(
             }
 
             Log.d("GattClient", "Services Discovered. Queueing Subscriptions (MTU 23)...")
-            operationQueue.enqueue(0) {
+
+            operationQueue.enqueue(TransportDataType.CONTROL) {
                 delay(300)
                 subscribeToCharacteristic(gatt, service, Config.CHAR_CONTROL_UUID)
             }
-            operationQueue.enqueue(0) { subscribeToCharacteristic(gatt, service, Config.CHAR_DATA_UUID) }
+            operationQueue.enqueue(TransportDataType.CONTROL) {
+                subscribeToCharacteristic(gatt, service, Config.CHAR_DATA_UUID)
+            }
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
@@ -216,7 +213,8 @@ class GattClientHandler(
     private fun sendHello() {
         Log.d("GattClient", "Subscription Confirmed. Sending HELLO.")
         val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_CLIENT_HELLO, ByteArray(0))
-        operationQueue.enqueue(0) {
+
+        operationQueue.enqueue(TransportDataType.CONTROL) {
             writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
         }
     }
@@ -275,7 +273,8 @@ class GattClientHandler(
                             handshakeTimeoutJob?.cancel()
 
                             Log.d("GattClient", "Auth Success. Requesting MTU...")
-                            operationQueue.enqueue(0) {
+
+                            operationQueue.enqueue(TransportDataType.CONTROL) {
                                 if (!bluetoothGatt?.requestMtu(Config.BLE_MTU)!!) {
                                     Log.e("GattClient", "MTU Request Failed")
                                     scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
@@ -300,7 +299,10 @@ class GattClientHandler(
         val responsePayload = ProtocolUtils.generateHandshakeResponse(accessCode, nonce, ownNodeId)
         val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESPONSE, responsePayload)
         Log.d("GattClient", "Sending Challenge Response...")
-        operationQueue.enqueue(0) { writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) }
+
+        operationQueue.enqueue(TransportDataType.CONTROL) {
+            writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        }
     }
 
     @SuppressLint("MissingPermission")

@@ -28,7 +28,7 @@ impl Default for AudioConfig {
         Self {
             sample_rate: 48000,
             frame_size_ms: 60,
-            jitter_buffer_ms: 500,
+            jitter_buffer_ms: 1000,
         }
     }
 }
@@ -286,7 +286,7 @@ mod real_impl {
         type FrameType = (i16, Mono);
 
         fn on_audio_ready(&mut self, _stream: &mut dyn AudioOutputStreamSafe, frames: &mut [i16]) -> DataCallbackResult {
-            // 1. Drain Channel
+            // 1. Drain Channel (Move packets from Thread-Safe Queue to Jitter Buffer)
             while let Ok(packet_data) = self.incoming_rx.try_recv() {
                 if let Some((seq, opus_data)) = unwrap_packet(&packet_data) {
                     self.jitter_buffer.insert(seq, opus_data.to_vec());
@@ -298,12 +298,14 @@ mod real_impl {
             let mut samples_filled = 0;
 
             while samples_filled < samples_needed {
+                // If we have leftover decoded audio from previous frame, use it first
                 if self.buffer_pos > 0 {
                     let to_copy = std::cmp::min(samples_needed - samples_filled, self.buffer_pos);
                     for i in 0..to_copy {
                         frames[samples_filled + i] = self.buffer[i];
                     }
 
+                    // Shift remaining buffer data to the start (memmove)
                     let remaining = self.buffer_pos - to_copy;
                     unsafe {
                         std::ptr::copy(
@@ -317,18 +319,18 @@ mod real_impl {
                     continue;
                 }
 
-                // Overflow Protection
+                // Overflow Protection: If buffer is too big, drop oldest
                 while self.jitter_buffer.len() > self.max_jitter_packets {
                     if let Some(&first) = self.jitter_buffer.keys().next() {
-                        log::warn!("[Audio] Jitter Buffer Overflow! Dropping Seq {}", first);
+                        // log::warn!("[Audio] Overflow! Dropping {}", first); // Commented out to reduce log spam
                         self.jitter_buffer.remove(&first);
                         self.next_expected_seq = Some(first.wrapping_add(1));
                     }
                 }
 
-                // Buffering Logic
+                // Buffering Logic (Wait until we have enough packets to start)
                 if self.buffering {
-                    if self.jitter_buffer.len() >= 4 {
+                    if self.jitter_buffer.len() >= 6 {
                         self.buffering = false;
                         if let Some(&first_seq) = self.jitter_buffer.keys().next() {
                             self.next_expected_seq = Some(first_seq);
@@ -342,27 +344,32 @@ mod real_impl {
                     }
                 }
 
-                // Get Packet
+                // Get Packet Logic
                 let packet_to_decode = if let Some(expected) = self.next_expected_seq {
                     if let Some(data) = self.jitter_buffer.remove(&expected) {
+                        // Happy Path: We found the exact packet we wanted
                         self.next_expected_seq = Some(expected.wrapping_add(1));
                         Some(Some(data))
                     } else {
-                        // Packet missing
+                        // Packet Missing. Check the next available one.
                         if let Some(&next_available) = self.jitter_buffer.keys().next() {
                             let gap = next_available.wrapping_sub(expected);
                             if gap > 3000 {
+                                // Huge gap means stream reset or massive loss. Resync.
                                 log::warn!("[Audio] Large Gap Detected ({} -> {}). Resetting.", expected, next_available);
                                 self.next_expected_seq = Some(next_available.wrapping_add(1));
                                 let data = self.jitter_buffer.remove(&next_available);
                                 data.map(Some)
                             } else {
-                                log::debug!("[Audio] Packet {} missing. Inserting Silence.", expected);
+                                // Small gap (e.g. 1 or 2 packets).
+                                // Return None to tell Opus to generate "PLC" (Packet Loss Concealment) audio.
+                                // We increment expected seq to try and catch the next one.
                                 self.next_expected_seq = Some(expected.wrapping_add(1));
                                 Some(None)
                             }
                         } else {
-                            log::info!("[Audio] Queue Drained. Entering Buffering Mode...");
+                            // Buffer is completely empty. Go back to buffering state.
+                            log::debug!("[Audio] Queue Drained. Buffering...");
                             self.buffering = true;
                             None
                         }
@@ -371,14 +378,16 @@ mod real_impl {
                     None
                 };
 
-                // Decode
+                // Decode Logic
                 if let Some(maybe_data) = packet_to_decode {
                     let mut decoded_chunk = [0i16; MAX_BUFFER_SIZE];
                     let len = match maybe_data {
                         Some(data) => {
+                            // Decode real audio
                             self.decoder.decode(&data, &mut decoded_chunk, false).unwrap_or(0)
                         },
                         None => {
+                            // Decode "Loss" (PLC) - Opus invents audio based on previous frames
                             self.decoder.decode(&[], &mut decoded_chunk, true).unwrap_or(0)
                         }
                     };
@@ -390,6 +399,7 @@ mod real_impl {
                         self.buffer_pos += len;
                     }
                 } else {
+                    // Should not happen often, fill rest with silence
                     let remaining = samples_needed - samples_filled;
                     for i in 0..remaining { frames[samples_filled + i] = 0; }
                     break;
