@@ -19,6 +19,7 @@ object Config {
     const val AUDIO_JITTER_BUFFER_MS = 1000
 
     const val MAX_AUDIO_QUEUE_CAPACITY = 5
+    const val AUDIO_STARVATION_THRESHOLD = 4
 
     // Mesh Topology Constraints
     const val TARGET_PEERS = 3
