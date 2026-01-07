@@ -12,19 +12,26 @@ object Config {
     const val BLE_MANUFACTURER_ID = 0xFFFF
 
     // --- Audio Configuration ---
+    // 48kHz is the native sample rate for most Android devices (avoids resampling)
     const val AUDIO_SAMPLE_RATE = 48000
+
+    // 60ms Frame = ~16 packets/sec.
+    // This is much friendlier to BLE than the previous 40ms (25 packets/sec).
     const val AUDIO_FRAME_SIZE_MS = 60
+
+    // Max depth of the jitter buffer before we drop packets to catch up.
     const val AUDIO_JITTER_BUFFER_MS = 1000
 
     // --- Protocol Layouts (Byte Offsets & Sizes) ---
     // Service Data: [NodeID(4)] [NetworkID(4)] [Hops(1)] [Avail(1)]
     const val PACKET_SERVICE_DATA_SIZE = 10
 
-    // Handshake Hash Size (Truncated SHA-256)
+    // Handshake Hash Size (Truncated SHA-256 to fit in small packets)
     const val PROTOCOL_HASH_SIZE = 12
 
     // --- Buffer Sizes & Limits ---
     const val MAX_AUDIO_QUEUE_CAPACITY = 5
+    const val AUDIO_STARVATION_THRESHOLD = 4
     const val EVENT_FLOW_BUFFER_CAPACITY = 256
 
     // Mesh Topology Constraints
@@ -38,10 +45,7 @@ object Config {
     const val WORST_RSSI = -100
 
     // --- Tuning / Timeouts ---
-    // Audio Starvation: How many Control packets before we FORCE an Audio packet?
-    const val AUDIO_STARVATION_THRESHOLD = 4
-
-    // Retry count for reliable Control Packets
+    // Retry count for reliable Control Packets (GATT writes)
     const val GATT_RETRY_ATTEMPTS = 3
 
     // Artificial delay to allow Android GATT stack to stabilize after service discovery

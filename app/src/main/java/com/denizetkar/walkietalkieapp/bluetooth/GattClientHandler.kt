@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import java.util.UUID
 
 sealed class ClientEvent {
@@ -113,7 +114,7 @@ class GattClientHandler(
         }
 
         operationQueue.enqueue(type) {
-            writeCharacteristicInternal(uuid, payload, writeType)
+            writeCharacteristicInternal(uuid, payload, writeType, type)
         }
     }
 
@@ -189,6 +190,8 @@ class GattClientHandler(
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            // This callback fires even for WRITE_TYPE_NO_RESPONSE (on most devices)
+            // to indicate the buffer is free. We must always unblock the queue here.
             operationQueue.operationCompleted()
         }
 
@@ -207,7 +210,7 @@ class GattClientHandler(
         Log.d("GattClient", "Subscription Confirmed. Sending HELLO.")
         val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_CLIENT_HELLO, ByteArray(0))
         operationQueue.enqueue(TransportDataType.CONTROL) {
-            writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, TransportDataType.CONTROL)
         }
     }
 
@@ -291,35 +294,56 @@ class GattClientHandler(
         Log.d("GattClient", "Sending Challenge Response...")
 
         operationQueue.enqueue(TransportDataType.CONTROL) {
-            writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            writeCharacteristicInternal(Config.CHAR_CONTROL_UUID, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, TransportDataType.CONTROL)
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun writeCharacteristicInternal(uuid: UUID, data: ByteArray, writeType: Int) {
+    private suspend fun writeCharacteristicInternal(uuid: UUID, data: ByteArray, writeType: Int, type: TransportDataType) {
         val service = bluetoothGatt?.getService(Config.APP_SERVICE_UUID) ?: run {
+            Log.e("GattClient", "Service not found when writing to $uuid")
             operationQueue.operationCompleted()
             return
         }
         val char = service.getCharacteristic(uuid) ?: run {
+            Log.e("GattClient", "Characteristic not found: $uuid")
             operationQueue.operationCompleted()
             return
         }
 
-        val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            bluetoothGatt?.writeCharacteristic(char, data, writeType) == BluetoothStatusCodes.SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
-            char.writeType = writeType
-            @Suppress("DEPRECATION")
-            char.value = data
-            @Suppress("DEPRECATION")
-            bluetoothGatt?.writeCharacteristic(char) == true
+        val maxAttempts = if (type == TransportDataType.CONTROL) Config.GATT_RETRY_ATTEMPTS else 1
+        repeat(maxAttempts) { attempt ->
+            val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                bluetoothGatt?.writeCharacteristic(char, data, writeType) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                char.writeType = writeType
+                @Suppress("DEPRECATION")
+                char.value = data
+                @Suppress("DEPRECATION")
+                bluetoothGatt?.writeCharacteristic(char) == true
+            }
+
+            if (success) {
+                // Stack accepted the request.
+                // We return immediately and wait for onCharacteristicWrite to unblock queue.
+                if (attempt > 0) Log.w("GattClient", "Write to $uuid succeeded after $attempt retries")
+                return
+            }
+
+            // Failure (Stack busy). If Control, yield and retry.
+            if (type == TransportDataType.CONTROL) yield()
         }
 
-        if (!success) {
-            Log.e("GattClient", "writeCharacteristic failed for $uuid")
-            operationQueue.operationCompleted()
+        // If we reach here, we exhausted retries (or failed the single Audio attempt).
+        // Since success was never true, onCharacteristicWrite will NEVER fire.
+        // We MUST manually unblock the queue.
+        if (type == TransportDataType.CONTROL) {
+            Log.e("GattClient", "CRITICAL: FAILED to write CONTROL to $uuid after $maxAttempts attempts.")
+        } else {
+            // For audio, this is expected occasionally. Use warn/debug.
+            Log.w("GattClient", "Dropped Audio Packet (Stack Busy)")
         }
+        operationQueue.operationCompleted()
     }
 }

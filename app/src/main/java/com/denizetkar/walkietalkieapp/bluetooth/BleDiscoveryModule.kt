@@ -67,10 +67,7 @@ class BleDiscoveryModule(
     @SuppressLint("MissingPermission")
     fun stop() {
         val session = activeSession.getAndSet(null)
-        if (session != null) {
-            session.stop()
-            Log.d("BleDiscovery", "Discovery Stopped")
-        }
+        session?.stop()
     }
 
     private inner class ScanSession {

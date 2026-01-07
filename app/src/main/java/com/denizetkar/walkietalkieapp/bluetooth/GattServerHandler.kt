@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 sealed class ServerEvent {
     data class ClientConnected(val device: BluetoothDevice) : ServerEvent()
-    data class ClientAuthenticated(val device: BluetoothDevice, val nodeId: UInt) : ServerEvent() // CHANGED
+    data class ClientAuthenticated(val device: BluetoothDevice, val nodeId: UInt) : ServerEvent()
     data class ClientDisconnected(val device: BluetoothDevice) : ServerEvent()
     data class MessageReceived(val device: BluetoothDevice, val data: ByteArray, val type: TransportDataType) : ServerEvent()
 }

@@ -5,8 +5,6 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 
 object ProtocolUtils {
-    // CHANGED: Reduced hash size to 12 bytes to fit in default MTU (23)
-    // 2 (Header) + 12 (Hash) + 4 (NodeID) = 18 bytes < 20 bytes limit
     private const val HASH_SIZE = Config.PROTOCOL_HASH_SIZE
 
     fun generateHandshakeResponse(accessCode: String, nonce: String, ownNodeId: UInt): ByteArray {
