@@ -137,11 +137,13 @@ class BleDiscoveryModule(
         if (serviceData.size < 10) return
 
         val buffer = ByteBuffer.wrap(serviceData).order(ByteOrder.LITTLE_ENDIAN)
-        val nodeId = buffer.int
-        val networkId = buffer.int
+
+        // BIT-CAST: Int to UInt for Logic
+        val nodeId = buffer.int.toUInt()
+        val networkId = buffer.int.toUInt()
+
         val hops = buffer.get().toInt()
-        val availabilityByte = buffer.get().toInt()
-        val isAvailable = (availabilityByte == 1)
+        val isAvailable = (buffer.get().toInt() == 1)
 
         val manufacturerBytes = record.getManufacturerSpecificData(0xFFFF)
         val groupName = if (manufacturerBytes != null) {

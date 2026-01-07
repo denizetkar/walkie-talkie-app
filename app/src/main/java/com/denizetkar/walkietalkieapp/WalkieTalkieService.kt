@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.random.Random
+import kotlin.random.nextUInt
 
 class WalkieTalkieService : Service() {
 
@@ -40,12 +41,12 @@ class WalkieTalkieService : Service() {
         super.onCreate()
         startForegroundService()
 
-        // Async Initialization on IO Thread
         serviceScope.launch {
             try {
                 Log.i("WalkieTalkieService", "Initializing Engine in Background...")
                 val driver = BleDriver(this@WalkieTalkieService, serviceScope)
-                val myNodeId = Random.nextInt(1, Int.MAX_VALUE)
+                val myNodeId = Random.nextUInt()
+                Log.i("WalkieTalkieService", "Generated Node ID: $myNodeId")
                 val controller = MeshController(this@WalkieTalkieService, driver, serviceScope, myNodeId)
                 _meshController.value = controller
                 Log.i("WalkieTalkieService", "Engine Initialized.")
@@ -64,13 +65,7 @@ class WalkieTalkieService : Service() {
         return binder
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        super.onTaskRemoved(rootIntent)
-        Log.i("WalkieTalkieService", "Task Removed. Service continuing.")
-    }
-
     override fun onDestroy() {
-        // Synchronous cleanup using the current value of the StateFlow
         _meshController.value?.let {
             it.leave()
             it.destroy()
@@ -84,7 +79,6 @@ class WalkieTalkieService : Service() {
     private fun startForegroundService() {
         val channelId = "WalkieTalkieChannel"
         val manager = getSystemService(NotificationManager::class.java)
-
         val channel = NotificationChannel(channelId, "Walkie Talkie Service", NotificationManager.IMPORTANCE_LOW)
         manager.createNotificationChannel(channel)
 

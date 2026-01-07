@@ -24,7 +24,7 @@ import uniffi.walkie_talkie_engine.PacketTransport
 class VoiceManager(
     context: Context,
     packetTransport: PacketTransport,
-    ownNodeId: Int
+    ownNodeId: UInt
 ) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusRequest: AudioFocusRequest? = null

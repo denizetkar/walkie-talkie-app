@@ -4,8 +4,8 @@ package com.denizetkar.walkietalkieapp.network
 
 data class AdvertisingConfig(
     val groupName: String,
-    val ownNodeId: Int,
-    val networkId: Int,
+    val ownNodeId: UInt,
+    val networkId: UInt,
     val hopsToRoot: Int,
     val isAvailable: Boolean
 )
@@ -29,8 +29,8 @@ data class TransportNode(
     val id: String,           // MAC Address
     val name: String,         // Group Name
     val rssi: Int,
-    val nodeId: Int,          // The peer's random ID
-    val networkId: Int,       // The Root they follow
+    val nodeId: UInt,          // The peer's random ID
+    val networkId: UInt,       // The Root they follow
     val hopsToRoot: Int,
     val isAvailable: Boolean
 )
@@ -48,9 +48,9 @@ data class DiscoveredGroup(
 
 sealed interface BleDriverEvent {
     data class PeerDiscovered(val node: TransportNode) : BleDriverEvent
-    data class PeerConnected(val nodeId: Int) : BleDriverEvent
-    data class PeerDisconnected(val nodeId: Int) : BleDriverEvent
-    data class DataReceived(val fromNodeId: Int, val data: ByteArray, val type: TransportDataType) : BleDriverEvent
+    data class PeerConnected(val nodeId: UInt) : BleDriverEvent
+    data class PeerDisconnected(val nodeId: UInt) : BleDriverEvent
+    data class DataReceived(val fromNodeId: UInt, val data: ByteArray, val type: TransportDataType) : BleDriverEvent
     data class Error(val message: String) : BleDriverEvent
 }
 
@@ -74,7 +74,7 @@ interface TransportStrategy {
  * Holds exactly ONE active transport.
  * Thread-safe.
  */
-class PeerConnection(val nodeId: Int) {
+class PeerConnection(val nodeId: UInt) {
 
     @Volatile
     var transport: TransportStrategy? = null

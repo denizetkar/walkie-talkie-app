@@ -42,19 +42,19 @@ object PacketUtils {
 
     // --- Specific Payload Helpers ---
 
-    fun createHeartbeatPayload(networkId: Int, seq: Int, hops: Int): ByteArray {
+    fun createHeartbeatPayload(networkId: UInt, seq: Int, hops: Int): ByteArray {
         val buffer = ByteBuffer.allocate(9)
         buffer.order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putInt(networkId)
+        buffer.putInt(networkId.toInt())
         buffer.putInt(seq)
         buffer.put(hops.toByte())
         return buffer.array()
     }
 
-    fun parseHeartbeatPayload(payload: ByteArray): Triple<Int, Int, Int>? {
+    fun parseHeartbeatPayload(payload: ByteArray): Triple<UInt, Int, Int>? {
         if (payload.size < 9) return null
         val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
-        val netId = buffer.int
+        val netId = buffer.int.toUInt()
         val seq = buffer.int
         val hops = buffer.get().toInt()
         return Triple(netId, seq, hops)

@@ -122,7 +122,7 @@ mod real_impl {
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
-        pub fn new(config: AudioConfig, transport: Box<dyn PacketTransport>, own_node_id: i32) -> Self {
+        pub fn new(config: AudioConfig, transport: Box<dyn PacketTransport>, own_node_id: u32) -> Self {
             let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = channel();
 
             // Background thread to handle sending packets to Kotlin
@@ -140,7 +140,7 @@ mod real_impl {
                 incoming_tx: Mutex::new(None),
                 config,
                 is_mic_enabled: Arc::new(AtomicBool::new(false)),
-                own_node_id: own_node_id as u32,
+                own_node_id,
             }
         }
 
@@ -477,7 +477,7 @@ mod stub_impl {
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
-        pub fn new(_config: AudioConfig, _transport: Box<dyn PacketTransport>, _id: i32) -> Self { Self }
+        pub fn new(_config: AudioConfig, _transport: Box<dyn PacketTransport>, _id: u32) -> Self { Self }
         pub fn start_session(&self) -> Result<(), AudioError> { Ok(()) }
         pub fn stop_session(&self) -> Result<(), AudioError> { Ok(()) }
         pub fn is_session_active(&self) -> bool { false }

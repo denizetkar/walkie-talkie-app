@@ -38,7 +38,7 @@ class GattClientHandler(
     private val context: Context,
     private val scope: CoroutineScope,
     val targetDevice: BluetoothDevice,
-    private val ownNodeId: Int,
+    private val ownNodeId: UInt,
     private val accessCode: String,
     dispatcher: CoroutineDispatcher
 ) {
@@ -129,9 +129,7 @@ class GattClientHandler(
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d("GattClient", "Connected. Requesting High Priority & Starting Service Discovery...")
                 scope.launch { _clientEvents.emit(ClientEvent.Connected(targetDevice)) }
-
                 gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-
                 operationQueue.enqueue(TransportDataType.CONTROL) {
                     if (!gatt.discoverServices()) {
                         Log.e("GattClient", "Service Discovery Failed to Start")
@@ -148,7 +146,6 @@ class GattClientHandler(
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             operationQueue.operationCompleted()
-
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e("GattClient", "Service Discovery Failed: $status")
                 disconnect()
@@ -162,7 +159,6 @@ class GattClientHandler(
             }
 
             Log.d("GattClient", "Services Discovered. Queueing Subscriptions (MTU 23)...")
-
             operationQueue.enqueue(TransportDataType.CONTROL) {
                 delay(300)
                 subscribeToCharacteristic(gatt, service, Config.CHAR_CONTROL_UUID)
@@ -267,9 +263,7 @@ class GattClientHandler(
                     PacketUtils.TYPE_AUTH_RESULT -> {
                         if (payload.isNotEmpty() && payload[0] == 1.toByte()) {
                             handshakeTimeoutJob?.cancel()
-
                             Log.d("GattClient", "Auth Success. Requesting MTU...")
-
                             operationQueue.enqueue(TransportDataType.CONTROL) {
                                 if (!bluetoothGatt?.requestMtu(Config.BLE_MTU)!!) {
                                     Log.e("GattClient", "MTU Request Failed")

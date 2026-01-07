@@ -3,12 +3,12 @@ package com.denizetkar.walkietalkieapp.logic
 import com.denizetkar.walkietalkieapp.Config
 
 data class TopologyState(
-    val currentNetworkId: Int,
+    val currentNetworkId: UInt,
     val hopsToRoot: Int,
     val rootSequence: Int
 )
 
-class TopologyEngine(private val ownNodeId: Int) {
+class TopologyEngine(private val ownNodeId: UInt) {
 
     private var state = TopologyState(ownNodeId, 0, 0)
     private var lastHeartbeatTime = System.currentTimeMillis()
@@ -19,7 +19,7 @@ class TopologyEngine(private val ownNodeId: Int) {
      * Processes an incoming heartbeat.
      * Returns TRUE if our local state changed (meaning we should update advertising).
      */
-    fun onHeartbeatReceived(netId: Int, seq: Int, hops: Int): Boolean {
+    fun onHeartbeatReceived(netId: UInt, seq: Int, hops: Int): Boolean {
         val now = System.currentTimeMillis()
 
         // 1. Merge: Found a higher Network ID (Better Root)

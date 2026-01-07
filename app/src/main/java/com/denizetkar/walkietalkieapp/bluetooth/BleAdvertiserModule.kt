@@ -35,8 +35,11 @@ class BleAdvertiserModule(
         // [NodeID(4)] [NetID(4)] [Hops(1)] [Avail(1)] = 10 bytes
         val pUuid = ParcelUuid(Config.APP_SERVICE_UUID)
         val payload = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
-        payload.putInt(config.ownNodeId)
-        payload.putInt(config.networkId)
+
+        // BIT-CAST: UInt to Int for the ByteBuffer
+        payload.putInt(config.ownNodeId.toInt())
+        payload.putInt(config.networkId.toInt())
+
         payload.put(config.hopsToRoot.toByte())
         payload.put(if (config.isAvailable) 1.toByte() else 0.toByte())
 
@@ -102,7 +105,7 @@ class BleAdvertiserModule(
                 advertisingSetCallback
             )
         } catch (e: Exception) {
-            Log.e("BleAdvertiser", "EXCEPTION calling startAdvertisingSet", e)
+            Log.e("BleAdvertiser", "startAdvertisingSet failed", e)
         }
     }
 
@@ -111,7 +114,6 @@ class BleAdvertiserModule(
         Log.d("BleAdvertiser", "Request to STOP advertising")
         val advertiser = adapter?.bluetoothLeAdvertiser ?: return
         val cb = advertisingSetCallback ?: return
-
         try {
             advertiser.stopAdvertisingSet(cb)
         } catch (e: Exception) {

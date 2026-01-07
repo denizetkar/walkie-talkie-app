@@ -45,17 +45,17 @@ class BleDriver(
     private val bleClientDispatcher = Dispatchers.IO.limitedParallelism(1)
 
     // The master registry. Immutable Map wrapped in a StateFlow for atomic updates.
-    private val _peers = MutableStateFlow<Map<Int, PeerConnection>>(emptyMap())
-    val connectedPeers: StateFlow<Set<Int>> = _peers
+    private val _peers = MutableStateFlow<Map<UInt, PeerConnection>>(emptyMap())
+    val connectedPeers: StateFlow<Set<UInt>> = _peers
         .map { it.keys }
         .stateIn(scope, SharingStarted.Eagerly, emptySet())
 
     // Tracks in-progress connection attempts to enforce idempotency.
-    private val connectionJobs = ConcurrentHashMap<Int, Job>()
+    private val connectionJobs = ConcurrentHashMap<UInt, Job>()
     private val connectionMutex = Mutex()
 
     private var myAccessCode: String = ""
-    private var myNodeId: Int = 0
+    private var myNodeId: UInt = 0u
 
     private val _events = MutableSharedFlow<BleDriverEvent>(extraBufferCapacity = 64)
     val events = _events.asSharedFlow()
@@ -149,7 +149,7 @@ class BleDriver(
      * Handles a new connection attempt (Incoming or Outgoing).
      * Enforces the "One Link" rule using Node ID as a tie-breaker.
      */
-    private suspend fun handleNewTransport(nodeId: Int, newStrategy: TransportStrategy) {
+    private suspend fun handleNewTransport(nodeId: UInt, newStrategy: TransportStrategy) {
         // Cancel any pending outgoing attempts for this node, as we now have a candidate
         cancelPendingConnection(nodeId)
 
@@ -214,7 +214,7 @@ class BleDriver(
      * Returns TRUE if the new connection is "Better" according to the rule:
      * "The connection where ClientID > ServerID is preferred."
      */
-    private fun shouldKeepNewConnection(myId: Int, remoteId: Int, newIsOutgoing: Boolean): Boolean {
+    private fun shouldKeepNewConnection(myId: UInt, remoteId: UInt, newIsOutgoing: Boolean): Boolean {
         if (newIsOutgoing) return myId > remoteId
         return remoteId > myId
     }
@@ -235,7 +235,7 @@ class BleDriver(
         }
     }
 
-    private suspend fun cancelPendingConnection(nodeId: Int) {
+    private suspend fun cancelPendingConnection(nodeId: UInt) {
         connectionMutex.withLock {
             connectionJobs[nodeId]?.cancel()
             connectionJobs.remove(nodeId)
@@ -251,7 +251,7 @@ class BleDriver(
         return Result.success(Unit)
     }
 
-    fun setCredentials(accessCode: String, ownNodeId: Int) {
+    fun setCredentials(accessCode: String, ownNodeId: UInt) {
         this.myAccessCode = accessCode
         this.myNodeId = ownNodeId
         serverHandler.currentAccessCode = accessCode
@@ -266,7 +266,7 @@ class BleDriver(
      * IDEMPOTENT Connect.
      * Safe to call repeatedly. It will deduplicate requests.
      */
-    suspend fun connectTo(address: String, nodeId: Int) {
+    suspend fun connectTo(address: String, nodeId: UInt) {
         val normalizedAddress = address.uppercase()
 
         // 1. Check if already connected
@@ -293,13 +293,12 @@ class BleDriver(
         job.join()
     }
 
-    private suspend fun attemptConnection(address: String, nodeId: Int) {
+    private suspend fun attemptConnection(address: String, nodeId: UInt) {
         Log.d("BleDriver", "CMD: Connect to $address (Node $nodeId)")
 
         // Create a Child Scope specifically for this Client's lifecycle
         // SupervisorJob ensures that if a child coroutine fails, the scope doesn't crash the parent
         val clientScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
-
         val device = adapter.getRemoteDevice(address)
 
         val client = GattClientHandler(
@@ -359,7 +358,7 @@ class BleDriver(
         }
     }
 
-    fun disconnectNode(nodeId: Int) {
+    fun disconnectNode(nodeId: UInt) {
         val peer = _peers.value[nodeId] ?: return
         Log.i("BleDriver", "Force Disconnecting Node $nodeId")
         _peers.update { it - nodeId }
@@ -372,7 +371,6 @@ class BleDriver(
         val currentPeers = _peers.value.values.toList()
         _peers.value = emptyMap()
         currentPeers.forEach { it.disconnect() }
-
         scope.launch {
             connectionMutex.withLock {
                 connectionJobs.values.forEach { it.cancel() }

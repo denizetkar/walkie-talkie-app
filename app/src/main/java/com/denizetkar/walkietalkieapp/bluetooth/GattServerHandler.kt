@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 sealed class ServerEvent {
     data class ClientConnected(val device: BluetoothDevice) : ServerEvent()
-    data class ClientAuthenticated(val device: BluetoothDevice, val nodeId: Int) : ServerEvent()
+    data class ClientAuthenticated(val device: BluetoothDevice, val nodeId: UInt) : ServerEvent() // CHANGED
     data class ClientDisconnected(val device: BluetoothDevice) : ServerEvent()
     data class MessageReceived(val device: BluetoothDevice, val data: ByteArray, val type: TransportDataType) : ServerEvent()
 }
@@ -44,7 +44,6 @@ class GattServerHandler(
 
     private val pendingChallenges = ConcurrentHashMap<String, String>()
     private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
-
     private val pendingDisconnects = ConcurrentHashMap.newKeySet<String>()
 
     private val _serverEvents = MutableSharedFlow<ServerEvent>(
@@ -144,16 +143,13 @@ class GattServerHandler(
     @SuppressLint("MissingPermission")
     private fun handleAuthResponse(device: BluetoothDevice, payload: ByteArray) {
         val address = device.address.uppercase()
-
-        // ATOMIC OPERATION: Remove the nonce.
-        // If it returns null, either we never challenged them, OR another thread already processed it.
         val nonce = pendingChallenges.remove(address) ?: run {
             Log.w("GattServer", "Duplicate or invalid Auth Response from $address")
             return
         }
         val code = currentAccessCode ?: return
-        val clientNodeId = ProtocolUtils.verifyHandshake(payload, code, nonce)
 
+        val clientNodeId = ProtocolUtils.verifyHandshake(payload, code, nonce)
         scope.launch {
             if (clientNodeId != null) {
                 Log.i("GattServer", "Authenticated Node: $clientNodeId")
@@ -243,7 +239,7 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     fun disconnectAll() {
-        connectedDevices.values.forEach { device -> gattServer?.cancelConnection(device) }
+        connectedDevices.values.forEach { gattServer?.cancelConnection(it) }
         cleanupDevice(null)
     }
 

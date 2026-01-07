@@ -34,7 +34,7 @@ class MeshController(
     context: Context,
     private val driver: BleDriver,
     private val scope: CoroutineScope,
-    private val ownNodeId: Int
+    private val ownNodeId: UInt
 ) {
     // --- State ---
     private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
@@ -47,7 +47,7 @@ class MeshController(
     // --- Logic & Subsystems ---
     private val topology = TopologyEngine(ownNodeId)
     private val seenPackets = ConcurrentHashMap<Int, Long>()
-    private val lastHeardFrom = ConcurrentHashMap<Int, Long>()
+    private val lastHeardFrom = ConcurrentHashMap<UInt, Long>()
 
     // Define Transport Callback (Rust -> Kotlin -> BLE)
     private val packetTransport = object : PacketTransport {
@@ -120,7 +120,6 @@ class MeshController(
 
         _state.value = newState
         Log.i("MeshController", "State Change: $oldState -> $newState")
-
         scope.launch {
             // A. Teardown Old State
             if (oldState is EngineState.RadioActive) stopRadioLogic()
@@ -311,7 +310,7 @@ class MeshController(
         }
     }
 
-    private fun handlePeerListChange(peers: Set<Int>) {
+    private fun handlePeerListChange(peers: Set<UInt>) {
         val s = _state.value
         val count = peers.size
         when (s) {
