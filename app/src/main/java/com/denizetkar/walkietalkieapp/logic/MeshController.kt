@@ -69,6 +69,7 @@ class MeshController(
     init {
         try { initLogger() } catch (_: Exception) {}
         scope.launch { driver.events.collect { handleDriverEvent(it) } }
+        scope.launch { driver.connectedPeers.collect { handlePeerListChange(it) } }
         startPacketCleanup()
     }
 
@@ -305,25 +306,33 @@ class MeshController(
             is BleDriverEvent.PeerDiscovered -> handleDiscovery(event.node)
             is BleDriverEvent.PeerConnected -> {
                 lastHeardFrom[event.nodeId] = System.currentTimeMillis()
-                updatePeerCount()
             }
             is BleDriverEvent.PeerDisconnected -> {
                 lastHeardFrom.remove(event.nodeId)
-                updatePeerCount()
             }
             is BleDriverEvent.DataReceived -> handleData(event)
             else -> {}
         }
     }
 
-    private fun updatePeerCount() {
+    private fun handlePeerListChange(peers: Set<Int>) {
         val s = _state.value
-        val count = driver.connectedPeers.value.size
-        if (s is EngineState.RadioActive) {
-            _state.value = s.copy(peerCount = count)
-            refreshAdvertising(s.groupName)
-        } else if (s is EngineState.Joining && count > 0) {
-            transitionTo(EngineState.RadioActive(s.groupName, count))
+        val count = peers.size
+
+        when (s) {
+            is EngineState.RadioActive -> {
+                if (s.peerCount == count) return
+
+                // Only update if count actually changed to prevent loop/churn
+                _state.value = s.copy(peerCount = count)
+                refreshAdvertising(s.groupName)
+            }
+            is EngineState.Joining -> {
+                if (count <= 0) return
+
+                transitionTo(EngineState.RadioActive(s.groupName, count))
+            }
+            else -> {}
         }
     }
 
