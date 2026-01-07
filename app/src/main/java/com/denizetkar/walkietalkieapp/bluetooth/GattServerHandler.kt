@@ -47,7 +47,7 @@ class GattServerHandler(
     private val pendingDisconnects = ConcurrentHashMap.newKeySet<String>()
 
     private val _serverEvents = MutableSharedFlow<ServerEvent>(
-        extraBufferCapacity = 256,
+        extraBufferCapacity = Config.EVENT_FLOW_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val serverEvents: SharedFlow<ServerEvent> = _serverEvents
@@ -188,7 +188,7 @@ class GattServerHandler(
         }
 
         // Simple retry for control packets
-        repeat(3) {
+        repeat(Config.GATT_RETRY_ATTEMPTS) {
             if (server.notifyCompat(device, char, data)) return true
             yield()
         }

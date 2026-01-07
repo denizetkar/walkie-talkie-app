@@ -32,9 +32,8 @@ class BleAdvertiserModule(
         }
 
         // 1. MAIN PACKET: Service Data (Topology)
-        // [NodeID(4)] [NetID(4)] [Hops(1)] [Avail(1)] = 10 bytes
         val pUuid = ParcelUuid(Config.APP_SERVICE_UUID)
-        val payload = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
+        val payload = ByteBuffer.allocate(Config.PACKET_SERVICE_DATA_SIZE).order(ByteOrder.LITTLE_ENDIAN)
 
         // BIT-CAST: UInt to Int for the ByteBuffer
         payload.putInt(config.ownNodeId.toInt())
@@ -52,7 +51,7 @@ class BleAdvertiserModule(
         // 2. SCAN RESPONSE: Manufacturer Data (Group Name)
         val nameBytes = ProtocolUtils.truncateUtf8(config.groupName, Config.MAX_ADVERTISING_NAME_BYTES)
         val scanResponseData = AdvertiseData.Builder()
-            .addManufacturerData(0xFFFF, nameBytes)
+            .addManufacturerData(Config.BLE_MANUFACTURER_ID, nameBytes)
             .build()
 
         // OPTIMIZATION: If already running, just update data

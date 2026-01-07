@@ -45,10 +45,10 @@ class GattClientHandler(
     private var bluetoothGatt: BluetoothGatt? = null
     private val operationQueue = BleOperationQueue(dispatcher) { disconnect() }
 
-    private var currentMtu = 23
+    private var currentMtu = Config.BLE_DEFAULT_MTU
 
     private val _clientEvents = MutableSharedFlow<ClientEvent>(
-        extraBufferCapacity = 256,
+        extraBufferCapacity = Config.EVENT_FLOW_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val clientEvents: SharedFlow<ClientEvent> = _clientEvents
@@ -160,7 +160,7 @@ class GattClientHandler(
 
             Log.d("GattClient", "Services Discovered. Queueing Subscriptions (MTU 23)...")
             operationQueue.enqueue(TransportDataType.CONTROL) {
-                delay(300)
+                delay(Config.GATT_SUBSCRIPTION_DELAY)
                 subscribeToCharacteristic(gatt, service, Config.CHAR_CONTROL_UUID)
             }
             operationQueue.enqueue(TransportDataType.CONTROL) {

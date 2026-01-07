@@ -17,6 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -57,7 +58,10 @@ class BleDriver(
     private var myAccessCode: String = ""
     private var myNodeId: UInt = 0u
 
-    private val _events = MutableSharedFlow<BleDriverEvent>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<BleDriverEvent>(
+        extraBufferCapacity = Config.EVENT_FLOW_BUFFER_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val events = _events.asSharedFlow()
 
     init {

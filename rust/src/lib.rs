@@ -5,6 +5,44 @@ use std::collections::{BTreeMap, HashMap};
 
 uniffi::setup_scaffolding!("walkie_talkie_engine");
 
+// ===========================================================================
+// CENTRALIZED CONFIGURATION
+// ===========================================================================
+
+// --- Buffer & Channel Limits ---
+// Buffer size for 120ms of audio at 48kHz (48000Hz * 0.120s = 5760 samples).
+// We need enough room to hold data while processing.
+const MAX_BUFFER_SIZE: usize = 5760;
+
+// Size of the internal channel passing audio from Input Thread -> Output Thread.
+const AUDIO_CHANNEL_CAPACITY: usize = 200;
+
+// Maximum size of a raw Opus encoded packet. 512 bytes is plenty for voice.
+const OPUS_OUT_BUFFER_SIZE: usize = 512;
+
+// --- Protocol Layout ---
+// Header: [OriginID (4 bytes)] + [Sequence (2 bytes)]
+const PACKET_HEADER_SIZE: usize = 6;
+
+// --- Tuning Parameters ---
+// How many frames of silence (missing packets) before we delete a peer?
+// 50 frames * 60ms = ~3 seconds.
+const PEER_TIMEOUT_FRAMES: usize = 50;
+
+// Jitter Buffer: How many packets to buffer before STARTING playback?
+// 6 packets * 60ms = 360ms latency.
+// Higher = smoother audio, Lower = faster conversation.
+const JITTER_BUFFER_START_THRESHOLD: usize = 6;
+
+// Jitter Buffer: How far ahead to check for a "future" packet if the expected one is missing?
+// If we expect Seq 10, but have Seq 15, we treat 11-14 as lost and skip to 15.
+const JITTER_LOOKAHEAD_WINDOW: u16 = 10;
+
+
+// ===========================================================================
+// SHARED DEFINITIONS
+// ===========================================================================
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum AudioError {
@@ -38,6 +76,10 @@ pub trait PacketTransport: Send + Sync {
     fn send_packet(&self, data: Vec<u8>);
 }
 
+// ===========================================================================
+// ANDROID IMPLEMENTATION
+// ===========================================================================
+
 #[cfg(target_os = "android")]
 mod real_impl {
     use super::*;
@@ -54,14 +96,10 @@ mod real_impl {
     };
     use opus_codec::{Encoder, Decoder, Application, Channels, SampleRate};
 
-    const MAX_BUFFER_SIZE: usize = 5760; // Enough for 120ms at 48kHz
-    const PEER_TIMEOUT_FRAMES: usize = 50; // ~3 seconds cleanup
-
     // --- PACKET FORMATTING ---
-    // Header: [OriginID (4 bytes)] [Sequence (2 bytes)]
 
     fn wrap_packet(origin_id: u32, seq: u16, opus_data: &[u8]) -> Vec<u8> {
-        let mut packet = Vec::with_capacity(6 + opus_data.len());
+        let mut packet = Vec::with_capacity(PACKET_HEADER_SIZE + opus_data.len());
         let mut id_buf = [0u8; 4];
         let mut seq_buf = [0u8; 2];
 
@@ -75,10 +113,10 @@ mod real_impl {
     }
 
     fn unwrap_packet(data: &[u8]) -> Option<(u32, u16, &[u8])> {
-        if data.len() < 6 { return None; }
+        if data.len() < PACKET_HEADER_SIZE { return None; }
         let origin_id = LittleEndian::read_u32(&data[0..4]);
         let seq = LittleEndian::read_u16(&data[4..6]);
-        Some((origin_id, seq, &data[6..]))
+        Some((origin_id, seq, &data[PACKET_HEADER_SIZE..]))
     }
 
     // --- PER-PEER STATE ---
@@ -164,8 +202,6 @@ mod real_impl {
             Ok(())
         }
 
-        // --- SSOT Methods ---
-
         pub fn is_session_active(&self) -> bool {
             let input_active = self.input_stream.lock().unwrap().is_some();
             let output_active = self.output_stream.lock().unwrap().is_some();
@@ -230,7 +266,7 @@ mod real_impl {
         }
 
         fn start_output_stream(&self) -> Result<(), AudioError> {
-            let (tx, rx) = bounded(200);
+            let (tx, rx) = bounded(AUDIO_CHANNEL_CAPACITY);
             *self.incoming_tx.lock().unwrap() = Some(tx);
 
             let callback = OutputCallback {
@@ -291,7 +327,7 @@ mod real_impl {
 
                 if should_send {
                     let chunk = &self.buffer[0..self.samples_per_frame];
-                    let mut output_buffer = [0u8; 512];
+                    let mut output_buffer = [0u8; OPUS_OUT_BUFFER_SIZE];
 
                     match self.encoder.encode(chunk, &mut output_buffer) {
                         Ok(len) => {
@@ -377,7 +413,7 @@ mod real_impl {
 
                     // C. Buffering Logic
                     if peer.buffering {
-                        if peer.jitter_buffer.len() >= 6 {
+                        if peer.jitter_buffer.len() >= JITTER_BUFFER_START_THRESHOLD {
                             peer.buffering = false;
                             if let Some(&first) = peer.jitter_buffer.keys().next() {
                                 peer.next_expected_seq = Some(first);
@@ -396,8 +432,11 @@ mod real_impl {
                             peer.next_expected_seq = Some(expected.wrapping_add(1));
                             packet_to_decode = Some(Some(data));
                         } else {
-                            // Miss
-                            let has_future = peer.jitter_buffer.keys().any(|&k| k > expected && k < expected.wrapping_add(10));
+                            // Miss - Check lookahead window using constant
+                            let has_future = peer.jitter_buffer.keys().any(|&k|
+                                k > expected && k < expected.wrapping_add(JITTER_LOOKAHEAD_WINDOW)
+                            );
+
                             if has_future {
                                 // Lost -> PLC
                                 peer.next_expected_seq = Some(expected.wrapping_add(1));
@@ -468,6 +507,10 @@ mod real_impl {
         );
     }
 }
+
+// ===========================================================================
+// STUB IMPLEMENTATION (NON-ANDROID)
+// ===========================================================================
 
 #[cfg(not(target_os = "android"))]
 mod stub_impl {

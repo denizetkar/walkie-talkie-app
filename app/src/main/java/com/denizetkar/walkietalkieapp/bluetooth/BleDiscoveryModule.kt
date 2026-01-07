@@ -26,7 +26,7 @@ class BleDiscoveryModule(
     private val scope: CoroutineScope
 ) {
     private val _events = MutableSharedFlow<TransportNode>(
-        extraBufferCapacity = 256,
+        extraBufferCapacity = Config.EVENT_FLOW_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val events: SharedFlow<TransportNode> = _events.asSharedFlow()
@@ -132,9 +132,7 @@ class BleDiscoveryModule(
         val device = result.device
         val rssi = result.rssi
         val serviceData = record.serviceData?.get(ParcelUuid(Config.APP_SERVICE_UUID)) ?: return
-
-        // Expected: [NodeID(4)] [NetworkID(4)] [Hops(1)] [Avail(1)] = 10 bytes
-        if (serviceData.size < 10) return
+        if (serviceData.size < Config.PACKET_SERVICE_DATA_SIZE) return
 
         val buffer = ByteBuffer.wrap(serviceData).order(ByteOrder.LITTLE_ENDIAN)
 
@@ -145,7 +143,7 @@ class BleDiscoveryModule(
         val hops = buffer.get().toInt()
         val isAvailable = (buffer.get().toInt() == 1)
 
-        val manufacturerBytes = record.getManufacturerSpecificData(0xFFFF)
+        val manufacturerBytes = record.getManufacturerSpecificData(Config.BLE_MANUFACTURER_ID)
         val groupName = if (manufacturerBytes != null) {
             String(manufacturerBytes, Charsets.UTF_8)
         } else {
