@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 uniffi::setup_scaffolding!("walkie_talkie_engine");
 
@@ -16,7 +16,6 @@ pub enum AudioError {
     DecoderError,
 }
 
-// --- Configuration Struct ---
 #[derive(Clone, Copy, uniffi::Record)]
 pub struct AudioConfig {
     pub sample_rate: i32,
@@ -55,21 +54,57 @@ mod real_impl {
     };
     use opus_codec::{Encoder, Decoder, Application, Channels, SampleRate};
 
-    const MAX_BUFFER_SIZE: usize = 5760;
+    const MAX_BUFFER_SIZE: usize = 5760; // Enough for 120ms at 48kHz
+    const PEER_TIMEOUT_FRAMES: usize = 50; // ~3 seconds cleanup
 
-    fn wrap_packet(seq: u16, opus_data: &[u8]) -> Vec<u8> {
-        let mut packet = Vec::with_capacity(2 + opus_data.len());
-        let mut buf = [0u8; 2];
-        LittleEndian::write_u16(&mut buf, seq);
-        packet.extend_from_slice(&buf);
+    // --- PACKET FORMATTING ---
+    // Header: [OriginID (4 bytes)] [Sequence (2 bytes)]
+
+    fn wrap_packet(origin_id: u32, seq: u16, opus_data: &[u8]) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(6 + opus_data.len());
+        let mut id_buf = [0u8; 4];
+        let mut seq_buf = [0u8; 2];
+
+        LittleEndian::write_u32(&mut id_buf, origin_id);
+        LittleEndian::write_u16(&mut seq_buf, seq);
+
+        packet.extend_from_slice(&id_buf);
+        packet.extend_from_slice(&seq_buf);
         packet.extend_from_slice(opus_data);
         packet
     }
 
-    fn unwrap_packet(data: &[u8]) -> Option<(u16, &[u8])> {
-        if data.len() < 3 { return None; }
-        let seq = LittleEndian::read_u16(&data[0..2]);
-        Some((seq, &data[2..]))
+    fn unwrap_packet(data: &[u8]) -> Option<(u32, u16, &[u8])> {
+        if data.len() < 6 { return None; }
+        let origin_id = LittleEndian::read_u32(&data[0..4]);
+        let seq = LittleEndian::read_u16(&data[4..6]);
+        Some((origin_id, seq, &data[6..]))
+    }
+
+    // --- PER-PEER STATE ---
+    struct PeerStream {
+        decoder: Decoder,
+        jitter_buffer: BTreeMap<u16, Vec<u8>>,
+        next_expected_seq: Option<u16>,
+        buffering: bool,
+        buffer: [i16; MAX_BUFFER_SIZE], // Internal scratch buffer for decoding
+        buffer_len: usize,              // How much valid data is in buffer
+        silence_counter: usize,         // For garbage collection
+    }
+
+    impl PeerStream {
+        fn new() -> Self {
+            let decoder = Decoder::new(SampleRate::Hz48000, Channels::Mono).unwrap();
+            Self {
+                decoder,
+                jitter_buffer: BTreeMap::new(),
+                next_expected_seq: None,
+                buffering: true,
+                buffer: [0i16; MAX_BUFFER_SIZE],
+                buffer_len: 0,
+                silence_counter: 0,
+            }
+        }
     }
 
     #[derive(uniffi::Object)]
@@ -81,12 +116,13 @@ mod real_impl {
         incoming_tx: Mutex<Option<CbSender<Vec<u8>>>>,
         config: AudioConfig,
         is_mic_enabled: Arc<AtomicBool>,
+        own_node_id: u32,
     }
 
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
-        pub fn new(config: AudioConfig, transport: Box<dyn PacketTransport>) -> Self {
+        pub fn new(config: AudioConfig, transport: Box<dyn PacketTransport>, own_node_id: i32) -> Self {
             let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = channel();
 
             // Background thread to handle sending packets to Kotlin
@@ -104,13 +140,14 @@ mod real_impl {
                 incoming_tx: Mutex::new(None),
                 config,
                 is_mic_enabled: Arc::new(AtomicBool::new(false)),
+                own_node_id: own_node_id as u32,
             }
         }
 
         /// Starts BOTH Input and Output streams.
         /// Call this when joining a group.
         pub fn start_session(&self) -> Result<(), AudioError> {
-            log::info!("Starting Audio Session (Hot Mic Architecture)...");
+            log::info!("Starting Audio Session (Multi-Stream Mixing)...");
             self.start_output_stream()?;
             self.start_input_stream()?;
             Ok(())
@@ -169,6 +206,7 @@ mod real_impl {
                 buffer_pos: 0,
                 samples_per_frame,
                 is_mic_enabled: self.is_mic_enabled.clone(),
+                own_node_id: self.own_node_id,
             };
 
             let mut stream = AudioStreamBuilder::default()
@@ -195,17 +233,9 @@ mod real_impl {
             let (tx, rx) = bounded(200);
             *self.incoming_tx.lock().unwrap() = Some(tx);
 
-            let decoder = Decoder::new(SampleRate::Hz48000, Channels::Mono)
-                .map_err(|_| AudioError::DecoderError)?;
-
             let callback = OutputCallback {
-                decoder,
                 incoming_rx: rx,
-                jitter_buffer: BTreeMap::new(),
-                buffer: [0i16; MAX_BUFFER_SIZE],
-                buffer_pos: 0,
-                next_expected_seq: None,
-                buffering: true,
+                peers: HashMap::new(),
                 max_jitter_packets: (self.config.jitter_buffer_ms / self.config.frame_size_ms) as usize,
             };
 
@@ -238,6 +268,7 @@ mod real_impl {
         buffer_pos: usize,
         samples_per_frame: usize,
         is_mic_enabled: Arc<AtomicBool>,
+        own_node_id: u32,
     }
 
     impl AudioInputCallback for InputCallback {
@@ -265,7 +296,7 @@ mod real_impl {
                     match self.encoder.encode(chunk, &mut output_buffer) {
                         Ok(len) => {
                             let mut seq = self.sequence_number.lock().unwrap();
-                            let packet = wrap_packet(*seq, &output_buffer[..len]);
+                            let packet = wrap_packet(self.own_node_id, *seq, &output_buffer[..len]);
                             *seq = seq.wrapping_add(1);
                             let _ = self.tx_transport.send(packet);
                         },
@@ -279,7 +310,6 @@ mod real_impl {
                 // We want to keep everything from 'samples_per_frame' up to 'buffer_pos'
                 // and move it to index 0.
                 let remaining = self.buffer_pos - self.samples_per_frame;
-                // This performs a panic-safe memmove.
                 self.buffer.copy_within(self.samples_per_frame..self.buffer_pos, 0);
                 self.buffer_pos = remaining;
             }
@@ -288,13 +318,8 @@ mod real_impl {
     }
 
     struct OutputCallback {
-        decoder: Decoder,
         incoming_rx: CbReceiver<Vec<u8>>,
-        jitter_buffer: BTreeMap<u16, Vec<u8>>,
-        buffer: [i16; MAX_BUFFER_SIZE],
-        buffer_pos: usize,
-        next_expected_seq: Option<u16>,
-        buffering: bool,
+        peers: HashMap<u32, PeerStream>,
         max_jitter_packets: usize,
     }
 
@@ -304,130 +329,132 @@ mod real_impl {
         fn on_audio_ready(&mut self, _stream: &mut dyn AudioOutputStreamSafe, frames: &mut [i16]) -> DataCallbackResult {
             // 1. Drain Channel (Pull from Kotlin/BLE)
             while let Ok(packet_data) = self.incoming_rx.try_recv() {
-                if let Some((seq, opus_data)) = unwrap_packet(&packet_data) {
-                    self.jitter_buffer.insert(seq, opus_data.to_vec());
+                if let Some((origin_id, seq, opus_data)) = unwrap_packet(&packet_data) {
+                    let peer = self.peers.entry(origin_id).or_insert_with(PeerStream::new);
+                    peer.jitter_buffer.insert(seq, opus_data.to_vec());
+                    peer.silence_counter = 0;
                 }
             }
 
-            // 2. Fill Audio Buffer
+            // 2. Prepare Mixer Buffer (i32 to avoid overflow)
             let samples_needed = frames.len();
-            let mut samples_filled = 0;
+            let mut mix_buffer = vec![0i32; samples_needed];
 
-            while samples_filled < samples_needed {
-                // If we have leftover decoded audio from previous frame, use it first
-                if self.buffer_pos > 0 {
-                    let to_copy = std::cmp::min(samples_needed - samples_filled, self.buffer_pos);
-                    for i in 0..to_copy {
-                        frames[samples_filled + i] = self.buffer[i];
-                    }
+            // 3. Process each Peer
+            let mut dead_peers = Vec::new();
 
-                    // Shift remaining buffer data to the start (memmove)
-                    let remaining = self.buffer_pos - to_copy;
-                    // Move the remaining data to the front of the buffer
-                    self.buffer.copy_within(to_copy..self.buffer_pos, 0);
-                    self.buffer_pos = remaining;
-                    samples_filled += to_copy;
-                    continue;
+            for (&node_id, peer) in self.peers.iter_mut() {
+                peer.silence_counter += 1;
+                if peer.silence_counter > PEER_TIMEOUT_FRAMES * 5 {
+                     dead_peers.push(node_id);
+                     continue;
                 }
 
-                // Overflow Protection: If buffer is too big, drop oldest
-                while self.jitter_buffer.len() > self.max_jitter_packets {
-                    if let Some(&first) = self.jitter_buffer.keys().next() {
-                        // log::warn!("[Audio] Overflow! Dropping {}", first);
-                        self.jitter_buffer.remove(&first);
-                        self.next_expected_seq = Some(first.wrapping_add(1));
-                    }
-                }
+                let mut peer_samples_produced = 0;
 
-                // Buffering Logic (Wait until we have enough packets to start)
-                if self.buffering {
-                    if self.jitter_buffer.len() >= 6 {
-                        self.buffering = false;
-                        if let Some(&first_seq) = self.jitter_buffer.keys().next() {
-                            self.next_expected_seq = Some(first_seq);
-                            log::info!("[Audio] Buffering Complete. Resuming at Seq {}", first_seq);
+                while peer_samples_produced < samples_needed {
+                    // A. Use leftover decoded audio
+                    if peer.buffer_len > 0 {
+                        let to_copy = std::cmp::min(samples_needed - peer_samples_produced, peer.buffer_len);
+                        for i in 0..to_copy {
+                            mix_buffer[peer_samples_produced + i] += peer.buffer[i] as i32;
                         }
-                    } else {
-                        // Still buffering, output silence
-                        let remaining = samples_needed - samples_filled;
-                        for i in 0..remaining { frames[samples_filled + i] = 0; }
-                        return DataCallbackResult::Continue;
+
+                        let remaining = peer.buffer_len - to_copy;
+                        peer.buffer.copy_within(to_copy..peer.buffer_len, 0);
+                        peer.buffer_len = remaining;
+                        peer_samples_produced += to_copy;
+                        continue;
                     }
-                }
 
-                // Smart Packet Selection
-                let packet_to_decode = if let Some(expected) = self.next_expected_seq {
-                    if let Some(data) = self.jitter_buffer.remove(&expected) {
-                        // Happy Path: We found the exact packet we wanted
-                        self.next_expected_seq = Some(expected.wrapping_add(1));
-                        Some(Some(data))
-                    } else {
-                        // MISSING PACKET LOGIC
-                        // Check if we have future packets (e.g. expected+1, expected+2)
-                        // This tells us if "expected" is truly lost or just late.
+                    // B. Jitter Buffer Maintenance
+                    while peer.jitter_buffer.len() > self.max_jitter_packets {
+                        if let Some(&first) = peer.jitter_buffer.keys().next() {
+                            peer.jitter_buffer.remove(&first);
+                            peer.next_expected_seq = Some(first.wrapping_add(1));
+                        }
+                    }
 
-                        let has_future = self.jitter_buffer.contains_key(&expected.wrapping_add(1))
-                                      || self.jitter_buffer.contains_key(&expected.wrapping_add(2));
-
-                        if has_future {
-                            // It's definitely lost. Use PLC.
-                            log::debug!("[Audio] Packet {} LOST (Future arrived). Doing PLC.", expected);
-                            self.next_expected_seq = Some(expected.wrapping_add(1));
-                            Some(None) // Trigger PLC
+                    // C. Buffering Logic
+                    if peer.buffering {
+                        if peer.jitter_buffer.len() >= 6 {
+                            peer.buffering = false;
+                            if let Some(&first) = peer.jitter_buffer.keys().next() {
+                                peer.next_expected_seq = Some(first);
+                            }
                         } else {
-                            // We don't have the next packet either. Buffer might be empty or everything is delayed.
-                            // If buffer is empty, go back to buffering.
-                            if self.jitter_buffer.is_empty() {
-                                log::debug!("[Audio] Underrun. Re-buffering...");
-                                self.buffering = true;
-                                None
+                            break; // Still buffering
+                        }
+                    }
+
+                    // D. Fetch/Loss Logic
+                    let mut packet_to_decode: Option<Option<Vec<u8>>> = None;
+
+                    if let Some(expected) = peer.next_expected_seq {
+                        if let Some(data) = peer.jitter_buffer.remove(&expected) {
+                            // Happy Path
+                            peer.next_expected_seq = Some(expected.wrapping_add(1));
+                            packet_to_decode = Some(Some(data));
+                        } else {
+                            // Miss
+                            let has_future = peer.jitter_buffer.keys().any(|&k| k > expected && k < expected.wrapping_add(10));
+                            if has_future {
+                                // Lost -> PLC
+                                peer.next_expected_seq = Some(expected.wrapping_add(1));
+                                packet_to_decode = Some(None);
+                            } else if peer.jitter_buffer.is_empty() {
+                                // Underrun
+                                peer.buffering = true;
+                                break;
                             } else {
-                                // Buffer has data, but it's way in the future (gap > 2).
-                                // OR we just haven't received expected+1 yet.
-                                // For simplicity, if we have data but not the immediate next few, resync.
-                                if let Some(&next_available) = self.jitter_buffer.keys().next() {
-                                     log::warn!("[Audio] Resync: Jump {} -> {}", expected, next_available);
-                                     self.next_expected_seq = Some(next_available.wrapping_add(1));
-                                     let data = self.jitter_buffer.remove(&next_available);
-                                     data.map(Some)
-                                } else {
-                                     // Should be covered by is_empty() check, but safe fallback
-                                     self.buffering = true;
-                                     None
+                                // Gap -> Resync
+                                if let Some(&next_avail) = peer.jitter_buffer.keys().next() {
+                                    peer.next_expected_seq = Some(next_avail.wrapping_add(1));
+                                    packet_to_decode = Some(Some(peer.jitter_buffer.remove(&next_avail).unwrap()));
                                 }
                             }
                         }
                     }
-                } else {
-                    None
-                };
 
-                // Decode Logic
-                if let Some(maybe_data) = packet_to_decode {
-                    let mut decoded_chunk = [0i16; MAX_BUFFER_SIZE];
-                    let len = match maybe_data {
-                        Some(data) => {
-                            // Decode real audio
-                            self.decoder.decode(&data, &mut decoded_chunk, false).unwrap_or(0)
-                        },
-                        None => {
-                            // Decode "Loss" (PLC) - Opus invents audio based on previous frames
-                            self.decoder.decode(&[], &mut decoded_chunk, true).unwrap_or(0)
-                        }
-                    };
+                    // E. Decode
+                    if let Some(maybe_data) = packet_to_decode {
+                        let mut decoded_chunk = [0i16; MAX_BUFFER_SIZE];
+                        let len = match maybe_data {
+                            Some(data) => peer.decoder.decode(&data, &mut decoded_chunk, false).unwrap_or(0),
+                            None => peer.decoder.decode(&[], &mut decoded_chunk, true).unwrap_or(0), // PLC
+                        };
 
-                    if len > 0 {
-                        for i in 0..len {
-                            self.buffer[self.buffer_pos + i] = decoded_chunk[i];
+                        if len > 0 {
+                            let space_left = samples_needed - peer_samples_produced;
+                            let to_take = std::cmp::min(len, space_left);
+
+                            for i in 0..to_take {
+                                mix_buffer[peer_samples_produced + i] += decoded_chunk[i] as i32;
+                            }
+                            peer_samples_produced += to_take;
+
+                            if len > to_take {
+                                let remainder = len - to_take;
+                                for i in 0..remainder {
+                                    peer.buffer[i] = decoded_chunk[to_take + i];
+                                }
+                                peer.buffer_len = remainder;
+                            }
                         }
-                        self.buffer_pos += len;
+                    } else {
+                        break;
                     }
-                } else {
-                    // Should not happen often, fill rest with silence
-                    let remaining = samples_needed - samples_filled;
-                    for i in 0..remaining { frames[samples_filled + i] = 0; }
-                    break;
                 }
+            }
+
+            // 4. Cleanup
+            for id in dead_peers {
+                self.peers.remove(&id);
+            }
+
+            // 5. Clamping & Output
+            for i in 0..samples_needed {
+                frames[i] = mix_buffer[i].clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             }
 
             DataCallbackResult::Continue
@@ -450,7 +477,7 @@ mod stub_impl {
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
-        pub fn new(_config: AudioConfig, _transport: Box<dyn PacketTransport>) -> Self { Self }
+        pub fn new(_config: AudioConfig, _transport: Box<dyn PacketTransport>, _id: i32) -> Self { Self }
         pub fn start_session(&self) -> Result<(), AudioError> { Ok(()) }
         pub fn stop_session(&self) -> Result<(), AudioError> { Ok(()) }
         pub fn is_session_active(&self) -> bool { false }

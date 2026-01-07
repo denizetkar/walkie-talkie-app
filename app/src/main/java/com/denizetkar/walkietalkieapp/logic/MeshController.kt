@@ -57,7 +57,7 @@ class MeshController(
     }
 
     // Voice Manager (Single Source of Truth for Audio)
-    private val voiceManager = VoiceManager(context, packetTransport)
+    private val voiceManager = VoiceManager(context, packetTransport, ownNodeId)
 
     // --- Jobs ---
     private var heartbeatJob: Job? = null
@@ -73,11 +73,11 @@ class MeshController(
         startPacketCleanup()
     }
 
-    fun checkSystemRequirements(): Result<Unit> = driver.validateCapabilities()
-
     // ===========================================================================
     // Public API
     // ===========================================================================
+
+    fun checkSystemRequirements(): Result<Unit> = driver.validateCapabilities()
 
     fun startGroupScan() {
         Log.d("MeshController", "Action: Start Group Scan")
@@ -304,12 +304,8 @@ class MeshController(
     private fun handleDriverEvent(event: BleDriverEvent) {
         when (event) {
             is BleDriverEvent.PeerDiscovered -> handleDiscovery(event.node)
-            is BleDriverEvent.PeerConnected -> {
-                lastHeardFrom[event.nodeId] = System.currentTimeMillis()
-            }
-            is BleDriverEvent.PeerDisconnected -> {
-                lastHeardFrom.remove(event.nodeId)
-            }
+            is BleDriverEvent.PeerConnected -> lastHeardFrom[event.nodeId] = System.currentTimeMillis()
+            is BleDriverEvent.PeerDisconnected -> lastHeardFrom.remove(event.nodeId)
             is BleDriverEvent.DataReceived -> handleData(event)
             else -> {}
         }
@@ -318,18 +314,14 @@ class MeshController(
     private fun handlePeerListChange(peers: Set<Int>) {
         val s = _state.value
         val count = peers.size
-
         when (s) {
             is EngineState.RadioActive -> {
                 if (s.peerCount == count) return
-
-                // Only update if count actually changed to prevent loop/churn
                 _state.value = s.copy(peerCount = count)
                 refreshAdvertising(s.groupName)
             }
             is EngineState.Joining -> {
                 if (count <= 0) return
-
                 transitionTo(EngineState.RadioActive(s.groupName, count))
             }
             else -> {}

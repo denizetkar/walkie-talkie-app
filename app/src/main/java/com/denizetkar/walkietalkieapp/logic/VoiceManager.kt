@@ -23,13 +23,12 @@ import uniffi.walkie_talkie_engine.PacketTransport
  */
 class VoiceManager(
     context: Context,
-    packetTransport: PacketTransport
+    packetTransport: PacketTransport,
+    ownNodeId: Int
 ) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusRequest: AudioFocusRequest? = null
 
-    // This Boolean is the Source of Truth for the UI and MeshController.
-    // The Rust Engine simply mirrors this value.
     private val _isMicrophoneEnabled = MutableStateFlow(false)
     val isMicrophoneEnabled = _isMicrophoneEnabled.asStateFlow()
 
@@ -39,7 +38,7 @@ class VoiceManager(
         jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS
     )
 
-    private val engine = AudioEngine(rustConfig, packetTransport)
+    private val engine = AudioEngine(rustConfig, packetTransport, ownNodeId)
 
     /**
      * Call this when entering the "Radio" screen (Joining a group).

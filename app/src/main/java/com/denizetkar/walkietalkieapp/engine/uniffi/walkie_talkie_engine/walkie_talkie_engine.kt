@@ -699,7 +699,7 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_walkie_talkie_engine_fn_free_audioengine(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`config`: RustBuffer.ByValue,`transport`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`config`: RustBuffer.ByValue,`transport`: Long,`ownNodeId`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_is_session_active(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
@@ -862,7 +862,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_session() != 5573.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new() != 35197.toShort()) {
+    if (lib.uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new() != 22265.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_walkie_talkie_engine_checksum_method_packettransport_send_packet() != 58023.toShort()) {
@@ -1326,12 +1326,12 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
         this.handle = 0
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
-    constructor(`config`: AudioConfig, `transport`: PacketTransport) :
+    constructor(`config`: AudioConfig, `transport`: PacketTransport, `ownNodeId`: kotlin.Int) :
         this(UniffiWithHandle, 
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(
     
-        FfiConverterTypeAudioConfig.lower(`config`),FfiConverterTypePacketTransport.lower(`transport`),_status)
+        FfiConverterTypeAudioConfig.lower(`config`),FfiConverterTypePacketTransport.lower(`transport`),FfiConverterInt.lower(`ownNodeId`),_status)
 }
     )
 
