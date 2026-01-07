@@ -276,15 +276,11 @@ mod real_impl {
                     // but for PTT, simply skipping encoding is most efficient.
                 }
 
-                // Shift buffer
+                // We want to keep everything from 'samples_per_frame' up to 'buffer_pos'
+                // and move it to index 0.
                 let remaining = self.buffer_pos - self.samples_per_frame;
-                unsafe {
-                    std::ptr::copy(
-                        self.buffer.as_ptr().add(self.samples_per_frame),
-                        self.buffer.as_mut_ptr(),
-                        remaining
-                    );
-                }
+                // This performs a panic-safe memmove.
+                self.buffer.copy_within(self.samples_per_frame..self.buffer_pos, 0);
                 self.buffer_pos = remaining;
             }
             DataCallbackResult::Continue
@@ -327,13 +323,8 @@ mod real_impl {
 
                     // Shift remaining buffer data to the start (memmove)
                     let remaining = self.buffer_pos - to_copy;
-                    unsafe {
-                        std::ptr::copy(
-                            self.buffer.as_ptr().add(to_copy),
-                            self.buffer.as_mut_ptr(),
-                            remaining
-                        );
-                    }
+                    // Move the remaining data to the front of the buffer
+                    self.buffer.copy_within(to_copy..self.buffer_pos, 0);
                     self.buffer_pos = remaining;
                     samples_filled += to_copy;
                     continue;
