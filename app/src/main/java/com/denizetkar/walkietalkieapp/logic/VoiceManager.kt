@@ -165,12 +165,9 @@ class VoiceManager(
         try {
             if (engine != null) engine?.stopSession()
 
-            // FIX: Output ID is ALWAYS 0.
-            // We rely on applyAudioRouting() to tell the OS where to send the audio.
-            // Explicitly setting an ID in Oboe fights with AudioManager.
             val currentConfig = baseRustConfig.copy(
                 inputDeviceId = _selectedInputId.value,
-                outputDeviceId = 0
+                outputDeviceId = _selectedOutputId.value
             )
             val newEngine = AudioEngine(currentConfig, packetTransport, ownNodeId)
             newEngine.startSession()

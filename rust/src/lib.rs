@@ -155,6 +155,25 @@ mod real_impl {
         own_node_id: u32,
     }
 
+    // --- RESOURCE CLEANUP (THE FIX) ---
+    impl Drop for AudioEngine {
+        fn drop(&mut self) {
+            // When the Kotlin wrapper is GC'd, this runs.
+            // We must explicitly close the streams to prevent Android Framework warnings.
+            // FIX: Added 'mut' to 's' because close() requires a mutable reference.
+            if let Ok(mut stream) = self.input_stream.lock() {
+                if let Some(mut s) = stream.take() {
+                    let _ = s.close();
+                }
+            }
+            if let Ok(mut stream) = self.output_stream.lock() {
+                if let Some(mut s) = stream.take() {
+                    let _ = s.close();
+                }
+            }
+        }
+    }
+
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
