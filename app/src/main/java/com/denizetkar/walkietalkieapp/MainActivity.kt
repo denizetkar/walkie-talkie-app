@@ -193,6 +193,14 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppState) {
                     groupName = state.groupName,
                     accessCode = state.accessCode,
                     peerCount = state.peerCount,
+
+                    availableMics = state.availableMics,
+                    availableSpeakers = state.availableSpeakers,
+                    selectedMicId = state.selectedMicId,
+                    selectedSpeakerId = state.selectedSpeakerId,
+                    onMicSelect = { viewModel.setMicrophone(it) },
+                    onSpeakerSelect = { viewModel.setSpeaker(it) },
+
                     onLeave = {
                         viewModel.leaveGroup()
                         navController.navigate("create") { popUpTo("create") { inclusive = true } }

@@ -57,7 +57,13 @@ class MeshController(
     }
 
     // Voice Manager (Single Source of Truth for Audio)
-    private val voiceManager = VoiceManager(context, packetTransport, ownNodeId)
+    private val voiceManager = VoiceManager(context, packetTransport, ownNodeId, scope)
+
+    // Exposed State for UI
+    val availableInputs = voiceManager.availableInputs
+    val availableOutputs = voiceManager.availableOutputs
+    val selectedInputId = voiceManager.selectedInputId
+    val selectedOutputId = voiceManager.selectedOutputId
 
     // --- Jobs ---
     private var heartbeatJob: Job? = null
@@ -110,6 +116,9 @@ class MeshController(
     fun startTalking() = voiceManager.setMicrophoneEnabled(true)
     fun stopTalking() = voiceManager.setMicrophoneEnabled(false)
 
+    fun setInputDevice(id: Int) = voiceManager.setInputDevice(id)
+    fun setOutputDevice(id: Int) = voiceManager.setOutputDevice(id)
+
     // ===========================================================================
     // State Machine
     // ===========================================================================
@@ -151,7 +160,29 @@ class MeshController(
         }
     }
 
-    fun destroy() = driver.destroy()
+    /**
+     * Hard Destroy. Called from Service.onDestroy().
+     * This method must be synchronous (non-suspending) and fast.
+     */
+    fun destroy() {
+        Log.d("MeshController", "CMD: Destroy (Hard)")
+
+        // 1. Cancel Local Jobs immediately.
+        // We do not 'join' (wait) for them, we just cut the cord.
+        heartbeatJob?.cancel()
+        scanLoopJob?.cancel()
+        livenessJob?.cancel()
+        cleanupJob?.cancel()
+        packetCleanupJob?.cancel()
+
+        // 2. Clean up VoiceManager
+        // (Unregisters the AudioDeviceCallback)
+        voiceManager.destroy()
+
+        // 3. Clean up BLE Driver
+        // (Stops Scanning/Advertising and closes GATT server)
+        driver.destroy()
+    }
 
     // ===========================================================================
     // Radio Logic
@@ -170,6 +201,10 @@ class MeshController(
         refreshAdvertising(groupName)
     }
 
+    /**
+     * Soft Stop. Called during State Transitions.
+     * Suspends to allow jobs to finish gracefully.
+     */
     private suspend fun stopRadioLogic() {
         // 1. Cancel Background Jobs
         heartbeatJob?.cancel()
@@ -177,7 +212,7 @@ class MeshController(
         livenessJob?.cancel()
         joinAll(heartbeatJob, scanLoopJob, livenessJob)
 
-        // 2. Teardown Audio (Encapsulated)
+        // 2. Teardown Audio
         voiceManager.stop()
 
         // 3. Teardown Hardware

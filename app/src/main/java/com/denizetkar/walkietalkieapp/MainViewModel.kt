@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.denizetkar.walkietalkieapp.logic.EngineState
 import com.denizetkar.walkietalkieapp.logic.MeshController
 import com.denizetkar.walkietalkieapp.network.DiscoveredGroup
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
+
+// Shared Data Class for UI (Defined here or in a separate file, ensuring visibility)
+data class AudioDeviceUi(val id: Int, val displayName: String)
 
 data class AppState(
     val hasPermissions: Boolean = false,
@@ -36,7 +40,12 @@ data class AppState(
     val isScanning: Boolean = false,
     val discoveredGroups: List<DiscoveredGroup> = emptyList(),
     val isJoining: Boolean = false,
-    val joinError: String? = null
+    val joinError: String? = null,
+
+    val availableMics: List<AudioDeviceUi> = emptyList(),
+    val availableSpeakers: List<AudioDeviceUi> = emptyList(),
+    val selectedMicId: Int = 0,
+    val selectedSpeakerId: Int = 0
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application), DefaultLifecycleObserver {
@@ -53,6 +62,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
             val walkieService = binder.getService()
             viewModelScope.launch {
                 try {
+                    // Wait for the controller to be initialized in the service
                     meshController = walkieService.meshControllerState.filterNotNull().first()
                     _appState.update { it.copy(isServiceBound = true, serviceStartupFailed = false) }
                     subscribeToController()
@@ -145,6 +155,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
                     _appState.update { it.copy(discoveredGroups = groups) }
                 }
             }
+
+            // 3. Observe Audio Devices (No Mapping needed, VoiceManager sends UI models)
+            launch {
+                controller.availableInputs.collect { list ->
+                    _appState.update { it.copy(availableMics = list) }
+                }
+            }
+            launch {
+                controller.availableOutputs.collect { list ->
+                    _appState.update { it.copy(availableSpeakers = list) }
+                }
+            }
+            launch {
+                controller.selectedInputId.collect { id ->
+                    _appState.update { it.copy(selectedMicId = id) }
+                }
+            }
+            launch {
+                controller.selectedOutputId.collect { id ->
+                    _appState.update { it.copy(selectedSpeakerId = id) }
+                }
+            }
         }
     }
 
@@ -192,8 +224,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
         meshController?.leave()
     }
 
-    fun startTalking() = meshController?.startTalking()
-    fun stopTalking() = meshController?.stopTalking()
+    fun startTalking() = viewModelScope.launch(Dispatchers.IO) { meshController?.startTalking() }
+    fun stopTalking() = viewModelScope.launch(Dispatchers.IO) { meshController?.stopTalking() }
+
+    fun setMicrophone(id: Int) = viewModelScope.launch(Dispatchers.IO) { meshController?.setInputDevice(id) }
+    fun setSpeaker(id: Int) = viewModelScope.launch(Dispatchers.IO) { meshController?.setOutputDevice(id) }
 
     override fun onCleared() {
         super.onCleared()

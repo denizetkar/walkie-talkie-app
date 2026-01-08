@@ -7,6 +7,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.AlertDialog
@@ -24,6 +26,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -242,6 +246,14 @@ fun RadioScreen(
     groupName: String?,
     accessCode: String?,
     peerCount: Int,
+
+    availableMics: List<AudioDeviceUi>,
+    availableSpeakers: List<AudioDeviceUi>,
+    selectedMicId: Int,
+    selectedSpeakerId: Int,
+    onMicSelect: (Int) -> Unit,
+    onSpeakerSelect: (Int) -> Unit,
+
     onLeave: () -> Unit,
     onTalkStart: () -> Unit,
     onTalkStop: () -> Unit
@@ -266,6 +278,17 @@ fun RadioScreen(
                 Text("GROUP: ${groupName ?: "Unknown"}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(4.dp))
                 Text("ACCESS CODE: $accessCode", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        AudioDeviceSelector("Microphone", availableMics, selectedMicId, onMicSelect)
+                    }
+                    Box(modifier = Modifier.weight(1f)) {
+                        AudioDeviceSelector("Speaker", availableSpeakers, selectedSpeakerId, onSpeakerSelect)
+                    }
+                }
             }
         }
 
@@ -317,6 +340,61 @@ fun RadioScreen(
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
         ) {
             Text("Leave Group")
+        }
+    }
+}
+
+@Composable
+fun AudioDeviceSelector(
+    label: String,
+    devices: List<AudioDeviceUi>,
+    selectedId: Int,
+    onSelect: (Int) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val friendlyName = remember(selectedId, devices) {
+        if (selectedId == 0) "Default"
+        else devices.find { it.id == selectedId }?.displayName ?: "Unknown"
+    }
+
+    Box {
+        OutlinedTextField(
+            value = friendlyName,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label, fontSize = 12.sp) },
+            trailingIcon = { Icon(Icons.Default.ArrowDropDown, contentDescription = null) },
+            textStyle = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        // Transparent overlay to make the entire text field area clickable
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(MaterialTheme.shapes.small)
+                .clickable { expanded = true }
+        )
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            // Option 0: Default
+            DropdownMenuItem(
+                text = { Text("Default") },
+                onClick = { onSelect(0); expanded = false }
+            )
+            // Other Devices
+            devices.forEach { device ->
+                DropdownMenuItem(
+                    text = { Text(device.displayName) },
+                    onClick = {
+                        onSelect(device.id)
+                        expanded = false
+                    }
+                )
+            }
         }
     }
 }

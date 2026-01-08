@@ -1572,6 +1572,10 @@ data class AudioConfig (
     var `frameSizeMs`: kotlin.Int
     , 
     var `jitterBufferMs`: kotlin.Int
+    , 
+    var `inputDeviceId`: kotlin.Int
+    , 
+    var `outputDeviceId`: kotlin.Int
     
 ){
     
@@ -1589,19 +1593,25 @@ public object FfiConverterTypeAudioConfig: FfiConverterRustBuffer<AudioConfig> {
             FfiConverterInt.read(buf),
             FfiConverterInt.read(buf),
             FfiConverterInt.read(buf),
+            FfiConverterInt.read(buf),
+            FfiConverterInt.read(buf),
         )
     }
 
     override fun allocationSize(value: AudioConfig) = (
             FfiConverterInt.allocationSize(value.`sampleRate`) +
             FfiConverterInt.allocationSize(value.`frameSizeMs`) +
-            FfiConverterInt.allocationSize(value.`jitterBufferMs`)
+            FfiConverterInt.allocationSize(value.`jitterBufferMs`) +
+            FfiConverterInt.allocationSize(value.`inputDeviceId`) +
+            FfiConverterInt.allocationSize(value.`outputDeviceId`)
     )
 
     override fun write(value: AudioConfig, buf: ByteBuffer) {
             FfiConverterInt.write(value.`sampleRate`, buf)
             FfiConverterInt.write(value.`frameSizeMs`, buf)
             FfiConverterInt.write(value.`jitterBufferMs`, buf)
+            FfiConverterInt.write(value.`inputDeviceId`, buf)
+            FfiConverterInt.write(value.`outputDeviceId`, buf)
     }
 }
 

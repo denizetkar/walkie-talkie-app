@@ -14,9 +14,6 @@ uniffi::setup_scaffolding!("walkie_talkie_engine");
 // We need enough room to hold data while processing.
 const MAX_BUFFER_SIZE: usize = 5760;
 
-// Size of the internal channel passing audio from Input Thread -> Output Thread.
-const AUDIO_CHANNEL_CAPACITY: usize = 200;
-
 // Maximum size of a raw Opus encoded packet. 512 bytes is plenty for voice.
 const OPUS_OUT_BUFFER_SIZE: usize = 512;
 
@@ -38,7 +35,6 @@ const JITTER_BUFFER_START_THRESHOLD: usize = 6;
 // If we expect Seq 10, but have Seq 15, we treat 11-14 as lost and skip to 15.
 const JITTER_LOOKAHEAD_WINDOW: u16 = 10;
 
-
 // ===========================================================================
 // SHARED DEFINITIONS
 // ===========================================================================
@@ -59,6 +55,8 @@ pub struct AudioConfig {
     pub sample_rate: i32,
     pub frame_size_ms: i32,
     pub jitter_buffer_ms: i32,
+    pub input_device_id: i32,
+    pub output_device_id: i32,
 }
 
 impl Default for AudioConfig {
@@ -67,6 +65,8 @@ impl Default for AudioConfig {
             sample_rate: 48000,
             frame_size_ms: 60,
             jitter_buffer_ms: 1000,
+            input_device_id: 0,
+            output_device_id: 0,
         }
     }
 }
@@ -86,13 +86,11 @@ mod real_impl {
     use std::thread;
     use std::sync::mpsc::{channel, Receiver};
     use byteorder::{ByteOrder, LittleEndian};
-    use crossbeam_channel::{bounded, Sender as CbSender, Receiver as CbReceiver};
 
     use oboe::{
         AudioInputCallback, AudioOutputCallback, AudioStreamBuilder, AudioStreamAsync,
         PerformanceMode, SharingMode, Mono, DataCallbackResult, InputPreset, Usage,
-        Input, Output, AudioInputStreamSafe, AudioOutputStreamSafe,
-        AudioStream
+        Input, Output, AudioInputStreamSafe, AudioOutputStreamSafe, AudioStream
     };
     use opus_codec::{Encoder, Decoder, Application, Channels, SampleRate};
 
@@ -119,7 +117,7 @@ mod real_impl {
         Some((origin_id, seq, &data[PACKET_HEADER_SIZE..]))
     }
 
-    // --- PER-PEER STATE ---
+    // --- SHARED PEER STATE ---
     struct PeerStream {
         decoder: Decoder,
         jitter_buffer: BTreeMap<u16, Vec<u8>>,
@@ -151,7 +149,7 @@ mod real_impl {
         output_stream: Mutex<Option<AudioStreamAsync<Output, OutputCallback>>>,
         tx_transport: Sender<Vec<u8>>,
         sequence_number: Arc<Mutex<u16>>,
-        incoming_tx: Mutex<Option<CbSender<Vec<u8>>>>,
+        shared_peers: Arc<Mutex<HashMap<u32, PeerStream>>>,
         config: AudioConfig,
         is_mic_enabled: Arc<AtomicBool>,
         own_node_id: u32,
@@ -175,7 +173,7 @@ mod real_impl {
                 output_stream: Mutex::new(None),
                 tx_transport: tx,
                 sequence_number: Arc::new(Mutex::new(0)),
-                incoming_tx: Mutex::new(None),
+                shared_peers: Arc::new(Mutex::new(HashMap::new())),
                 config,
                 is_mic_enabled: Arc::new(AtomicBool::new(false)),
                 own_node_id,
@@ -197,7 +195,8 @@ mod real_impl {
             log::info!("Stopping Audio Session...");
             *self.input_stream.lock().unwrap() = None;
             *self.output_stream.lock().unwrap() = None;
-            *self.incoming_tx.lock().unwrap() = None;
+            // Note: We DO NOT clear shared_peers here to allow quick resume.
+            // Logic in VoiceManager/Java handles strictly lifecycle.
             self.is_mic_enabled.store(false, Ordering::Relaxed);
             Ok(())
         }
@@ -218,9 +217,12 @@ mod real_impl {
         }
 
         pub fn push_incoming_packet(&self, data: Vec<u8>) {
-            let tx_guard = self.incoming_tx.lock().unwrap();
-            if let Some(tx) = tx_guard.as_ref() {
-                let _ = tx.try_send(data);
+            // Write directly to the shared state
+            if let Some((origin_id, seq, opus_data)) = unwrap_packet(&data) {
+                let mut peers = self.shared_peers.lock().unwrap();
+                let peer = peers.entry(origin_id).or_insert_with(PeerStream::new);
+                peer.jitter_buffer.insert(seq, opus_data.to_vec());
+                peer.silence_counter = 0;
             }
         }
 
@@ -245,14 +247,24 @@ mod real_impl {
                 own_node_id: self.own_node_id,
             };
 
-            let mut stream = AudioStreamBuilder::default()
+            // 1. Configure properties on the BASE builder first
+            let mut builder = AudioStreamBuilder::default()
                 .set_direction::<Input>()
-                .set_format::<i16>()
-                .set_channel_count::<Mono>()
                 .set_performance_mode(PerformanceMode::None)
                 .set_sharing_mode(SharingMode::Shared)
+                .set_format::<i16>()
+                .set_channel_count::<Mono>()
                 .set_sample_rate(self.config.sample_rate)
-                .set_input_preset(InputPreset::VoiceCommunication)
+                .set_input_preset(InputPreset::VoiceCommunication);
+
+            // 2. Set Device ID on the BASE builder (before setting callback)
+            if self.config.input_device_id != 0 {
+                log::info!("Input: Explicit Device ID {}", self.config.input_device_id);
+                builder = builder.set_device_id(self.config.input_device_id);
+            }
+
+            // 3. Set Callback (Converts to Async Builder) and Open
+            let mut stream = builder
                 .set_callback(callback)
                 .open_stream()
                 .map_err(|e| {
@@ -266,23 +278,30 @@ mod real_impl {
         }
 
         fn start_output_stream(&self) -> Result<(), AudioError> {
-            let (tx, rx) = bounded(AUDIO_CHANNEL_CAPACITY);
-            *self.incoming_tx.lock().unwrap() = Some(tx);
-
+            // Create the callback giving it a REFERENCE (clone of Arc) to the shared state
             let callback = OutputCallback {
-                incoming_rx: rx,
-                peers: HashMap::new(),
+                peers: self.shared_peers.clone(),
                 max_jitter_packets: (self.config.jitter_buffer_ms / self.config.frame_size_ms) as usize,
             };
 
-            let mut stream = AudioStreamBuilder::default()
+            // 1. Configure properties on the BASE builder first
+            let mut builder = AudioStreamBuilder::default()
                 .set_direction::<Output>()
-                .set_format::<i16>()
-                .set_channel_count::<Mono>()
                 .set_performance_mode(PerformanceMode::None)
                 .set_sharing_mode(SharingMode::Shared)
+                .set_format::<i16>()
+                .set_channel_count::<Mono>()
                 .set_sample_rate(self.config.sample_rate)
-                .set_usage(Usage::VoiceCommunication)
+                .set_usage(Usage::VoiceCommunication);
+
+            // 2. Set Device ID on the BASE builder
+            if self.config.output_device_id != 0 {
+                log::info!("Output: Explicit Device ID {}", self.config.output_device_id);
+                builder = builder.set_device_id(self.config.output_device_id);
+            }
+
+            // 3. Set Callback and Open
+            let mut stream = builder
                 .set_callback(callback)
                 .open_stream()
                 .map_err(|e| {
@@ -354,8 +373,7 @@ mod real_impl {
     }
 
     struct OutputCallback {
-        incoming_rx: CbReceiver<Vec<u8>>,
-        peers: HashMap<u32, PeerStream>,
+        peers: Arc<Mutex<HashMap<u32, PeerStream>>>,
         max_jitter_packets: usize,
     }
 
@@ -363,23 +381,21 @@ mod real_impl {
         type FrameType = (i16, Mono);
 
         fn on_audio_ready(&mut self, _stream: &mut dyn AudioOutputStreamSafe, frames: &mut [i16]) -> DataCallbackResult {
-            // 1. Drain Channel (Pull from Kotlin/BLE)
-            while let Ok(packet_data) = self.incoming_rx.try_recv() {
-                if let Some((origin_id, seq, opus_data)) = unwrap_packet(&packet_data) {
-                    let peer = self.peers.entry(origin_id).or_insert_with(PeerStream::new);
-                    peer.jitter_buffer.insert(seq, opus_data.to_vec());
-                    peer.silence_counter = 0;
+            // Lock the shared state to get access to the peers
+            let mut peers_guard = match self.peers.lock() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    let mut g = e.into_inner();
+                    g.clear();
+                    g
                 }
-            }
+            };
 
-            // 2. Prepare Mixer Buffer (i32 to avoid overflow)
             let samples_needed = frames.len();
             let mut mix_buffer = vec![0i32; samples_needed];
-
-            // 3. Process each Peer
             let mut dead_peers = Vec::new();
 
-            for (&node_id, peer) in self.peers.iter_mut() {
+            for (&node_id, peer) in peers_guard.iter_mut() {
                 peer.silence_counter += 1;
                 if peer.silence_counter > PEER_TIMEOUT_FRAMES * 5 {
                      dead_peers.push(node_id);
@@ -460,18 +476,16 @@ mod real_impl {
                         let mut decoded_chunk = [0i16; MAX_BUFFER_SIZE];
                         let len = match maybe_data {
                             Some(data) => peer.decoder.decode(&data, &mut decoded_chunk, false).unwrap_or(0),
-                            None => peer.decoder.decode(&[], &mut decoded_chunk, true).unwrap_or(0), // PLC
+                            None => peer.decoder.decode(&[], &mut decoded_chunk, true).unwrap_or(0),
                         };
 
                         if len > 0 {
                             let space_left = samples_needed - peer_samples_produced;
                             let to_take = std::cmp::min(len, space_left);
-
                             for i in 0..to_take {
                                 mix_buffer[peer_samples_produced + i] += decoded_chunk[i] as i32;
                             }
                             peer_samples_produced += to_take;
-
                             if len > to_take {
                                 let remainder = len - to_take;
                                 for i in 0..remainder {
@@ -486,12 +500,10 @@ mod real_impl {
                 }
             }
 
-            // 4. Cleanup
             for id in dead_peers {
-                self.peers.remove(&id);
+                peers_guard.remove(&id);
             }
 
-            // 5. Clamping & Output
             for i in 0..samples_needed {
                 frames[i] = mix_buffer[i].clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             }
