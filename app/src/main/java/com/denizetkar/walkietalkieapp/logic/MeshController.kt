@@ -210,9 +210,7 @@ class MeshController(
         voiceManager.stop()
 
         // 3. Teardown Hardware
-        driver.disconnectAll()
-        driver.stopScanning()
-        driver.stopAdvertising()
+        driver.stop()
     }
 
     private suspend fun CoroutineScope.runLivenessCheck() {

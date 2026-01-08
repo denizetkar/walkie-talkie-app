@@ -60,4 +60,5 @@ object Config {
     const val PEER_CONNECT_TIMEOUT = 5000L
     const val BLE_OPERATION_TIMEOUT = 3000L
     const val HEARTBEAT_TIMEOUT = 4000L
+    const val DESTROY_TIMEOUT = 1000L
 }
