@@ -94,16 +94,28 @@ mod real_impl {
     };
     use opus_codec::{Encoder, Decoder, Application, Channels, SampleRate};
 
-    // --- PACKET FORMATTING ---
+    // --- Helpers ---
+
+    fn map_sample_rate(hz: i32) -> SampleRate {
+        match hz {
+            8000 => SampleRate::Hz8000,
+            12000 => SampleRate::Hz12000,
+            16000 => SampleRate::Hz16000,
+            24000 => SampleRate::Hz24000,
+            48000 => SampleRate::Hz48000,
+            _ => {
+                log::warn!("Unsupported sample rate: {}. Defaulting to 48kHz.", hz);
+                SampleRate::Hz48000
+            }
+        }
+    }
 
     fn wrap_packet(origin_id: u32, seq: u16, opus_data: &[u8]) -> Vec<u8> {
         let mut packet = Vec::with_capacity(PACKET_HEADER_SIZE + opus_data.len());
         let mut id_buf = [0u8; 4];
         let mut seq_buf = [0u8; 2];
-
         LittleEndian::write_u32(&mut id_buf, origin_id);
         LittleEndian::write_u16(&mut seq_buf, seq);
-
         packet.extend_from_slice(&id_buf);
         packet.extend_from_slice(&seq_buf);
         packet.extend_from_slice(opus_data);
@@ -117,7 +129,8 @@ mod real_impl {
         Some((origin_id, seq, &data[PACKET_HEADER_SIZE..]))
     }
 
-    // --- SHARED PEER STATE ---
+    // --- Core Logic ---
+
     struct PeerStream {
         decoder: Decoder,
         jitter_buffer: BTreeMap<u16, Vec<u8>>,
@@ -129,8 +142,9 @@ mod real_impl {
     }
 
     impl PeerStream {
-        fn new() -> Self {
-            let decoder = Decoder::new(SampleRate::Hz48000, Channels::Mono).unwrap();
+        fn new(sample_rate_hz: i32) -> Self {
+            let rate = map_sample_rate(sample_rate_hz);
+            let decoder = Decoder::new(rate, Channels::Mono).unwrap();
             Self {
                 decoder,
                 jitter_buffer: BTreeMap::new(),
@@ -155,7 +169,7 @@ mod real_impl {
         own_node_id: u32,
     }
 
-    // --- RESOURCE CLEANUP (THE FIX) ---
+    // --- RESOURCE CLEANUP ---
     impl Drop for AudioEngine {
         fn drop(&mut self) {
             // When the Kotlin wrapper is GC'd, this runs.
@@ -202,7 +216,7 @@ mod real_impl {
         /// Starts BOTH Input and Output streams.
         /// Call this when joining a group.
         pub fn start_session(&self) -> Result<(), AudioError> {
-            log::info!("Starting Audio Session (Multi-Stream Mixing)...");
+            log::info!("Starting Audio Session (Rate: {}Hz)...", self.config.sample_rate);
             self.start_output_stream()?;
             self.start_input_stream()?;
             Ok(())
@@ -239,18 +253,17 @@ mod real_impl {
             // Write directly to the shared state
             if let Some((origin_id, seq, opus_data)) = unwrap_packet(&data) {
                 let mut peers = self.shared_peers.lock().unwrap();
-                let peer = peers.entry(origin_id).or_insert_with(PeerStream::new);
+                let peer = peers.entry(origin_id).or_insert_with(|| PeerStream::new(self.config.sample_rate));
                 peer.jitter_buffer.insert(seq, opus_data.to_vec());
                 peer.silence_counter = 0;
             }
         }
 
-        // --- Internal Helpers ---
-
         fn start_input_stream(&self) -> Result<(), AudioError> {
             let samples_per_frame = (self.config.sample_rate / 1000 * self.config.frame_size_ms) as usize;
+            let encoder_rate = map_sample_rate(self.config.sample_rate);
 
-            let mut encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
+            let mut encoder = Encoder::new(encoder_rate, Channels::Mono, Application::Voip)
                 .map_err(|_| AudioError::EncoderError)?;
             let _ = encoder.set_dtx(true);
             let _ = encoder.set_inband_fec(true);
