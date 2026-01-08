@@ -14,7 +14,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -67,7 +66,6 @@ class MeshController(
 
     // --- Jobs ---
     private var heartbeatJob: Job? = null
-    private var scanLoopJob: Job? = null
     private var cleanupJob: Job? = null
     private var packetCleanupJob: Job? = null
     private var livenessJob: Job? = null
@@ -164,19 +162,15 @@ class MeshController(
         Log.d("MeshController", "CMD: Destroy (Hard)")
 
         // 1. Cancel Local Jobs immediately.
-        // We do not 'join' (wait) for them, we just cut the cord.
         heartbeatJob?.cancel()
-        scanLoopJob?.cancel()
         livenessJob?.cancel()
         cleanupJob?.cancel()
         packetCleanupJob?.cancel()
 
         // 2. Clean up VoiceManager
-        // (Unregisters the AudioDeviceCallback)
         voiceManager.destroy()
 
         // 3. Clean up BLE Driver
-        // (Stops Scanning/Advertising and closes GATT server)
         driver.destroy()
     }
 
@@ -189,9 +183,11 @@ class MeshController(
         // 2. Start Concurrent Background Jobs
         livenessJob = scope.launch { runLivenessCheck() }
         heartbeatJob = scope.launch { runHeartbeatLoop(groupName) }
-        scanLoopJob = scope.launch { runScanLoop() }
 
-        // 3. Initial Advertising
+        // 3. Start Scanning (Always on to receive Heartbeats)
+        driver.startScanning()
+
+        // 4. Initial Advertising
         refreshAdvertising(groupName)
     }
 
@@ -202,9 +198,8 @@ class MeshController(
     private suspend fun stopRadioLogic() {
         // 1. Cancel Background Jobs
         heartbeatJob?.cancel()
-        scanLoopJob?.cancel()
         livenessJob?.cancel()
-        joinAll(heartbeatJob, scanLoopJob, livenessJob)
+        joinAll(heartbeatJob, livenessJob)
 
         // 2. Teardown Audio
         voiceManager.stop()
@@ -237,27 +232,6 @@ class MeshController(
                 broadcastGeneratedPacket(packet, TransportDataType.CONTROL)
             }
             delay(Config.HEARTBEAT_INTERVAL)
-        }
-    }
-
-    /**
-     * REACTIVE SCAN LOOP
-     * Observes VoiceManager.isMicrophoneEnabled.
-     * Uses collectLatest to automatically cancel the scanning when the user starts talking.
-     */
-    private suspend fun runScanLoop() {
-        voiceManager.isMicrophoneEnabled.collectLatest { isMicOn ->
-            if (isMicOn) {
-                // Scenario: User started Talking.
-                // Action: STOP scanning immediately to free up radio bandwidth.
-                Log.d("MeshController", "Mic Active: Aborting Scan to prioritize Audio")
-                driver.stopScanning()
-            } else {
-                // Scenario: User is Listening/Idle.
-                // Action: Resume scanning logic.
-                Log.d("MeshController", "Mic Idle: Resuming Background Scanning")
-                driver.startScanning()
-            }
         }
     }
 

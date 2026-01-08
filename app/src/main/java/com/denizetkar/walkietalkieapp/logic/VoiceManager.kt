@@ -47,7 +47,6 @@ class VoiceManager(
     val selectedOutputId = _selectedOutputId.asStateFlow()
 
     private val _isMicrophoneEnabled = MutableStateFlow(false)
-    val isMicrophoneEnabled = _isMicrophoneEnabled.asStateFlow()
 
     private val baseRustConfig = AudioConfig(
         sampleRate = Config.AUDIO_SAMPLE_RATE,
@@ -97,7 +96,6 @@ class VoiceManager(
         Log.i("VoiceManager", "Starting Voice System...")
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         requestAudioFocus()
-        applyAudioRouting(_selectedOutputId.value)
         createAndStartEngine()
         setMicrophoneEnabled(false)
     }
@@ -111,9 +109,10 @@ class VoiceManager(
         setMicrophoneEnabled(false)
         try {
             engine?.stopSession()
-            engine = null
         } catch (e: Exception) {
             Log.e("VoiceManager", "Error stopping engine", e)
+        } finally {
+            engine = null
         }
         abandonAudioFocus()
         audioManager.clearCommunicationDeviceCompat()
@@ -133,7 +132,6 @@ class VoiceManager(
         if (_selectedOutputId.value == deviceId) return
         Log.i("VoiceManager", "Changing Output -> $deviceId")
         _selectedOutputId.value = deviceId
-        applyAudioRouting(deviceId)
         restartEngineIfActive()
     }
 
@@ -162,8 +160,8 @@ class VoiceManager(
 
     @Synchronized
     fun destroy() {
-        stop()
         audioManager.unregisterAudioDeviceCallback(deviceCallback)
+        stop()
     }
 
     // --- Private Helpers ---
@@ -186,7 +184,7 @@ class VoiceManager(
     }
 
     private fun restartEngineIfActive() {
-        if (audioManager.mode == AudioManager.MODE_IN_COMMUNICATION) {
+        if (engine != null) {
             createAndStartEngine()
         }
     }
@@ -209,46 +207,12 @@ class VoiceManager(
         if (currentOut != 0 && outputs.none { it.id == currentOut }) {
             Log.i("VoiceManager", "Selected Speaker (ID $currentOut) removed. Reverting to Default.")
             _selectedOutputId.value = 0
-            applyAudioRouting(0)
             mustRestartEngine = true
         }
         if (mustRestartEngine) restartEngineIfActive()
 
         _availableInputs.value = inputs.map { it.toFriendlyName(isInput = true) }
         _availableOutputs.value = outputs.map { it.toFriendlyName(isInput = false) }
-    }
-
-    private fun applyAudioRouting(deviceId: Int) {
-        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        val target = devices.find { it.id == deviceId }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+: Use setCommunicationDevice
-            if (target != null) {
-                audioManager.setCommunicationDevice(target)
-            } else {
-                audioManager.clearCommunicationDevice()
-            }
-        } else @Suppress("DEPRECATION") {
-            // Android 11 and below: Legacy SCO/Speakerphone logic
-            if (target != null) {
-                if (target.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                    audioManager.isSpeakerphoneOn = true
-                    audioManager.stopBluetoothSco()
-                } else if (target.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || target.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
-                    audioManager.isSpeakerphoneOn = false
-                    audioManager.startBluetoothSco()
-                    audioManager.isBluetoothScoOn = true
-                } else {
-                    // Wired Headset / Earpiece
-                    audioManager.isSpeakerphoneOn = false
-                    audioManager.stopBluetoothSco()
-                }
-            } else {
-                // Default -> Earpiece usually
-                audioManager.isSpeakerphoneOn = false
-                audioManager.stopBluetoothSco()
-            }
-        }
     }
 
     private fun AudioManager.clearCommunicationDeviceCompat() {

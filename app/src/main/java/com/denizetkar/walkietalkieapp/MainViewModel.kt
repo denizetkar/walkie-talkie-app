@@ -117,7 +117,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
         val controller = meshController ?: return
         stateCollectionJob?.cancel()
 
-        stateCollectionJob = viewModelScope.launch {
+        stateCollectionJob = viewModelScope.launch(Dispatchers.Default) {
             // 1. Observe Engine State
             launch {
                 controller.state.collect { engineState ->
@@ -162,16 +162,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
                     _appState.update { it.copy(availableMics = list) }
                 }
             }
+
+            // 4. Audio Outputs
             launch {
                 controller.availableOutputs.collect { list ->
                     _appState.update { it.copy(availableSpeakers = list) }
                 }
             }
+
+            // 5. Selected Mic
             launch {
                 controller.selectedInputId.collect { id ->
                     _appState.update { it.copy(selectedMicId = id) }
                 }
             }
+
+            // 6. Selected Speaker
             launch {
                 controller.selectedOutputId.collect { id ->
                     _appState.update { it.copy(selectedSpeakerId = id) }

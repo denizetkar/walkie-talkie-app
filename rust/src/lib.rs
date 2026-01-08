@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::Sender as StdSender;
 use std::collections::{BTreeMap, HashMap};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 
 uniffi::setup_scaffolding!("walkie_talkie_engine");
 
@@ -91,7 +92,7 @@ pub trait AudioErrorCallback: Send + Sync {
 mod real_impl {
     use super::*;
     use std::thread;
-    use std::sync::mpsc::{channel, Receiver};
+    use std::sync::mpsc::{channel, Receiver as StdReceiver};
     use byteorder::{ByteOrder, LittleEndian};
 
     use oboe::{
@@ -168,9 +169,9 @@ mod real_impl {
     pub struct AudioEngine {
         input_stream: Mutex<Option<AudioStreamAsync<Input, InputCallback>>>,
         output_stream: Mutex<Option<AudioStreamAsync<Output, OutputCallback>>>,
-        tx_transport: Sender<Vec<u8>>,
+        tx_transport: StdSender<Vec<u8>>,
+        packet_tx: Mutex<Option<Sender<(u32, u16, Vec<u8>)>>>,
         sequence_number: Arc<Mutex<u16>>,
-        shared_peers: Arc<Mutex<HashMap<u32, PeerStream>>>,
         config: AudioConfig,
         is_mic_enabled: Arc<AtomicBool>,
         own_node_id: u32,
@@ -194,9 +195,8 @@ mod real_impl {
             callback: Box<dyn AudioErrorCallback>,
             own_node_id: u32
         ) -> Self {
-            let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = channel();
+            let (tx, rx): (StdSender<Vec<u8>>, StdReceiver<Vec<u8>>) = channel();
 
-            // Background thread to handle sending packets to Kotlin
             thread::spawn(move || {
                 while let Ok(packet) = rx.recv() {
                     transport.send_packet(packet);
@@ -207,8 +207,8 @@ mod real_impl {
                 input_stream: Mutex::new(None),
                 output_stream: Mutex::new(None),
                 tx_transport: tx,
+                packet_tx: Mutex::new(None),
                 sequence_number: Arc::new(Mutex::new(0)),
-                shared_peers: Arc::new(Mutex::new(HashMap::new())),
                 config,
                 is_mic_enabled: Arc::new(AtomicBool::new(false)),
                 own_node_id,
@@ -251,16 +251,22 @@ mod real_impl {
         }
 
         pub fn push_incoming_packet(&self, data: Vec<u8>) {
-            // Write directly to the shared state
             if let Some((origin_id, seq, opus_data)) = unwrap_packet(&data) {
-                let mut peers = self.shared_peers.lock().unwrap();
-                let peer = peers.entry(origin_id).or_insert_with(|| PeerStream::new(self.config.sample_rate));
-                peer.jitter_buffer.insert(seq, opus_data.to_vec());
-                peer.silence_counter = 0;
+                // LOCK-FREE SEND: We lock mutex only to get the sender, then send non-blockingly
+                if let Ok(guard) = self.packet_tx.lock() {
+                    if let Some(tx) = &*guard {
+                        let _ = tx.send((origin_id, seq, opus_data.to_vec()));
+                    }
+                }
             }
         }
 
         fn release_resources(&self) {
+            // Clear the sender so incoming packets stop piling up
+            if let Ok(mut guard) = self.packet_tx.lock() {
+                *guard = None;
+            }
+
             if let Ok(mut stream_opt) = self.input_stream.lock() {
                 if let Some(mut stream) = stream_opt.take() {
                     let _ = stream.close();
@@ -325,14 +331,21 @@ mod real_impl {
         }
 
         fn start_output_stream(&self) -> Result<(), AudioError> {
-            // Create the callback giving it a REFERENCE (clone of Arc) to the shared state
+            // Create lock-free channel
+            let (tx, rx) = unbounded();
+
+            // Update the sender for incoming packets
+            *self.packet_tx.lock().unwrap() = Some(tx);
+
+            // Give receiver to the callback (it owns the map now)
             let callback = OutputCallback {
-                peers: self.shared_peers.clone(),
+                peers: HashMap::new(),
+                packet_rx: rx,
+                sample_rate: self.config.sample_rate,
                 max_jitter_packets: (self.config.jitter_buffer_ms / self.config.frame_size_ms) as usize,
                 error_callback: self.error_callback.clone(),
             };
 
-            // 1. Configure properties on the BASE builder first
             let mut builder = AudioStreamBuilder::default()
                 .set_direction::<Output>()
                 .set_performance_mode(PerformanceMode::None)
@@ -342,13 +355,11 @@ mod real_impl {
                 .set_sample_rate(self.config.sample_rate)
                 .set_usage(Usage::VoiceCommunication);
 
-            // 2. Set Device ID on the BASE builder
             if self.config.output_device_id != 0 {
                 log::info!("Output: Explicit Device ID {}", self.config.output_device_id);
                 builder = builder.set_device_id(self.config.output_device_id);
             }
 
-            // 3. Set Callback and Open
             let mut stream = builder
                 .set_callback(callback)
                 .open_stream()
@@ -368,7 +379,7 @@ mod real_impl {
     struct InputCallback {
         encoder: Encoder,
         sequence_number: Arc<Mutex<u16>>,
-        tx_transport: Sender<Vec<u8>>,
+        tx_transport: StdSender<Vec<u8>>,
         buffer: [i16; MAX_BUFFER_SIZE],
         buffer_pos: usize,
         samples_per_frame: usize,
@@ -428,7 +439,9 @@ mod real_impl {
     }
 
     struct OutputCallback {
-        peers: Arc<Mutex<HashMap<u32, PeerStream>>>,
+        peers: HashMap<u32, PeerStream>,
+        packet_rx: Receiver<(u32, u16, Vec<u8>)>,
+        sample_rate: i32,
         max_jitter_packets: usize,
         error_callback: Arc<Box<dyn AudioErrorCallback>>,
     }
@@ -437,21 +450,20 @@ mod real_impl {
         type FrameType = (i16, Mono);
 
         fn on_audio_ready(&mut self, _stream: &mut dyn AudioOutputStreamSafe, frames: &mut [i16]) -> DataCallbackResult {
-            // Lock the shared state to get access to the peers
-            let mut peers_guard = match self.peers.lock() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    let mut g = e.into_inner();
-                    g.clear();
-                    g
-                }
-            };
+            // 1. Drain Channel (Lock-Free)
+            while let Ok((id, seq, data)) = self.packet_rx.try_recv() {
+                let rate = self.sample_rate;
+                let peer = self.peers.entry(id).or_insert_with(|| PeerStream::new(rate));
+                peer.jitter_buffer.insert(seq, data);
+                peer.silence_counter = 0;
+            }
 
             let samples_needed = frames.len();
             let mut mix_buffer = vec![0i32; samples_needed];
             let mut dead_peers = Vec::new();
 
-            for (&node_id, peer) in peers_guard.iter_mut() {
+            // 2. Process Peers (Local ownership, no mutex!)
+            for (&node_id, peer) in self.peers.iter_mut() {
                 peer.silence_counter += 1;
                 if peer.silence_counter > PEER_TIMEOUT_FRAMES * 5 {
                      dead_peers.push(node_id);
@@ -557,7 +569,7 @@ mod real_impl {
             }
 
             for id in dead_peers {
-                peers_guard.remove(&id);
+                self.peers.remove(&id);
             }
 
             for i in 0..samples_needed {
