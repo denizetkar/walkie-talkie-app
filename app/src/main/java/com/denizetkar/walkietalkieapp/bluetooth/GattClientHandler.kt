@@ -180,13 +180,17 @@ class GattClientHandler(
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             operationQueue.operationCompleted()
-            if (status == BluetoothGatt.GATT_SUCCESS) {
+            Log.d("GattClient", "MTU Negotiated: $mtu")
+            if (status == BluetoothGatt.GATT_SUCCESS && mtu >= Config.BLE_MTU) {
                 currentMtu = mtu
-                Log.d("GattClient", "MTU Negotiated: $mtu")
+                scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
             } else {
-                Log.w("GattClient", "MTU Request Failed. Proceeding with default MTU.")
+                Log.e("GattClient", "MTU too low ($mtu) or failed ($status). Disconnecting.")
+                scope.launch {
+                    _clientEvents.emit(ClientEvent.Error(targetDevice, "Device not supported: Low MTU"))
+                }
+                disconnect()
             }
-            scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {

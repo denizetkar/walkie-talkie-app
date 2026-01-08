@@ -32,6 +32,7 @@ sealed class ServerEvent {
     data class ClientAuthenticated(val device: BluetoothDevice, val nodeId: UInt) : ServerEvent()
     data class ClientDisconnected(val device: BluetoothDevice) : ServerEvent()
     data class MessageReceived(val device: BluetoothDevice, val data: ByteArray, val type: TransportDataType) : ServerEvent()
+    data class Error(val device: BluetoothDevice, val message: String) : ServerEvent()
 }
 
 class GattServerHandler(
@@ -64,6 +65,20 @@ class GattServerHandler(
                 Log.d("GattServer", "Disconnected: $address")
                 cleanupDevice(device)
                 scope.launch { _serverEvents.emit(ServerEvent.ClientDisconnected(device)) }
+            }
+        }
+
+        override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+            val normalizedAddress = device.address.uppercase()
+            Log.d("GattServer", "MTU Changed for $normalizedAddress: $mtu")
+
+            if (mtu < Config.BLE_MTU) {
+                Log.e("GattServer", "MTU too low ($mtu) for $normalizedAddress. Disconnecting.")
+                scope.launch {
+                    // Optional: Emit an error event so UI knows why
+                     _serverEvents.emit(ServerEvent.Error(device, "MTU too low"))
+                    disconnect(device)
+                }
             }
         }
 
