@@ -99,8 +99,11 @@ class BleDiscoveryModule(
                     .setServiceData(ParcelUuid(Config.APP_SERVICE_UUID), null)
                     .build()
             )
+
+            // CHANGED: Use BALANCED (2s on / 3s off hardware cycle)
+            // This reduces radio contention for Bluetooth Headsets.
             val settings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .build()
 
             return try {

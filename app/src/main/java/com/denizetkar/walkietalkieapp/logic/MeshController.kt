@@ -79,9 +79,7 @@ class MeshController(
         startPacketCleanup()
     }
 
-    // ===========================================================================
-    // Public API
-    // ===========================================================================
+    // --- Public API ---
 
     fun checkSystemRequirements(): Result<Unit> = driver.validateCapabilities()
 
@@ -119,9 +117,7 @@ class MeshController(
     fun setInputDevice(id: Int) = voiceManager.setInputDevice(id)
     fun setOutputDevice(id: Int) = voiceManager.setOutputDevice(id)
 
-    // ===========================================================================
-    // State Machine
-    // ===========================================================================
+    // --- State Machine ---
 
     private fun transitionTo(newState: EngineState) {
         val oldState = _state.value
@@ -184,12 +180,10 @@ class MeshController(
         driver.destroy()
     }
 
-    // ===========================================================================
-    // Radio Logic
-    // ===========================================================================
+    // --- Radio Logic ---
 
     private fun startRadioLogic(groupName: String) {
-        // 1. Audio Setup (Encapsulated)
+        // 1. Audio Setup
         voiceManager.start()
 
         // 2. Start Concurrent Background Jobs
@@ -251,9 +245,9 @@ class MeshController(
     /**
      * REACTIVE SCAN LOOP
      * Observes VoiceManager.isMicrophoneEnabled.
-     * Uses collectLatest to automatically cancel the scanning loop when the user starts talking.
+     * Uses collectLatest to automatically cancel the scanning when the user starts talking.
      */
-    private suspend fun CoroutineScope.runScanLoop() {
+    private suspend fun runScanLoop() {
         voiceManager.isMicrophoneEnabled.collectLatest { isMicOn ->
             if (isMicOn) {
                 // Scenario: User started Talking.
@@ -262,20 +256,9 @@ class MeshController(
                 driver.stopScanning()
             } else {
                 // Scenario: User is Listening/Idle.
-                // Action: Resume periodic scanning logic.
+                // Action: Resume scanning logic.
                 Log.d("MeshController", "Mic Idle: Resuming Background Scanning")
-
-                // This loop will run until isMicOn changes (causing collectLatest to cancel this block)
-                while (isActive) {
-                    val peers = driver.connectedPeers.value.size
-                    val scanDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PERIOD_AGGRESSIVE else Config.SCAN_PERIOD_LAZY
-                    val pauseDuration = if (peers < Config.TARGET_PEERS) Config.SCAN_PAUSE_AGGRESSIVE else Config.SCAN_INTERVAL_LAZY
-
-                    driver.startScanning()
-                    delay(scanDuration)
-                    driver.stopScanning()
-                    delay(pauseDuration)
-                }
+                driver.startScanning()
             }
         }
     }
@@ -292,9 +275,7 @@ class MeshController(
         scope.launch { driver.broadcast(data, type) }
     }
 
-    // ===========================================================================
-    // Cleanup Helpers
-    // ===========================================================================
+    // --- Cleanup Helpers ---
 
     private fun startGroupCleanup() {
         cleanupJob?.cancel()
@@ -331,9 +312,7 @@ class MeshController(
         seenPackets[hash] = System.currentTimeMillis()
     }
 
-    // ===========================================================================
-    // Event Handling
-    // ===========================================================================
+    // --- Event Handling ---
 
     private fun handleDriverEvent(event: BleDriverEvent) {
         when (event) {

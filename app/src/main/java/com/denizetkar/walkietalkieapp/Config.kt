@@ -51,11 +51,6 @@ object Config {
     // Artificial delay to allow Android GATT stack to stabilize after service discovery
     const val GATT_SUBSCRIPTION_DELAY = 300L
 
-    const val SCAN_PERIOD_AGGRESSIVE = 4000L
-    const val SCAN_PAUSE_AGGRESSIVE = 4000L
-    const val SCAN_PERIOD_LAZY = 2000L
-    const val SCAN_INTERVAL_LAZY = 10000L
-
     const val HEARTBEAT_INTERVAL = 1000L
 
     const val CLEANUP_PERIOD = 2000L
