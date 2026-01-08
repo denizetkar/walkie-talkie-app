@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.ArrayDeque
@@ -76,6 +77,7 @@ class BleOperationQueue(
         }
     }
 
+    @Synchronized
     private fun executeOperation(action: suspend () -> Unit) {
         isBusy = true
         timeoutJob = scope.launch {
@@ -102,5 +104,11 @@ class BleOperationQueue(
         audioQueue.clear()
         isBusy = false
         consecutiveControlCount = 0
+    }
+
+    @Synchronized
+    fun shutdown() {
+        clear()
+        scope.cancel()
     }
 }

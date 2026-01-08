@@ -87,7 +87,7 @@ class GattClientHandler(
     @SuppressLint("MissingPermission")
     fun disconnect() {
         handshakeTimeoutJob?.cancel()
-        operationQueue.clear()
+        operationQueue.shutdown()
         try {
             bluetoothGatt?.disconnect()
         } catch (_: Exception) { }
