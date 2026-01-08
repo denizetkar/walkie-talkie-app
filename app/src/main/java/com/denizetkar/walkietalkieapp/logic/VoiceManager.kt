@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import uniffi.walkie_talkie_engine.AudioConfig
 import uniffi.walkie_talkie_engine.AudioEngine
+import uniffi.walkie_talkie_engine.AudioErrorCallback
 import uniffi.walkie_talkie_engine.PacketTransport
 
 /**
@@ -70,6 +71,12 @@ class VoiceManager(
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
             Log.d("VoiceManager", "System: Devices Removed")
             scope.launch(Dispatchers.IO) { updateDeviceLists() }
+        }
+    }
+    private val engineErrorCallback = object : AudioErrorCallback {
+        override fun onEngineError(code: Int) {
+            Log.e("VoiceManager", "CRITICAL: Native Engine Error $code. Restarting...")
+            scope.launch(Dispatchers.IO) { restartEngineIfActive() }
         }
     }
 
@@ -163,13 +170,13 @@ class VoiceManager(
 
     private fun createAndStartEngine() {
         try {
-            if (engine != null) engine?.stopSession()
+            engine?.stopSession()
 
             val currentConfig = baseRustConfig.copy(
                 inputDeviceId = _selectedInputId.value,
                 outputDeviceId = _selectedOutputId.value
             )
-            val newEngine = AudioEngine(currentConfig, packetTransport, ownNodeId)
+            val newEngine = AudioEngine(currentConfig, packetTransport, engineErrorCallback, ownNodeId)
             newEngine.startSession()
             newEngine.setMicEnabled(_isMicrophoneEnabled.value)
             engine = newEngine

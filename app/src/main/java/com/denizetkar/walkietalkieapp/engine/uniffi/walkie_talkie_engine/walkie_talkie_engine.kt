@@ -611,8 +611,30 @@ internal open class UniffiForeignFutureResultVoid(
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
     fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
+internal interface UniffiCallbackInterfaceAudioErrorCallbackMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`code`: Int,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfacePacketTransportMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`data`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "onEngineError")
+internal open class UniffiVTableCallbackInterfaceAudioErrorCallback(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `onEngineError`: UniffiCallbackInterfaceAudioErrorCallbackMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `onEngineError`: UniffiCallbackInterfaceAudioErrorCallbackMethod0? = null,
+    ): UniffiVTableCallbackInterfaceAudioErrorCallback(`uniffiFree`,`uniffiClone`,`onEngineError`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceAudioErrorCallback) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `onEngineError` = other.`onEngineError`
+    }
+
 }
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "sendPacket")
 internal open class UniffiVTableCallbackInterfacePacketTransport(
@@ -662,6 +684,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_push_incoming_packet(
     ): Short
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_release_resources(
+    ): Short
     external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_set_mic_enabled(
     ): Short
     external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_start_input_stream(
@@ -673,6 +697,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_session(
     ): Short
     external fun uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new(
+    ): Short
+    external fun uniffi_walkie_talkie_engine_checksum_method_audioerrorcallback_on_engine_error(
     ): Short
     external fun uniffi_walkie_talkie_engine_checksum_method_packettransport_send_packet(
     ): Short
@@ -692,6 +718,7 @@ internal object UniffiLib {
 
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "walkie_talkie_engine"))
+        uniffiCallbackInterfaceAudioErrorCallback.register(this)
         uniffiCallbackInterfacePacketTransport.register(this)
         
     }
@@ -699,11 +726,13 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_walkie_talkie_engine_fn_free_audioengine(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`config`: RustBuffer.ByValue,`transport`: Long,`ownNodeId`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(`config`: RustBuffer.ByValue,`transport`: Long,`callback`: Long,`ownNodeId`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_is_session_active(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_push_incoming_packet(`ptr`: Long,`data`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_walkie_talkie_engine_fn_method_audioengine_release_resources(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_set_mic_enabled(`ptr`: Long,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -714,6 +743,8 @@ internal object UniffiLib {
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_start_session(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_walkie_talkie_engine_fn_method_audioengine_stop_session(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_walkie_talkie_engine_fn_init_callback_vtable_audioerrorcallback(`vtable`: UniffiVTableCallbackInterfaceAudioErrorCallback,
     ): Unit
     external fun uniffi_walkie_talkie_engine_fn_init_callback_vtable_packettransport(`vtable`: UniffiVTableCallbackInterfacePacketTransport,
     ): Unit
@@ -847,6 +878,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_push_incoming_packet() != 14335.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_release_resources() != 56445.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_set_mic_enabled() != 33852.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -862,7 +896,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_walkie_talkie_engine_checksum_method_audioengine_stop_session() != 5573.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new() != 14955.toShort()) {
+    if (lib.uniffi_walkie_talkie_engine_checksum_constructor_audioengine_new() != 24249.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_walkie_talkie_engine_checksum_method_audioerrorcallback_on_engine_error() != 55915.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_walkie_talkie_engine_checksum_method_packettransport_send_packet() != 58023.toShort()) {
@@ -1304,6 +1341,8 @@ public interface AudioEngineInterface {
     
     fun `pushIncomingPacket`(`data`: kotlin.ByteArray)
     
+    fun `releaseResources`()
+    
     fun `setMicEnabled`(`enabled`: kotlin.Boolean)
     
     fun `startInputStream`()
@@ -1349,12 +1388,12 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
         this.handle = 0
         this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
-    constructor(`config`: AudioConfig, `transport`: PacketTransport, `ownNodeId`: kotlin.UInt) :
+    constructor(`config`: AudioConfig, `transport`: PacketTransport, `callback`: AudioErrorCallback, `ownNodeId`: kotlin.UInt) :
         this(UniffiWithHandle, 
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_walkie_talkie_engine_fn_constructor_audioengine_new(
     
-        FfiConverterTypeAudioConfig.lower(`config`),FfiConverterTypePacketTransport.lower(`transport`),FfiConverterUInt.lower(`ownNodeId`),_status)
+        FfiConverterTypeAudioConfig.lower(`config`),FfiConverterTypePacketTransport.lower(`transport`),FfiConverterTypeAudioErrorCallback.lower(`callback`),FfiConverterUInt.lower(`ownNodeId`),_status)
 }
     )
 
@@ -1449,6 +1488,18 @@ open class AudioEngine: Disposable, AutoCloseable, AudioEngineInterface
     UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_push_incoming_packet(
         it,
         FfiConverterByteArray.lower(`data`),_status)
+}
+    }
+    
+    
+
+    override fun `releaseResources`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_walkie_talkie_engine_fn_method_audioengine_release_resources(
+        it,
+        _status)
 }
     }
     
@@ -1670,6 +1721,66 @@ public object FfiConverterTypeAudioError : FfiConverterRustBuffer<AudioException
     }
 
 }
+
+
+
+
+
+public interface AudioErrorCallback {
+    
+    fun `onEngineError`(`code`: kotlin.Int)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceAudioErrorCallback {
+    internal object `onEngineError`: UniffiCallbackInterfaceAudioErrorCallbackMethod0 {
+        override fun callback(`uniffiHandle`: Long,`code`: Int,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeAudioErrorCallback.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`onEngineError`(
+                    FfiConverterInt.lift(`code`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeAudioErrorCallback.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeAudioErrorCallback.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceAudioErrorCallback.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `onEngineError`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_walkie_talkie_engine_fn_init_callback_vtable_audioerrorcallback(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeAudioErrorCallback: FfiConverterCallbackInterface<AudioErrorCallback>()
 
 
 

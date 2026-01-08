@@ -71,9 +71,16 @@ impl Default for AudioConfig {
     }
 }
 
+// --- Callback Interfaces ---
+
 #[uniffi::export(callback_interface)]
 pub trait PacketTransport: Send + Sync {
     fn send_packet(&self, data: Vec<u8>);
+}
+
+#[uniffi::export(callback_interface)]
+pub trait AudioErrorCallback: Send + Sync {
+    fn on_engine_error(&self, code: i32);
 }
 
 // ===========================================================================
@@ -167,31 +174,26 @@ mod real_impl {
         config: AudioConfig,
         is_mic_enabled: Arc<AtomicBool>,
         own_node_id: u32,
+        error_callback: Arc<Box<dyn AudioErrorCallback>>,
     }
 
     // --- RESOURCE CLEANUP ---
     impl Drop for AudioEngine {
         fn drop(&mut self) {
-            // When the Kotlin wrapper is GC'd, this runs.
-            // We must explicitly close the streams to prevent Android Framework warnings.
-            // FIX: Added 'mut' to 's' because close() requires a mutable reference.
-            if let Ok(mut stream) = self.input_stream.lock() {
-                if let Some(mut s) = stream.take() {
-                    let _ = s.close();
-                }
-            }
-            if let Ok(mut stream) = self.output_stream.lock() {
-                if let Some(mut s) = stream.take() {
-                    let _ = s.close();
-                }
-            }
+            // Automatically cleanup when the object is destroyed
+            self.release_resources();
         }
     }
 
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
-        pub fn new(config: AudioConfig, transport: Box<dyn PacketTransport>, own_node_id: u32) -> Self {
+        pub fn new(
+            config: AudioConfig,
+            transport: Box<dyn PacketTransport>,
+            callback: Box<dyn AudioErrorCallback>,
+            own_node_id: u32
+        ) -> Self {
             let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = channel();
 
             // Background thread to handle sending packets to Kotlin
@@ -210,6 +212,7 @@ mod real_impl {
                 config,
                 is_mic_enabled: Arc::new(AtomicBool::new(false)),
                 own_node_id,
+                error_callback: Arc::new(callback),
             }
         }
 
@@ -226,10 +229,8 @@ mod real_impl {
         /// Call this when leaving a group.
         pub fn stop_session(&self) -> Result<(), AudioError> {
             log::info!("Stopping Audio Session...");
-            *self.input_stream.lock().unwrap() = None;
-            *self.output_stream.lock().unwrap() = None;
-            // Note: We DO NOT clear shared_peers here to allow quick resume.
-            // Logic in VoiceManager/Java handles strictly lifecycle.
+            // Now explicitly releases hardware immediately!
+            self.release_resources();
             self.is_mic_enabled.store(false, Ordering::Relaxed);
             Ok(())
         }
@@ -259,6 +260,19 @@ mod real_impl {
             }
         }
 
+        fn release_resources(&self) {
+            if let Ok(mut stream_opt) = self.input_stream.lock() {
+                if let Some(mut stream) = stream_opt.take() {
+                    let _ = stream.close();
+                }
+            }
+            if let Ok(mut stream_opt) = self.output_stream.lock() {
+                if let Some(mut stream) = stream_opt.take() {
+                    let _ = stream.close();
+                }
+            }
+        }
+
         fn start_input_stream(&self) -> Result<(), AudioError> {
             let samples_per_frame = (self.config.sample_rate / 1000 * self.config.frame_size_ms) as usize;
             let encoder_rate = map_sample_rate(self.config.sample_rate);
@@ -277,6 +291,7 @@ mod real_impl {
                 samples_per_frame,
                 is_mic_enabled: self.is_mic_enabled.clone(),
                 own_node_id: self.own_node_id,
+                error_callback: self.error_callback.clone(),
             };
 
             // 1. Configure properties on the BASE builder first
@@ -314,6 +329,7 @@ mod real_impl {
             let callback = OutputCallback {
                 peers: self.shared_peers.clone(),
                 max_jitter_packets: (self.config.jitter_buffer_ms / self.config.frame_size_ms) as usize,
+                error_callback: self.error_callback.clone(),
             };
 
             // 1. Configure properties on the BASE builder first
@@ -347,6 +363,8 @@ mod real_impl {
         }
     }
 
+    // --- Callbacks ---
+
     struct InputCallback {
         encoder: Encoder,
         sequence_number: Arc<Mutex<u16>>,
@@ -356,6 +374,7 @@ mod real_impl {
         samples_per_frame: usize,
         is_mic_enabled: Arc<AtomicBool>,
         own_node_id: u32,
+        error_callback: Arc<Box<dyn AudioErrorCallback>>,
     }
 
     impl AudioInputCallback for InputCallback {
@@ -402,11 +421,16 @@ mod real_impl {
             }
             DataCallbackResult::Continue
         }
+
+        fn on_error_before_close(&mut self, _stream: &mut dyn AudioInputStreamSafe, error: oboe::Error) {
+            self.error_callback.on_engine_error(error as i32);
+        }
     }
 
     struct OutputCallback {
         peers: Arc<Mutex<HashMap<u32, PeerStream>>>,
         max_jitter_packets: usize,
+        error_callback: Arc<Box<dyn AudioErrorCallback>>,
     }
 
     impl AudioOutputCallback for OutputCallback {
@@ -542,6 +566,10 @@ mod real_impl {
 
             DataCallbackResult::Continue
         }
+
+        fn on_error_before_close(&mut self, _stream: &mut dyn AudioOutputStreamSafe, error: oboe::Error) {
+            self.error_callback.on_engine_error(error as i32);
+        }
     }
 
     #[uniffi::export]
@@ -564,12 +592,12 @@ mod stub_impl {
     #[uniffi::export]
     impl AudioEngine {
         #[uniffi::constructor]
-        pub fn new(_config: AudioConfig, _transport: Box<dyn PacketTransport>, _id: u32) -> Self { Self }
+        pub fn new(_c: AudioConfig, _t: Box<dyn PacketTransport>, _cb: Box<dyn AudioErrorCallback>, _id: u32) -> Self { Self }
         pub fn start_session(&self) -> Result<(), AudioError> { Ok(()) }
         pub fn stop_session(&self) -> Result<(), AudioError> { Ok(()) }
         pub fn is_session_active(&self) -> bool { false }
-        pub fn set_mic_enabled(&self, _enabled: bool) {}
-        pub fn push_incoming_packet(&self, _data: Vec<u8>) {}
+        pub fn set_mic_enabled(&self, _e: bool) {}
+        pub fn push_incoming_packet(&self, _d: Vec<u8>) {}
     }
     #[uniffi::export]
     pub fn init_logger() {}
