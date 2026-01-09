@@ -18,8 +18,8 @@ import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -195,7 +195,7 @@ class GattClientHandler(
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             operationQueue.operationCompleted()
             Log.d("GattClient", "MTU Negotiated: $mtu")
-            if (status == BluetoothGatt.GATT_SUCCESS && mtu >= Config.BLE_MTU) {
+            if (status == BluetoothGatt.GATT_SUCCESS && mtu >= Config.BLE_MTU_MIN) {
                 currentMtu = mtu
                 scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
             } else {
@@ -286,7 +286,7 @@ class GattClientHandler(
                             handshakeTimeoutJob?.cancel()
                             Log.d("GattClient", "Auth Success. Requesting MTU...")
                             operationQueue.enqueue(TransportDataType.CONTROL) {
-                                if (!bluetoothGatt?.requestMtu(Config.BLE_MTU)!!) {
+                                if (!bluetoothGatt?.requestMtu(Config.BLE_MTU_TARGET)!!) {
                                     Log.e("GattClient", "MTU Request Failed")
                                     scope.launch { _clientEvents.emit(ClientEvent.Authenticated(targetDevice)) }
                                 }

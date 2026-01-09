@@ -72,7 +72,7 @@ class GattServerHandler(
             val normalizedAddress = device.address.uppercase()
             Log.d("GattServer", "MTU Changed for $normalizedAddress: $mtu")
 
-            if (mtu < Config.BLE_MTU) {
+            if (mtu < Config.BLE_MTU_MIN) {
                 Log.e("GattServer", "MTU too low ($mtu) for $normalizedAddress. Disconnecting.")
                 scope.launch {
                     // Optional: Emit an error event so UI knows why

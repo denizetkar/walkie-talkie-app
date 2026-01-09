@@ -40,7 +40,9 @@ object Config {
 
     // --- BLE Technical Limits ---
     const val BLE_DEFAULT_MTU = 23
-    const val BLE_MTU = 512
+    const val BLE_MTU_TARGET = 512
+    // But we ACCEPT anything down to 128 bytes (enough for Opus Voice)
+    const val BLE_MTU_MIN = 128
     const val MAX_ADVERTISING_NAME_BYTES = 20
     const val WORST_RSSI = -100
 
