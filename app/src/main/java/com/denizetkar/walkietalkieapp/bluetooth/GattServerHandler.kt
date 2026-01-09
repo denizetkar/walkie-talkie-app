@@ -20,10 +20,10 @@ import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.yield
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -206,10 +206,10 @@ class GattServerHandler(
             return server.notifyCompat(device, char, data)
         }
 
-        // Simple retry for control packets
+        // Reliable retry logic for CONTROL packets using Backpressure Signal
         repeat(Config.GATT_RETRY_ATTEMPTS) {
             if (server.notifyCompat(device, char, data)) return true
-            yield()
+            delay(Config.GATT_RETRY_COOLDOWN)
         }
 
         Log.e("GattServer", "CRITICAL: Failed to queue Control Packet for ${device.address}")

@@ -18,13 +18,12 @@ import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.yield
 import java.util.UUID
 
 sealed class ClientEvent {
@@ -351,8 +350,8 @@ class GattClientHandler(
                 return
             }
 
-            // Failure (Stack busy). If Control, yield and retry.
-            if (type == TransportDataType.CONTROL) yield()
+            // Failure (Stack busy). If Control, wait briefly and retry.
+            if (type == TransportDataType.CONTROL) delay(Config.GATT_RETRY_COOLDOWN)
         }
 
         // If we reach here, we exhausted retries (or failed the single Audio attempt).

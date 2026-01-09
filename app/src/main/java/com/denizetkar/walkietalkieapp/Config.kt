@@ -47,6 +47,7 @@ object Config {
     // --- Tuning / Timeouts ---
     // Retry count for reliable Control Packets (GATT writes)
     const val GATT_RETRY_ATTEMPTS = 3
+    const val GATT_RETRY_COOLDOWN = 10L
 
     // Artificial delay to allow Android GATT stack to stabilize after service discovery
     const val GATT_SUBSCRIPTION_DELAY = 300L
@@ -54,6 +55,7 @@ object Config {
     const val HEARTBEAT_INTERVAL = 1000L
 
     const val CLEANUP_PERIOD = 2000L
+
     const val PACKET_CACHE_TIMEOUT = 4000L
     const val GROUP_ADVERTISEMENT_TIMEOUT = 5000L
     const val GROUP_JOIN_TIMEOUT = 15000L
