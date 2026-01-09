@@ -26,7 +26,13 @@ import kotlin.random.nextUInt
 
 class WalkieTalkieService : Service() {
 
+    // Scope for parallel I/O (Drivers, Connections)
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // Scope for Logic (Mesh State Machine)
+    // REASON: MeshController is now Mutex-guarded (Thread Safe).
+    // We allow parallel execution for better throughput.
+    private val logicScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _meshController = MutableStateFlow<MeshController?>(null)
     val meshControllerState = _meshController.asStateFlow()
@@ -44,10 +50,14 @@ class WalkieTalkieService : Service() {
         serviceScope.launch {
             try {
                 Log.i("WalkieTalkieService", "Initializing Engine in Background...")
+
+                // Driver runs on the Service Scope
                 val driver = BleDriver(this@WalkieTalkieService, serviceScope)
                 val myNodeId = Random.nextUInt()
                 Log.i("WalkieTalkieService", "Generated Node ID: $myNodeId")
-                val controller = MeshController(this@WalkieTalkieService, driver, serviceScope, myNodeId)
+
+                // Controller runs on the Logic Scope
+                val controller = MeshController(this@WalkieTalkieService, driver, logicScope, myNodeId)
                 _meshController.value = controller
                 Log.i("WalkieTalkieService", "Engine Initialized.")
             } catch (e: Exception) {
@@ -71,6 +81,8 @@ class WalkieTalkieService : Service() {
             it.destroy()
         }
 
+        // Cancel both scopes
+        logicScope.cancel()
         serviceScope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()

@@ -76,7 +76,7 @@ class GattServerHandler(
                 Log.e("GattServer", "MTU too low ($mtu) for $normalizedAddress. Disconnecting.")
                 scope.launch {
                     // Optional: Emit an error event so UI knows why
-                     _serverEvents.emit(ServerEvent.Error(device, "MTU too low"))
+                    _serverEvents.emit(ServerEvent.Error(device, "MTU too low"))
                     disconnect(device)
                 }
             }
@@ -142,6 +142,7 @@ class GattServerHandler(
             }
             PacketUtils.TYPE_AUTH_RESPONSE -> handleAuthResponse(device, payload)
             PacketUtils.TYPE_HEARTBEAT -> {
+                // Emit the PAYLOAD up to the driver/controller
                 scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, payload, TransportDataType.CONTROL)) }
             }
         }
@@ -183,6 +184,9 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     suspend fun sendTo(device: BluetoothDevice, data: ByteArray, type: TransportDataType) {
+        // FIX: Centralized Wrapping Logic
+        // If it's a CONTROL packet coming from the Controller, we assume it's a Heartbeat Payload.
+        // We wrap it with the Header and Type here.
         val packet = if (type == TransportDataType.CONTROL) {
             PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, data)
         } else {
@@ -261,7 +265,10 @@ class GattServerHandler(
     @SuppressLint("MissingPermission")
     fun stopServer() {
         disconnectAll()
-        gattServer?.close()
+        // HARD CLOSE: Release the handle immediately
+        try {
+            gattServer?.close()
+        } catch (_: Exception) {}
         gattServer = null
         cleanupDevice(null)
     }

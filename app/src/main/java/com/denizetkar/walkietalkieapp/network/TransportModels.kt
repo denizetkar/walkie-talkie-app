@@ -65,47 +65,12 @@ interface TransportStrategy {
 
     /**
      * Closes the underlying connection AND cancels any associated coroutines/jobs.
+     * Polite disconnect.
      */
     fun disconnect()
-}
 
-/**
- * The Single Source of Truth for a connected peer.
- * Holds exactly ONE active transport.
- * Thread-safe.
- */
-class PeerConnection(val nodeId: UInt) {
-
-    @Volatile
-    var transport: TransportStrategy? = null
-        private set
-
-    val address: String
-        get() = transport?.address ?: "Unknown"
-
-    @Synchronized
-    fun setStrategy(strategy: TransportStrategy) {
-        // If we are replacing an existing one, ensure the old one is closed
-        if (transport != null && transport !== strategy) {
-            transport?.disconnect()
-        }
-        transport = strategy
-    }
-
-    @Synchronized
-    fun clearStrategy() {
-        transport = null
-    }
-
-    fun isActive(): Boolean = transport != null
-
-    suspend fun send(data: ByteArray, type: TransportDataType) {
-        transport?.send(data, type)
-    }
-
-    @Synchronized
-    fun disconnect() {
-        transport?.disconnect()
-        transport = null
-    }
+    /**
+     * Hard close. Releases resources immediately.
+     */
+    fun close()
 }

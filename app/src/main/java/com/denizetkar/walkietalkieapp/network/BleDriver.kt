@@ -15,7 +15,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,11 +26,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
-import java.util.concurrent.ConcurrentHashMap
 
 class BleDriver(
     private val context: Context,
@@ -44,17 +41,15 @@ class BleDriver(
     private val advertiserModule = BleAdvertiserModule(adapter, serverHandler)
     private val discoveryModule = BleDiscoveryModule(adapter, scope)
 
-    private val bleClientDispatcher = Dispatchers.IO.limitedParallelism(1)
-
-    // The master registry. Immutable Map wrapped in a StateFlow for atomic updates.
-    private val _peers = MutableStateFlow<Map<UInt, PeerConnection>>(emptyMap())
+    // SSOT: Peers
+    private val peerMutex = Mutex()
+    private val _peers = MutableStateFlow<Map<UInt, TransportStrategy>>(emptyMap())
     val connectedPeers: StateFlow<Set<UInt>> = _peers
         .map { it.keys }
         .stateIn(scope, SharingStarted.Eagerly, emptySet())
 
     // Tracks in-progress connection attempts to enforce idempotency.
-    private val connectionJobs = ConcurrentHashMap<UInt, Job>()
-    private val connectionMutex = Mutex()
+    private val connectionJobs = mutableMapOf<UInt, Job>()
 
     private var myAccessCode: String = ""
     private var myNodeId: UInt = 0u
@@ -69,66 +64,66 @@ class BleDriver(
     private var serverEventJob: Job? = null
     private var discoveryEventJob: Job? = null
 
-    // --- 1. Public Entry Points (Capabilities) ---
+    // --- Public API ---
 
     fun startScanning() {
         ensureEventLoopActive()
         discoveryModule.start()
     }
 
-    fun stopScanning() {
-        discoveryModule.stop()
-    }
+    fun stopScanning() = discoveryModule.stop()
 
     fun startAdvertising(config: AdvertisingConfig) {
         ensureEventLoopActive()
         advertiserModule.start(config)
     }
 
-    fun stopAdvertising() {
-        advertiserModule.stop()
-    }
+    fun stopAdvertising() = advertiserModule.stop()
 
     suspend fun connectTo(address: String, nodeId: UInt) {
         ensureEventLoopActive() // Must be active to handle the resulting connection
 
-        val normalizedAddress = address.uppercase()
-
-        // Deduplication: Already connected?
-        val existingPeer = _peers.value[nodeId]
-        if (existingPeer != null && existingPeer.isActive()) {
-            Log.d("BleDriver", "Ignored Connect: Already connected to Node $nodeId")
-            return
-        }
-
-        // Idempotency: Join existing attempt or start new
-        val job = connectionMutex.withLock {
-            val existingJob = connectionJobs[nodeId]
-            if (existingJob != null && existingJob.isActive) {
-                Log.v("BleDriver", "Join existing connection attempt for $nodeId")
-                return@withLock existingJob
+        val job = peerMutex.withLock {
+            // Deduplication: Already connected?
+            if (_peers.value.containsKey(nodeId)) {
+                Log.d("BleDriver", "Ignored Connect: Already connected to Node $nodeId")
+                return@withLock null
             }
 
-            val newJob = scope.launch { attemptConnection(normalizedAddress, nodeId) }
-            connectionJobs[nodeId] = newJob
-            newJob
+            // Idempotency: Join existing attempt or start new
+            connectionJobs.getOrPut(nodeId) {
+                scope.launch {
+                    try {
+                        attemptConnection(address, nodeId)
+                    } finally {
+                        // Cleanup job reference when done
+                        peerMutex.withLock { connectionJobs.remove(nodeId) }
+                    }
+                }
+            }
         }
-        job.join()
+
+        job?.join()
     }
 
-    suspend fun broadcast(data: ByteArray, type: TransportDataType) {
-        _peers.value.values.forEach { peer -> peer.send(data, type) }
+    suspend fun broadcast(payload: ByteArray, type: TransportDataType) {
+        // Snapshot the current peers to avoid locking during I/O
+        val currentPeers = _peers.value.values.toList()
+        currentPeers.forEach { strategy -> strategy.send(payload, type) }
     }
 
     fun disconnectNode(nodeId: UInt) {
-        val peer = _peers.value[nodeId] ?: return
-        Log.i("BleDriver", "Force Disconnecting Node $nodeId")
-        _peers.update { it - nodeId }
-        peer.disconnect()
-        scope.launch { _events.emit(BleDriverEvent.PeerDisconnected(nodeId)) }
+        scope.launch {
+            peerMutex.withLock {
+                val strategy = _peers.value[nodeId] ?: return@withLock
+                Log.i("BleDriver", "Force Disconnecting Node $nodeId")
+                // REACTIVE: Just trigger the action. The event loop handles the state update.
+                strategy.disconnect()
+            }
+        }
     }
 
-    // --- 2. Lifecycle Management ---
+    // --- Lifecycle ---
 
     suspend fun stop() {
         Log.d("BleDriver", "CMD: Stop (Soft)")
@@ -146,8 +141,35 @@ class BleDriver(
 
     fun destroy() {
         Log.d("BleDriver", "CMD: Destroy (Hard)")
-        runBlocking { withTimeout(Config.DESTROY_TIMEOUT) { stop() } }
+        // 1. Stop Hardware
+        stopScanning()
+        stopAdvertising()
         serverHandler.stopServer()
+
+        // 2. Cancel new connections
+        scope.launch {
+            peerMutex.withLock {
+                connectionJobs.values.forEach { it.cancel() }
+                connectionJobs.clear()
+
+                // 3. HARD CLOSE all peers
+                val currentPeers = _peers.value.values.toList()
+                _peers.value = emptyMap()
+                currentPeers.forEach { it.close() }
+            }
+        }
+    }
+
+    private suspend fun disconnectAll() {
+        serverHandler.disconnectAll()
+        peerMutex.withLock {
+            connectionJobs.values.forEach { it.cancel() }
+            connectionJobs.clear()
+
+            val currentPeers = _peers.value.values.toList()
+            _peers.value = emptyMap()
+            currentPeers.forEach { it.disconnect() }
+        }
     }
 
     /**
@@ -170,7 +192,7 @@ class BleDriver(
                         handleNewTransport(event.nodeId, strategy)
                     }
                     is ServerEvent.MessageReceived -> {
-                        val nodeId = resolveNode(event.device.address)?.nodeId
+                        val nodeId = resolveNodeId(event.device.address)
                         if (nodeId != null) {
                             _events.emit(BleDriverEvent.DataReceived(nodeId, event.data, event.type))
                         } else {
@@ -205,7 +227,7 @@ class BleDriver(
         discoveryEventJob = null
     }
 
-    // --- 3. Internal Logic ---
+    // --- Internal Logic ---
 
     fun validateCapabilities(): Result<Unit> {
         if (adapter == null) return Result.failure(IllegalStateException("Bluetooth is not supported."))
@@ -222,165 +244,125 @@ class BleDriver(
 
     private suspend fun attemptConnection(address: String, nodeId: UInt) {
         Log.d("BleDriver", "CMD: Connect to $address (Node $nodeId)")
-
-        // Create a Child Scope specifically for this Client's lifecycle
-        // SupervisorJob ensures that if a child coroutine fails, the scope doesn't crash the parent
-        val clientScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
         val device = adapter.getRemoteDevice(address)
 
-        val client = GattClientHandler(
-            context,
-            clientScope,
-            device,
-            myNodeId,
-            myAccessCode,
-            bleClientDispatcher
-        )
+        // FIX: Properly linked child scope.
+        // If 'scope' (Driver) is cancelled, 'clientScope' is cancelled automatically.
+        val clientScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.IO)
 
+        val client = GattClientHandler(context, clientScope, device, myNodeId, myAccessCode)
+
+        // The bridge job that pipes Client events to Driver events.
+        var collectionJob: Job? = null
         val connectionResult = CompletableDeferred<Boolean>()
 
-        // We launch the event collector in the CLIENT scope.
-        // This ensures it dies automatically when clientScope.cancel() is called.
-        clientScope.launch {
-            client.clientEvents.collect { event ->
-                when (event) {
-                    is ClientEvent.Authenticated -> {
-                        Log.i("BleDriver", "Client: Authenticated with $nodeId")
-                        val strategy = ClientStrategy(client, clientScope)
-                        handleNewTransport(nodeId, strategy)
-                        if (connectionResult.isActive) connectionResult.complete(true)
+        try {
+            collectionJob = scope.launch {
+                client.clientEvents.collect { event ->
+                    when (event) {
+                        is ClientEvent.Authenticated -> {
+                            Log.i("BleDriver", "Client: Authenticated with $nodeId")
+                            // Pass the collectionJob so Strategy can cancel it on HARD close.
+                            val strategy = ClientStrategy(client, this.coroutineContext[Job]!!)
+                            handleNewTransport(nodeId, strategy)
+                            connectionResult.complete(true)
+                        }
+                        is ClientEvent.MessageReceived -> {
+                            _events.emit(BleDriverEvent.DataReceived(nodeId, event.data, event.type))
+                        }
+                        is ClientEvent.Disconnected -> {
+                            Log.w("BleDriver", "Client: Disconnected ${event.device.address}")
+                            handleTransportDisconnect(event.device.address)
+                            connectionResult.complete(false)
+                            this.coroutineContext.cancel()
+                        }
+                        is ClientEvent.Error -> {
+                            Log.w("BleDriver", "Client: Error ${event.device.address}: ${event.message}")
+                            handleTransportDisconnect(event.device.address)
+                            connectionResult.complete(false)
+                            this.coroutineContext.cancel()
+                        }
+                        else -> {}
                     }
-                    is ClientEvent.MessageReceived -> {
-                        _events.emit(BleDriverEvent.DataReceived(nodeId, event.data, event.type))
-                    }
-                    is ClientEvent.Disconnected -> {
-                        Log.w("BleDriver", "Client: Disconnected ${event.device.address}")
-                        handleTransportDisconnect(event.device.address)
-                        if (connectionResult.isActive) connectionResult.complete(false)
-                    }
-                    is ClientEvent.Error -> {
-                        Log.w("BleDriver", "Client: Error ${event.device.address}: ${event.message}")
-                        handleTransportDisconnect(event.device.address)
-                        if (connectionResult.isActive) connectionResult.complete(false)
-                    }
-                    else -> {}
                 }
             }
-        }
 
-        client.connect()
+            client.connect()
 
-        try {
             withTimeout(Config.PEER_CONNECT_TIMEOUT) {
                 val success = connectionResult.await()
                 if (!success) {
-                    client.disconnect()
-                    clientScope.cancel()
+                    throw java.io.IOException("Connection failed logical check")
                 }
             }
-        } catch (e: TimeoutCancellationException) {
-            Log.w("BleDriver", "Connection Timed Out for $address", e)
-            client.disconnect()
-            clientScope.cancel()
-        } finally {
-            connectionMutex.withLock { connectionJobs.remove(nodeId) }
+        } catch (e: Exception) {
+            Log.w("BleDriver", "Connection failed: ${e.message}", e)
+            client.close()
+            collectionJob?.cancel()
         }
     }
 
-    private fun resolveNode(address: String): PeerConnection? {
+    private fun resolveNodeId(address: String): UInt? {
         val normalized = address.uppercase()
-        return _peers.value.values.find { it.address == normalized }
+        return _peers.value.entries.find { it.value.address == normalized }?.key
     }
 
     private suspend fun handleNewTransport(nodeId: UInt, newStrategy: TransportStrategy) {
-        // Cancel any pending outgoing attempts for this node, as we now have a candidate
-        cancelPendingConnection(nodeId)
+        peerMutex.withLock {
+            val existing = _peers.value[nodeId] ?: run {
+                // New Peer
+                _peers.update { it + (nodeId to newStrategy) }
+                return@withLock
+            }
 
-        val newPeer = PeerConnection(nodeId)
-        // Optimistic update or get existing
-        _peers.update { current ->
-            if (current.containsKey(nodeId)) current else current + (nodeId to newPeer)
-        }
-        val peer = _peers.value[nodeId]!!
+            // Collision Resolution
+            if (existing.address != newStrategy.address) {
+                Log.w("BleDriver", "Node ID Collision ($nodeId). Old: ${existing.address}, New: ${newStrategy.address}. Replacing.")
+                existing.disconnect()
+                _peers.update { it + (nodeId to newStrategy) }
+                return@withLock
+            }
 
-        synchronized(peer) {
-            val current = peer.transport
+            if (existing.type == newStrategy.type) {
+                Log.w("BleDriver", "Transport Retry ($nodeId). Replacing old ${existing.type} with new.")
+                existing.disconnect()
+                _peers.update { it + (nodeId to newStrategy) }
+                return@withLock
+            }
 
-            if (current != null) {
-                // COLLISION DETECTED: We already have a link.
-
-                // 1. Check for Stale State (MAC Rotation)
-                // If the Node ID is the same, but MAC is different, the old one is likely a "Zombie".
-                // We overwrite it with the fresh, authenticated connection.
-                if (current.address != newStrategy.address) {
-                    Log.w("BleDriver", "Node ID Collision ($nodeId). Old: ${current.address}, New: ${newStrategy.address}. Replacing.")
-                    peer.setStrategy(newStrategy)
-                    return
-                }
-
-                // 2. Check for Retry (Same Type, Same MAC)
-                // If we are replacing a Client with a Client on the same MAC, it's a retry. Always accept.
-                if (current.type == newStrategy.type) {
-                    Log.w("BleDriver", "Transport Retry ($nodeId). Replacing old ${current.type} with new.")
-                    peer.setStrategy(newStrategy)
-                    return
-                }
-
-                // Tie-breaker: ClientID > ServerID wins
-                val keepNew = if (newStrategy.type == TransportType.OUTGOING) {
-                    myNodeId > nodeId
-                } else {
-                    nodeId > myNodeId
-                }
-
-                if (keepNew) {
-                    Log.i("BleDriver", "Collision: Keeping NEW ${newStrategy.type} (Node $nodeId)")
-                    peer.setStrategy(newStrategy)
-                } else {
-                    Log.i("BleDriver", "Collision: Rejecting NEW ${newStrategy.type} (Node $nodeId)")
-                    newStrategy.disconnect()
-                    return
-                }
+            // Tie-breaker: ClientID > ServerID wins
+            val keepNew = if (newStrategy.type == TransportType.OUTGOING) {
+                myNodeId > nodeId
             } else {
-                Log.d("BleDriver", "Setting ${newStrategy.type} Transport for Node $nodeId")
-                peer.setStrategy(newStrategy)
+                nodeId > myNodeId
+            }
+
+            if (keepNew) {
+                Log.i("BleDriver", "Collision: Keeping NEW ${newStrategy.type} (Node $nodeId)")
+                existing.disconnect()
+                _peers.update { it + (nodeId to newStrategy) }
+            } else {
+                Log.i("BleDriver", "Collision: Rejecting NEW ${newStrategy.type} (Node $nodeId)")
+                newStrategy.disconnect()
             }
         }
 
         _events.emit(BleDriverEvent.PeerConnected(nodeId))
     }
 
-    private fun handleTransportDisconnect(address: String) {
-        val normalized = address.uppercase()
-        val peer = resolveNode(normalized) ?: return
-
-        // Only remove if the disconnected address matches the ACTIVE transport
-        // (Prevents race conditions where we replaced the transport but the old one sends a disconnect event)
-        synchronized(peer) {
-            if (peer.address == normalized) {
-                Log.i("BleDriver", "Transport disconnected for Node ${peer.nodeId}")
-                peer.clearStrategy()
-                _peers.update { it - peer.nodeId }
-                scope.launch { _events.emit(BleDriverEvent.PeerDisconnected(peer.nodeId)) }
+    private suspend fun handleTransportDisconnect(address: String) {
+        peerMutex.withLock {
+            val normalized = address.uppercase()
+            val (nodeId, strategy) = _peers.value.entries.find { it.value.address == normalized } ?: return
+            if (strategy.address != normalized) {
+                return // It was a stale disconnect event
             }
-        }
-    }
 
-    private suspend fun cancelPendingConnection(nodeId: UInt) {
-        connectionMutex.withLock {
-            connectionJobs[nodeId]?.cancel()
-            connectionJobs.remove(nodeId)
-        }
-    }
-
-    suspend fun disconnectAll() {
-        serverHandler.disconnectAll()
-        val currentPeers = _peers.value.values.toList()
-        _peers.value = emptyMap()
-        currentPeers.forEach { it.disconnect() }
-        connectionMutex.withLock {
-            connectionJobs.values.forEach { it.cancel() }
-            connectionJobs.clear()
+            // Only remove if the disconnected strategy is the ACTIVE one
+            // (Prevents race where we just replaced it with a new one)
+            Log.i("BleDriver", "Transport disconnected for Node $nodeId")
+            _peers.update { it - nodeId }
+            scope.launch { _events.emit(BleDriverEvent.PeerDisconnected(nodeId)) }
         }
     }
 
@@ -388,7 +370,7 @@ class BleDriver(
 
     private class ClientStrategy(
         private val handler: GattClientHandler,
-        private val clientScope: CoroutineScope
+        private val collectionJob: Job
     ) : TransportStrategy {
         override val type = TransportType.OUTGOING
         override val address: String = handler.targetDevice.address.uppercase()
@@ -398,11 +380,16 @@ class BleDriver(
         }
 
         override fun disconnect() {
+            // Soft Disconnect: Trigger hardware, let events flow.
+            // Do NOT cancel collectionJob here; let it die when Disconnected event arrives.
             Log.d("BleDriver", "ClientStrategy: Disconnecting $address")
-            // 1. Cleanup GATT
             handler.disconnect()
-            // 2. Kill all background jobs (timeouts, queues) for this client
-            clientScope.cancel()
+        }
+
+        override fun close() {
+            // Hard Close: Kill everything immediately.
+            handler.close()
+            collectionJob.cancel()
         }
     }
 
@@ -419,6 +406,10 @@ class BleDriver(
 
         override fun disconnect() {
             Log.d("BleDriver", "ServerStrategy: Disconnecting $address")
+            handler.disconnect(device)
+        }
+
+        override fun close() {
             handler.disconnect(device)
         }
     }

@@ -3,17 +3,16 @@ package com.denizetkar.walkietalkieapp.bluetooth
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.TransportDataType
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.ArrayDeque
 
 class BleOperationQueue(
-    dispatcher: CoroutineDispatcher,
+    private val scope: CoroutineScope,
     private val onFatalError: () -> Unit
 ) {
     private val controlQueue = ArrayDeque<suspend () -> Unit>()
@@ -22,36 +21,44 @@ class BleOperationQueue(
     // STATE
     private var isBusy = false
     private var consecutiveControlCount = 0
-    private val scope = CoroutineScope(dispatcher + SupervisorJob())
+
+    private val mutex = Mutex()
     private var timeoutJob: Job? = null
 
-    @Synchronized
     fun enqueue(type: TransportDataType, action: suspend () -> Unit) {
-        if (type == TransportDataType.CONTROL) {
-            controlQueue.add(action)
-        } else {
-            // Drop the oldest packet (Head) to make room for the newest (Tail)
-            if (audioQueue.size >= Config.MAX_AUDIO_QUEUE_CAPACITY) {
-                audioQueue.removeFirst()
-                Log.v("BleQueue", "Dropped stale audio frame")
+        // Use the injected scope. If the Client dies, this launch is cancelled automatically.
+        scope.launch {
+            mutex.withLock {
+                if (type == TransportDataType.CONTROL) {
+                    controlQueue.add(action)
+                } else {
+                    // Drop the oldest packet (Head) to make room for the newest (Tail)
+                    if (audioQueue.size >= Config.MAX_AUDIO_QUEUE_CAPACITY) {
+                        audioQueue.removeFirst()
+                        Log.v("BleQueue", "Dropped stale audio frame")
+                    }
+                    audioQueue.addLast(action)
+                }
+
+                if (!isBusy) {
+                    processNextLocked()
+                }
             }
-            audioQueue.addLast(action)
-        }
-
-        if (!isBusy) {
-            processNext()
         }
     }
 
-    @Synchronized
     fun operationCompleted() {
-        timeoutJob?.cancel()
-        isBusy = false
-        processNext()
+        scope.launch {
+            mutex.withLock {
+                timeoutJob?.cancel()
+                isBusy = false
+                processNextLocked()
+            }
+        }
     }
 
-    @Synchronized
-    private fun processNext() {
+    // Must be called inside mutex.withLock
+    private fun processNextLocked() {
         if (isBusy) return
 
         // SMART RULE 2: Starvation Prevention
@@ -77,13 +84,12 @@ class BleOperationQueue(
         }
     }
 
-    @Synchronized
     private fun executeOperation(action: suspend () -> Unit) {
         isBusy = true
         timeoutJob = scope.launch {
             delay(Config.BLE_OPERATION_TIMEOUT)
             Log.e("BleQueue", "Operation STALLED. Stack wedged. Disconnecting.")
-            isBusy = false
+            // We don't need to lock here to set isBusy false because we are killing the connection anyway
             onFatalError()
         }
 
@@ -97,18 +103,21 @@ class BleOperationQueue(
         }
     }
 
-    @Synchronized
     fun clear() {
-        timeoutJob?.cancel()
-        controlQueue.clear()
-        audioQueue.clear()
-        isBusy = false
-        consecutiveControlCount = 0
+        scope.launch {
+            mutex.withLock {
+                timeoutJob?.cancel()
+                controlQueue.clear()
+                audioQueue.clear()
+                isBusy = false
+                consecutiveControlCount = 0
+            }
+        }
     }
 
-    @Synchronized
     fun shutdown() {
         clear()
-        scope.cancel()
+        // We don't cancel the scope here because we don't own it anymore.
+        // The parent (GattClientHandler) owns the scope.
     }
 }

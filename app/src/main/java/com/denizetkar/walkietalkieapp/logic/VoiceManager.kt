@@ -14,19 +14,19 @@ import com.denizetkar.walkietalkieapp.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.Config
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import uniffi.walkie_talkie_engine.AudioConfig
 import uniffi.walkie_talkie_engine.AudioEngine
 import uniffi.walkie_talkie_engine.AudioErrorCallback
 import uniffi.walkie_talkie_engine.PacketTransport
+import java.util.concurrent.atomic.AtomicReference
 
-/**
- * The Single Source of Truth for the Voice Subsystem.
- * Thread-Safety: All mutable state modifications are protected by the monitor lock (@Synchronized).
- * High-frequency reads (packet processing) are lock-free via Volatile visibility.
- */
 class VoiceManager(
     context: Context,
     private val packetTransport: PacketTransport,
@@ -41,24 +41,17 @@ class VoiceManager(
     val availableInputs = _availableInputs.asStateFlow()
     private val _availableOutputs = MutableStateFlow<List<AudioDeviceUi>>(emptyList())
     val availableOutputs = _availableOutputs.asStateFlow()
+
     private val _selectedInputId = MutableStateFlow(0)
     val selectedInputId = _selectedInputId.asStateFlow()
     private val _selectedOutputId = MutableStateFlow(0)
     val selectedOutputId = _selectedOutputId.asStateFlow()
 
-    private val _isMicrophoneEnabled = MutableStateFlow(false)
+    private val _isSessionActive = MutableStateFlow(false)
+    private val _isMicEnabled = MutableStateFlow(false)
 
-    private val baseRustConfig = AudioConfig(
-        sampleRate = Config.AUDIO_SAMPLE_RATE,
-        frameSizeMs = Config.AUDIO_FRAME_SIZE_MS,
-        jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS,
-        inputDeviceId = 0,
-        outputDeviceId = 0
-    )
-    // SAFETY: @Volatile ensures that when the Main Thread replaces the engine,
-    // the Network Thread (processIncomingPacket) sees the new reference immediately.
-    @Volatile
-    private var engine: AudioEngine? = null
+    // Hot Path State
+    private val activeEngine = AtomicReference<AudioEngine?>(null)
 
     // Bridge: System API (Callbacks) -> Coroutines (StateFlow)
     private val deviceCallback = object : AudioDeviceCallback() {
@@ -75,7 +68,9 @@ class VoiceManager(
     private val engineErrorCallback = object : AudioErrorCallback {
         override fun onEngineError(code: Int) {
             Log.e("VoiceManager", "CRITICAL: Native Engine Error $code. Restarting...")
-            scope.launch(Dispatchers.IO) { restartEngineIfActive() }
+            // Trigger reactive restart
+            _isSessionActive.value = false
+            _isSessionActive.value = true
         }
     }
 
@@ -86,106 +81,111 @@ class VoiceManager(
 
         // Initial fetch on IO
         scope.launch(Dispatchers.IO) { updateDeviceLists() }
+
+        // REACTIVE ENGINE MANAGEMENT
+        scope.launch(Dispatchers.IO) {
+            combine(_isSessionActive, _selectedInputId, _selectedOutputId) { active, inId, outId ->
+                if (active) AudioConfig(
+                    sampleRate = Config.AUDIO_SAMPLE_RATE,
+                    frameSizeMs = Config.AUDIO_FRAME_SIZE_MS,
+                    jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS,
+                    inputDeviceId = inId,
+                    outputDeviceId = outId
+                ) else null
+            }.collectLatest { config ->
+                if (config != null) {
+                    manageAudioSession(config)
+                } else {
+                    activeEngine.set(null)
+                }
+            }
+        }
     }
 
     /**
      * Call this when entering the "Radio" screen (Joining a group).
      */
-    @Synchronized
     fun start() {
         Log.i("VoiceManager", "Starting Voice System...")
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        requestAudioFocus()
-        createAndStartEngine()
-        setMicrophoneEnabled(false)
+        _isSessionActive.value = true
     }
 
     /**
      * Call this when leaving the "Radio" screen.
      */
-    @Synchronized
     fun stop() {
         Log.i("VoiceManager", "Stopping Voice System...")
         setMicrophoneEnabled(false)
-        try {
-            engine?.stopSession()
-        } catch (e: Exception) {
-            Log.e("VoiceManager", "Error stopping engine", e)
-        } finally {
-            engine = null
-        }
-        abandonAudioFocus()
-        audioManager.clearCommunicationDeviceCompat()
-        audioManager.mode = AudioManager.MODE_NORMAL
+        _isSessionActive.value = false
     }
 
-    @Synchronized
     fun setInputDevice(deviceId: Int) {
         if (_selectedInputId.value == deviceId) return
         Log.i("VoiceManager", "Changing Input -> $deviceId")
         _selectedInputId.value = deviceId
-        restartEngineIfActive()
     }
 
-    @Synchronized
     fun setOutputDevice(deviceId: Int) {
         if (_selectedOutputId.value == deviceId) return
         Log.i("VoiceManager", "Changing Output -> $deviceId")
         _selectedOutputId.value = deviceId
-        restartEngineIfActive()
     }
 
     /**
      * The ONLY place where _isMicrophoneEnabled is modified.
      * This ensures the UI state and Rust Hardware state never drift apart.
      */
-    @Synchronized
     fun setMicrophoneEnabled(enabled: Boolean) {
-        if (enabled && engine?.isSessionActive() != true) {
-            Log.w("VoiceManager", "Ignored mic toggle: Audio Engine is dead.")
-            _isMicrophoneEnabled.value = false
-            return
-        }
-        engine?.setMicEnabled(enabled)
-        _isMicrophoneEnabled.value = enabled
+        activeEngine.get()?.setMicEnabled(enabled)
+        _isMicEnabled.value = enabled
     }
 
-    /**
-     * High-frequency call from the Network Layer.
-     * SAFETY: We do NOT lock here to prevent blocking the network thread.
-     */
     fun processIncomingPacket(data: ByteArray) {
-        engine?.pushIncomingPacket(data)
+        activeEngine.get()?.pushIncomingPacket(data)
     }
 
-    @Synchronized
     fun destroy() {
         audioManager.unregisterAudioDeviceCallback(deviceCallback)
-        stop()
+        _isSessionActive.value = false
     }
 
     // --- Private Helpers ---
 
-    private fun createAndStartEngine() {
+    private suspend fun manageAudioSession(config: AudioConfig): Nothing = coroutineScope {
+        var engine: AudioEngine? = null
         try {
-            engine?.stopSession()
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            requestAudioFocus()
 
-            val currentConfig = baseRustConfig.copy(
-                inputDeviceId = _selectedInputId.value,
-                outputDeviceId = _selectedOutputId.value
-            )
-            val newEngine = AudioEngine(currentConfig, packetTransport, engineErrorCallback, ownNodeId)
-            newEngine.startSession()
-            newEngine.setMicEnabled(_isMicrophoneEnabled.value)
-            engine = newEngine
+            engine = AudioEngine(config, packetTransport, engineErrorCallback, ownNodeId)
+            engine.startSession()
+            engine.setMicEnabled(_isMicEnabled.value)
+
+            activeEngine.set(engine)
+
+            // Listen for mic changes. Because we are in coroutineScope,
+            // this job will be auto-cancelled when manageAudioSession exits.
+            launch(Dispatchers.IO) {
+                _isMicEnabled.collect { enabled -> engine.setMicEnabled(enabled) }
+            }
+
+            awaitCancellation()
         } catch (e: Exception) {
-            Log.e("VoiceManager", "Failed to start Rust Engine", e)
-        }
-    }
-
-    private fun restartEngineIfActive() {
-        if (engine != null) {
-            createAndStartEngine()
+            if (e !is kotlinx.coroutines.CancellationException) {
+                Log.e("VoiceManager", "Failed to start Rust Engine", e)
+            }
+            throw e
+        } finally {
+            Log.i("VoiceManager", "Stopping Audio Engine (Cleanup)")
+            activeEngine.set(null)
+            try {
+                engine?.stopSession()
+            } catch (e: Exception) {
+                Log.e("VoiceManager", "Error stopping engine", e)
+            }
+            abandonAudioFocus()
+            audioManager.clearCommunicationDeviceCompat()
+            audioManager.mode = AudioManager.MODE_NORMAL
         }
     }
 
@@ -194,22 +194,18 @@ class VoiceManager(
         val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
         val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
 
-        var mustRestartEngine = false
         // 2. VALIDATION: Check for "Ghost" Input Device
         val currentIn = _selectedInputId.value
         if (currentIn != 0 && inputs.none { it.id == currentIn }) {
             Log.i("VoiceManager", "Selected Mic (ID $currentIn) removed. Reverting to Default.")
             _selectedInputId.value = 0
-            mustRestartEngine = true
         }
         // 3. VALIDATION: Check for "Ghost" Output Device
         val currentOut = _selectedOutputId.value
         if (currentOut != 0 && outputs.none { it.id == currentOut }) {
             Log.i("VoiceManager", "Selected Speaker (ID $currentOut) removed. Reverting to Default.")
             _selectedOutputId.value = 0
-            mustRestartEngine = true
         }
-        if (mustRestartEngine) restartEngineIfActive()
 
         _availableInputs.value = inputs.map { it.toFriendlyName(isInput = true) }
         _availableOutputs.value = outputs.map { it.toFriendlyName(isInput = false) }
@@ -252,7 +248,6 @@ class VoiceManager(
         focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
     }
 
-    // --- Friendly Name Mapper ---
     private fun AudioDeviceInfo.toFriendlyName(isInput: Boolean): AudioDeviceUi {
         val name = address.ifBlank { productName.toString() }
 

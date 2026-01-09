@@ -16,10 +16,10 @@ import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.logic.PacketUtils
 import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
 import com.denizetkar.walkietalkieapp.network.TransportDataType
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -40,11 +40,12 @@ class GattClientHandler(
     private val scope: CoroutineScope,
     val targetDevice: BluetoothDevice,
     private val ownNodeId: UInt,
-    private val accessCode: String,
-    dispatcher: CoroutineDispatcher
+    private val accessCode: String
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
-    private val operationQueue = BleOperationQueue(dispatcher) { disconnect() }
+
+    // If 'scope' dies, the queue operations die automatically.
+    private val operationQueue = BleOperationQueue(scope) { disconnect() }
 
     private var currentMtu = Config.BLE_DEFAULT_MTU
 
@@ -84,6 +85,9 @@ class GattClientHandler(
         }
     }
 
+    /**
+     * Polite disconnect. Tries to disconnect cleanly and waits for callback.
+     */
     @SuppressLint("MissingPermission")
     fun disconnect() {
         handshakeTimeoutJob?.cancel()
@@ -93,12 +97,20 @@ class GattClientHandler(
         } catch (_: Exception) { }
     }
 
+    /**
+     * Immediate Resource Release.
+     * Unlike disconnect(), this does not wait for callbacks.
+     * Used when the service is being destroyed to prevent leaks.
+     */
     @SuppressLint("MissingPermission")
-    private fun safeClose() {
+    fun close() {
+        handshakeTimeoutJob?.cancel()
+        operationQueue.shutdown()
         try {
             bluetoothGatt?.close()
         } catch (_: Exception) {}
         bluetoothGatt = null
+        scope.cancel()
     }
 
     fun sendMessage(type: TransportDataType, data: ByteArray) {
@@ -107,14 +119,17 @@ class GattClientHandler(
             TransportDataType.CONTROL -> Config.CHAR_CONTROL_UUID to BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
 
-        val payload = if (type == TransportDataType.CONTROL) {
+        // Centralized Wrapping Logic
+        // If it's a CONTROL packet coming from the Controller, we assume it's a Heartbeat Payload.
+        // We wrap it with the Header and Type here.
+        val packet = if (type == TransportDataType.CONTROL) {
             PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, data)
         } else {
             data
         }
 
         operationQueue.enqueue(type) {
-            writeCharacteristicInternal(uuid, payload, writeType, type)
+            writeCharacteristicInternal(uuid, packet, writeType, type)
         }
     }
 
@@ -124,7 +139,7 @@ class GattClientHandler(
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e("GattClient", "Connection Error: $status")
                 scope.launch { _clientEvents.emit(ClientEvent.Error(targetDevice, "Connection Error: $status")) }
-                safeClose()
+                close()
                 return
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -140,7 +155,7 @@ class GattClientHandler(
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d("GattClient", "Disconnected from ${targetDevice.address}")
                 scope.launch { _clientEvents.emit(ClientEvent.Disconnected(targetDevice)) }
-                safeClose()
+                close()
             }
         }
 
@@ -282,6 +297,7 @@ class GattClientHandler(
                         }
                     }
                     PacketUtils.TYPE_HEARTBEAT -> {
+                        // Emit the PAYLOAD up to the driver/controller
                         scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, payload, TransportDataType.CONTROL)) }
                     }
                 }
