@@ -136,6 +136,9 @@ class VoiceManager(
      * This ensures the UI state and Rust Hardware state never drift apart.
      */
     fun setMicrophoneEnabled(enabled: Boolean) {
+        // Optimization: Don't spam the engine/logs if state hasn't changed
+        if (_isMicEnabled.value == enabled) return
+
         activeEngine.get()?.setMicEnabled(enabled)
         _isMicEnabled.value = enabled
     }
