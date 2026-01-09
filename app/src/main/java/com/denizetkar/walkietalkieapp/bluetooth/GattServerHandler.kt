@@ -47,6 +47,9 @@ class GattServerHandler(
     private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
     private val pendingDisconnects = ConcurrentHashMap.newKeySet<String>()
 
+    // CONSISTENCY: Use BleOperationQueue to prioritize Control packets and serialize access
+    private val operationQueue = BleOperationQueue(scope) { stopServer() }
+
     private val _serverEvents = MutableSharedFlow<ServerEvent>(
         extraBufferCapacity = Config.EVENT_FLOW_BUFFER_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
@@ -75,7 +78,6 @@ class GattServerHandler(
             if (mtu < Config.BLE_MTU_MIN) {
                 Log.e("GattServer", "MTU too low ($mtu) for $normalizedAddress. Disconnecting.")
                 scope.launch {
-                    // Optional: Emit an error event so UI knows why
                     _serverEvents.emit(ServerEvent.Error(device, "MTU too low"))
                     disconnect(device)
                 }
@@ -107,6 +109,9 @@ class GattServerHandler(
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            // Signal the queue that the radio is free for the next packet
+            operationQueue.operationCompleted()
+
             val normalizedAddress = device.address.uppercase()
             if (pendingDisconnects.contains(normalizedAddress)) {
                 Log.i("GattServer", "Packet flushed. Closing connection for $normalizedAddress")
@@ -196,24 +201,39 @@ class GattServerHandler(
     }
 
     @SuppressLint("MissingPermission")
-    private suspend fun notifyDevice(device: BluetoothDevice, data: ByteArray, type: TransportDataType): Boolean {
-        val server = gattServer ?: return false
-        val service = server.getService(Config.APP_SERVICE_UUID) ?: return false
+    private suspend fun notifyDevice(device: BluetoothDevice, data: ByteArray, type: TransportDataType) {
+        val server = gattServer ?: return
+        val service = server.getService(Config.APP_SERVICE_UUID) ?: return
         val uuid = if (type == TransportDataType.AUDIO) Config.CHAR_DATA_UUID else Config.CHAR_CONTROL_UUID
-        val char = service.getCharacteristic(uuid) ?: return false
+        val char = service.getCharacteristic(uuid) ?: return
 
-        if (type == TransportDataType.AUDIO) {
-            return server.notifyCompat(device, char, data)
+        // Enqueue the operation. The Queue handles serialization and prioritization.
+        operationQueue.enqueue(type) {
+            val maxAttempts = if (type == TransportDataType.CONTROL) Config.GATT_RETRY_ATTEMPTS else 1
+
+            repeat(maxAttempts) {
+                val success = server.notifyCompat(device, char, data)
+
+                if (success) {
+                    // Success! The stack accepted the packet.
+                    // We now wait for onNotificationSent to call operationCompleted().
+                    return@enqueue
+                }
+
+                // Stack busy. If Control, wait and retry.
+                if (type == TransportDataType.CONTROL) delay(Config.GATT_RETRY_COOLDOWN)
+            }
+
+            // If we get here, we failed to send.
+            // Since notifyCompat returned false, onNotificationSent will NEVER fire.
+            // We must manually unblock the queue.
+            if (type == TransportDataType.CONTROL) {
+                Log.e("GattServer", "CRITICAL: FAILED to write CONTROL to $uuid after $maxAttempts attempts.")
+            } else {
+                Log.w("GattServer", "Dropped Audio Packet (Stack Busy)")
+            }
+            operationQueue.operationCompleted()
         }
-
-        // Reliable retry logic for CONTROL packets using Backpressure Signal
-        repeat(Config.GATT_RETRY_ATTEMPTS) {
-            if (server.notifyCompat(device, char, data)) return true
-            delay(Config.GATT_RETRY_COOLDOWN)
-        }
-
-        Log.e("GattServer", "CRITICAL: Failed to queue Control Packet for ${device.address}")
-        return false
     }
 
     @SuppressLint("MissingPermission")
@@ -226,6 +246,8 @@ class GattServerHandler(
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notifyCharacteristicChanged(device, characteristic, false, data) == BluetoothStatusCodes.SUCCESS
         } else {
+            // This assignment is now safe because BleOperationQueue ensures
+            // only one coroutine executes this block at a time.
             characteristic.value = data
             notifyCharacteristicChanged(device, characteristic, false)
         }
@@ -264,8 +286,8 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     fun stopServer() {
+        operationQueue.shutdown()
         disconnectAll()
-        // HARD CLOSE: Release the handle immediately
         try {
             gattServer?.close()
         } catch (_: Exception) {}
