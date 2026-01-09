@@ -53,6 +53,9 @@ class MeshController(
     private val seenPackets = ConcurrentHashMap<Int, Long>()
     private val lastHeardFrom = ConcurrentHashMap<UInt, Long>()
 
+    // Cache to prevent spamming the driver with identical advertising requests
+    private var lastAdvertisingConfig: AdvertisingConfig? = null
+
     // Define Transport Callback (Rust -> Kotlin -> BLE)
     private val packetTransport = object : PacketTransport {
         override fun sendPacket(data: ByteArray) {
@@ -130,6 +133,9 @@ class MeshController(
 
         _state.value = newState
         Log.i("MeshController", "State Change: $oldState -> $newState")
+
+        // Reset advertising cache on state change to ensure fresh config is applied
+        lastAdvertisingConfig = null
 
         // A. Teardown Old State
         if (oldState is EngineState.RadioActive) stopRadioLogic()
@@ -247,6 +253,14 @@ class MeshController(
         val topo = topology.getCurrentState()
         val isAvailable = driver.connectedPeers.value.size < Config.MAX_PEERS
         val config = AdvertisingConfig(groupName, ownNodeId, topo.currentNetworkId, topo.hopsToRoot, isAvailable)
+
+        // OPTIMIZATION: If the topology hasn't changed, don't wake up the radio.
+        // This filters out the 1Hz heartbeat updates where only the Sequence Number changed.
+        if (config == lastAdvertisingConfig) {
+            return
+        }
+        lastAdvertisingConfig = config
+
         driver.startAdvertising(config)
     }
 
