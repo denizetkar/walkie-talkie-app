@@ -194,6 +194,15 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppState) {
             }
 
             composable("radio") {
+                // FIX: If the group name becomes null (Timeout/Disconnect/Kick),
+                // we must automatically leave the Radio screen to avoid showing "Unknown" UI state.
+                LaunchedEffect(state.groupName) {
+                    if (state.groupName == null) {
+                        viewModel.leaveGroup()
+                        navController.navigate("create") { popUpTo("create") { inclusive = true } }
+                    }
+                }
+
                 RadioScreen(
                     groupName = state.groupName,
                     accessCode = state.accessCode,

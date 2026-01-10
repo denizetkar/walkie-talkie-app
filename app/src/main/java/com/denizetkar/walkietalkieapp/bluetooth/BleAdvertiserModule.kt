@@ -31,6 +31,11 @@ class BleAdvertiserModule(
             return
         }
 
+        // FIX: Start the Server (and add Services) BEFORE advertising.
+        // This ensures that if a peer connects immediately upon seeing the packet,
+        // the Service Discovery will find the WalkieTalkie service.
+        serverHandler.startServer()
+
         // 1. MAIN PACKET: Service Data (Topology)
         val pUuid = ParcelUuid(Config.APP_SERVICE_UUID)
         val payload = ByteBuffer.allocate(Config.PACKET_SERVICE_DATA_SIZE).order(ByteOrder.LITTLE_ENDIAN)
@@ -81,7 +86,6 @@ class BleAdvertiserModule(
                 if (status == ADVERTISE_SUCCESS) {
                     Log.i("BleAdvertiser", "Advertising Set STARTED successfully. (NetID: ${config.networkId})")
                     currentAdvertisingSet = advertisingSet
-                    serverHandler.startServer()
                 } else {
                     Log.e("BleAdvertiser", "Failed to start advertising set: $status")
                 }

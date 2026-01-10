@@ -219,6 +219,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
                 }
                 _appState.update { it.copy(accessCode = code) }
             } catch (_: TimeoutCancellationException) {
+                Log.w("MainViewModel", "Group Join Timeout: $name")
                 controller.leave()
                 _appState.update { it.copy(isJoining = false, joinError = "Connection Timed Out", accessCode = null) }
             }
