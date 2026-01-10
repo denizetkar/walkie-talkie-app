@@ -340,6 +340,11 @@ class MeshController(
     }
 
     private suspend fun handlePeerListChange(peers: Set<UInt>) {
+        // We use a local variable to capture the intent to transition.
+        // We must NOT call transitionTo inside the lock, because transitionTo acquires the lock.
+        // Kotlin Mutex is non-reentrant -> Deadlock.
+        var pendingTransition: EngineState? = null
+
         // STRICT LOCKING: Acquire lock immediately to avoid race conditions
         stateMutex.withLock {
             val s = _state.value
@@ -347,24 +352,26 @@ class MeshController(
             when (s) {
                 is EngineState.RadioActive -> {
                     if (s.peerCount != count) {
+                        // NOTE: We do NOT use transitionTo here.
+                        // Changing peer count is a property update, not a lifecycle change.
+                        // calling transitionTo would trigger stopRadioLogic/startRadioLogic,
+                        // causing audio to cut out.
                         _state.value = s.copy(peerCount = count)
                         refreshAdvertising(s.groupName)
                     }
                 }
                 is EngineState.Joining -> {
                     if (count > 0) {
-                        // We are inside the lock, so we can modify state directly
-                        _state.value = EngineState.RadioActive(s.groupName, count)
-                        Log.i("MeshController", "State Change: Joining -> RadioActive")
-
-                        // We need to start the Radio Logic (Heartbeats, etc)
-                        // Note: startRadioLogic is not suspending, so it's safe here.
-                        startRadioLogic(s.groupName)
+                        // We are connected! Prepare to transition to RadioActive.
+                        pendingTransition = EngineState.RadioActive(s.groupName, count)
                     }
                 }
                 else -> {}
             }
         }
+
+        // Execute the lifecycle transition outside the lock
+        if (pendingTransition != null) transitionTo(pendingTransition)
     }
 
     private suspend fun handleDiscovery(node: TransportNode) {
