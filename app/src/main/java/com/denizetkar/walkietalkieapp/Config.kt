@@ -62,6 +62,7 @@ object Config {
     const val GROUP_ADVERTISEMENT_TIMEOUT = 5000L
     const val GROUP_JOIN_TIMEOUT = 15000L
     const val PEER_CONNECT_TIMEOUT = 6000L
+    const val DISCONNECT_ALL_TIMEOUT = 2000L
     const val BLE_OPERATION_TIMEOUT = 3000L
     const val HEARTBEAT_TIMEOUT = 3000L
 }

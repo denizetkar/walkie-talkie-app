@@ -43,8 +43,8 @@ class GattServerHandler(
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private var gattServer: BluetoothGattServer? = null
 
+    // We only track these for internal logic (Auth/Queue), not for connection management.
     private val pendingChallenges = ConcurrentHashMap<String, String>()
-    private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
     private val pendingDisconnects = ConcurrentHashMap.newKeySet<String>()
 
     // CONSISTENCY: Use BleOperationQueue to prioritize Control packets and serialize access
@@ -62,11 +62,10 @@ class GattServerHandler(
             val address = device.address.uppercase()
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d("GattServer", "New Connection: $address")
-                connectedDevices[address] = device
                 scope.launch { _serverEvents.emit(ServerEvent.ClientConnected(device)) }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d("GattServer", "Disconnected: $address")
-                cleanupDevice(device)
+                cleanupDeviceData(address)
                 scope.launch { _serverEvents.emit(ServerEvent.ClientDisconnected(device)) }
             }
         }
@@ -138,9 +137,7 @@ class GattServerHandler(
         val (type, payload) = PacketUtils.parseControlPacket(data) ?: return
 
         when (type) {
-            PacketUtils.TYPE_PING -> {
-                Log.d("GattServer", "Received PING from ${device.address}")
-            }
+            PacketUtils.TYPE_PING -> Log.d("GattServer", "Received PING from ${device.address}")
             PacketUtils.TYPE_CLIENT_HELLO -> {
                 Log.d("GattServer", "Received HELLO from ${device.address}. Sending Challenge.")
                 scope.launch { sendChallenge(device) }
@@ -274,35 +271,25 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     fun disconnect(device: BluetoothDevice) {
+        Log.d("GattServer", "Requesting disconnect for ${device.address}")
         gattServer?.cancelConnection(device)
-        cleanupDevice(device)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun disconnectAll() {
-        connectedDevices.values.forEach { gattServer?.cancelConnection(it) }
-        cleanupDevice(null)
     }
 
     @SuppressLint("MissingPermission")
     fun stopServer() {
         operationQueue.shutdown()
-        disconnectAll()
         try {
             gattServer?.close()
         } catch (_: Exception) {}
         gattServer = null
-        cleanupDevice(null)
+        cleanupDeviceData(null)
     }
 
-    private fun cleanupDevice(device: BluetoothDevice?) {
-        if (device != null) {
-            val address = device.address.uppercase()
-            connectedDevices.remove(address)
+    private fun cleanupDeviceData(address: String?) {
+        if (address != null) {
             pendingChallenges.remove(address)
             pendingDisconnects.remove(address)
         } else {
-            connectedDevices.clear()
             pendingChallenges.clear()
             pendingDisconnects.clear()
         }

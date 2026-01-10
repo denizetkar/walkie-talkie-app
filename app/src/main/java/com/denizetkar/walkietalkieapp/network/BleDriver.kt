@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -29,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 class BleDriver(
     private val context: Context,
@@ -128,15 +130,20 @@ class BleDriver(
     suspend fun stop() {
         Log.d("BleDriver", "CMD: Stop (Soft)")
 
-        // A. Cut the nerves (Stop processing inputs)
-        stopEventLoop()
-
-        // B. Stop the hardware
+        // 1. Stop accepting NEW things
         stopScanning()
         stopAdvertising()
 
-        // C. Clear the state (Safe now because events are cut)
+        // 2. Gracefully disconnect existing peers
+        // This suspends until everyone is gone or timeout
         disconnectAll()
+
+        // 3. Close the Server Socket (Hard Kill)
+        // Safe to do now because disconnectAll() ensured the stack is clean
+        serverHandler.stopServer()
+
+        // 4. Stop processing events
+        stopEventLoop()
     }
 
     fun destroy() {
@@ -161,14 +168,32 @@ class BleDriver(
     }
 
     private suspend fun disconnectAll() {
-        serverHandler.disconnectAll()
+        // 1. Trigger Disconnects
         peerMutex.withLock {
             connectionJobs.values.forEach { it.cancel() }
             connectionJobs.clear()
 
             val currentPeers = _peers.value.values.toList()
-            _peers.value = emptyMap()
+            if (currentPeers.isEmpty()) return
+
+            Log.d("BleDriver", "Disconnecting ${currentPeers.size} peers...")
             currentPeers.forEach { it.disconnect() }
+        }
+
+        // 2. Reactive Wait
+        // We wait for the stack to fire 'Disconnected' events, which updates _peers.
+        withTimeoutOrNull(Config.DISCONNECT_ALL_TIMEOUT) {
+            _peers.first { it.isEmpty() }
+        }
+
+        // 3. Force Clear if stuck
+        peerMutex.withLock {
+            if (_peers.value.isNotEmpty()) {
+                Log.w("BleDriver", "Disconnect timeout. Force clearing ${_peers.value.size} peers.")
+                _peers.value = emptyMap()
+            } else {
+                Log.d("BleDriver", "All peers disconnected gracefully.")
+            }
         }
     }
 
