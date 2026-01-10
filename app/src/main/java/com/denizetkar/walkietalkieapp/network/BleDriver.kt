@@ -226,11 +226,11 @@ class BleDriver(
                     }
                     is ServerEvent.ClientDisconnected -> {
                         Log.i("BleDriver", "Server: Disconnected ${event.device.address}")
-                        handleTransportDisconnect(event.device.address)
+                        handleTransportDisconnect(event.device.address, null, TransportType.INCOMING)
                     }
                     is ServerEvent.Error -> {
                         Log.i("BleDriver", "Server: Error ${event.device.address}: ${event.message}")
-                        handleTransportDisconnect(event.device.address)
+                        handleTransportDisconnect(event.device.address, null, TransportType.INCOMING)
                     }
                     else -> {}
                 }
@@ -283,12 +283,16 @@ class BleDriver(
 
         try {
             collectionJob = scope.launch {
+                // Capture the strategy instance so we can identify it during disconnect
+                var activeStrategy: ClientStrategy? = null
+
                 client.clientEvents.collect { event ->
                     when (event) {
                         is ClientEvent.Authenticated -> {
                             Log.i("BleDriver", "Client: Authenticated with $nodeId")
                             // Pass the collectionJob so Strategy can cancel it on HARD close.
                             val strategy = ClientStrategy(client, this.coroutineContext[Job]!!)
+                            activeStrategy = strategy
                             handleNewTransport(nodeId, strategy)
                             connectionResult.complete(true)
                         }
@@ -297,13 +301,13 @@ class BleDriver(
                         }
                         is ClientEvent.Disconnected -> {
                             Log.w("BleDriver", "Client: Disconnected ${event.device.address}")
-                            handleTransportDisconnect(event.device.address)
+                            handleTransportDisconnect(event.device.address, activeStrategy, TransportType.OUTGOING)
                             connectionResult.complete(false)
                             this.coroutineContext.cancel()
                         }
                         is ClientEvent.Error -> {
                             Log.w("BleDriver", "Client: Error ${event.device.address}: ${event.message}")
-                            handleTransportDisconnect(event.device.address)
+                            handleTransportDisconnect(event.device.address, activeStrategy, TransportType.OUTGOING)
                             connectionResult.complete(false)
                             this.coroutineContext.cancel()
                         }
@@ -348,6 +352,7 @@ class BleDriver(
                 return@withLock
             }
 
+            // Same MAC / Reconnection case cannot happen on the server-side!
             if (existing.type == newStrategy.type) {
                 Log.w("BleDriver", "Transport Retry ($nodeId). Replacing old ${existing.type} with new.")
                 existing.disconnect()
@@ -375,16 +380,35 @@ class BleDriver(
         _events.emit(BleDriverEvent.PeerConnected(nodeId))
     }
 
-    private suspend fun handleTransportDisconnect(address: String) {
+    private suspend fun handleTransportDisconnect(
+        address: String,
+        sourceStrategy: TransportStrategy?,
+        sourceType: TransportType
+    ) {
         peerMutex.withLock {
             val normalized = address.uppercase()
-            val (nodeId, strategy) = _peers.value.entries.find { it.value.address == normalized } ?: return
-            if (strategy.address != normalized) {
-                return // It was a stale disconnect event
+            val (nodeId, currentStrategy) = _peers.value.entries.find { it.value.address == normalized } ?: return
+
+            if (sourceType == TransportType.OUTGOING) {
+                // CLIENT LOGIC: Strict Instance Check
+                // If the disconnect comes from a Client, it MUST match the active strategy instance.
+                // If it doesn't match, it's a stale disconnect from a previous attempt.
+                if (sourceStrategy != null && currentStrategy !== sourceStrategy) {
+                    Log.d("BleDriver", "Ignoring stale Client disconnect for $address")
+                    return@withLock
+                }
+            } else {
+                // SERVER LOGIC: Type Check
+                // If the disconnect comes from the Server, we must ensure the active strategy
+                // is actually a Server strategy. If it's a Client strategy, it means we
+                // replaced the Server connection with a Client one, and we shouldn't kill it.
+                if (currentStrategy.type == TransportType.OUTGOING) {
+                    Log.d("BleDriver", "Ignoring Server disconnect for Client connection $address")
+                    return@withLock
+                }
             }
 
             // Only remove if the disconnected strategy is the ACTIVE one
-            // (Prevents race where we just replaced it with a new one)
             Log.i("BleDriver", "Transport disconnected for Node $nodeId")
             _peers.update { it - nodeId }
             scope.launch { _events.emit(BleDriverEvent.PeerDisconnected(nodeId)) }
