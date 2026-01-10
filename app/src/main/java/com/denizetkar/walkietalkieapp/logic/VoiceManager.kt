@@ -48,7 +48,7 @@ class VoiceManager(
     val selectedOutputId = _selectedOutputId.asStateFlow()
 
     private val _isSessionActive = MutableStateFlow(false)
-    private val _isMicEnabled = MutableStateFlow(false)
+    private val _isMicEnabled: MutableStateFlow<Boolean?> = MutableStateFlow(null)
 
     // Hot Path State
     private val activeEngine = AtomicReference<AudioEngine?>(null)
@@ -162,15 +162,9 @@ class VoiceManager(
 
             engine = AudioEngine(config, packetTransport, engineErrorCallback, ownNodeId)
             engine.startSession()
-            engine.setMicEnabled(_isMicEnabled.value)
+            setMicrophoneEnabled(false)
 
             activeEngine.set(engine)
-
-            // Listen for mic changes. Because we are in coroutineScope,
-            // this job will be auto-cancelled when manageAudioSession exits.
-            launch(Dispatchers.IO) {
-                _isMicEnabled.collect { enabled -> engine.setMicEnabled(enabled) }
-            }
 
             awaitCancellation()
         } catch (e: Exception) {
