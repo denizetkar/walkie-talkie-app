@@ -120,8 +120,18 @@ class WalkieTalkieService : Service() {
         val channel = NotificationChannel(channelId, "Walkie Talkie Service", NotificationManager.IMPORTANCE_LOW)
         manager.createNotificationChannel(channel)
 
-        val notificationIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE)
+        // CHANGED: Added flags to ensure we resume the existing Activity instead of creating a new one.
+        val notificationIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+
+        // CHANGED: Added FLAG_UPDATE_CURRENT to ensure the intent extras (if any) are updated.
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            notificationIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
         val contentText = when (state) {
             is EngineState.Joining -> "Connecting to group..."
