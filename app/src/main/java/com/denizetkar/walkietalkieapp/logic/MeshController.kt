@@ -59,6 +59,8 @@ class MeshController(
     // Define Transport Callback (Rust -> Kotlin -> BLE)
     private val packetTransport = object : PacketTransport {
         override fun sendPacket(data: ByteArray) {
+            // Audio packets are already formatted by Rust (Seq + NodeID + Opus)
+            // We just send them as AUDIO type.
             broadcastPayload(data, TransportDataType.AUDIO)
         }
     }
@@ -249,7 +251,9 @@ class MeshController(
             // generateHeartbeat returns the PAYLOAD (NetID, Seq, Hops)
             val payload = topology.generateHeartbeat()
             if (payload != null) {
-                broadcastPayload(payload, TransportDataType.CONTROL)
+                // WRAPPING: We pass the payload and the OpCode.
+                // broadcastPayload will handle the wrapping and hashing.
+                broadcastPayload(payload, TransportDataType.CONTROL, PacketUtils.TYPE_HEARTBEAT)
             }
             delay(Config.HEARTBEAT_INTERVAL)
         }
@@ -270,9 +274,20 @@ class MeshController(
         driver.startAdvertising(config)
     }
 
-    private fun broadcastPayload(payload: ByteArray, type: TransportDataType) {
-        markPacketAsSeen(payload)
-        scope.launch { driver.broadcast(payload, type) }
+    private fun broadcastPayload(payload: ByteArray, type: TransportDataType, controlOpCode: Byte? = null) {
+        // WRAPPING LOGIC:
+        // If it's a Control packet and we have an OpCode, wrap it.
+        // Otherwise (Audio or already wrapped), send as is.
+        val packet = if (type == TransportDataType.CONTROL && controlOpCode != null) {
+            PacketUtils.createControlPacket(controlOpCode, payload)
+        } else {
+            payload
+        }
+
+        // HASHING: Hash the EXACT bytes we are putting on the air.
+        // This prevents us from processing our own echoes (relayed back by neighbors).
+        markPacketAsSeen(packet)
+        scope.launch { driver.broadcast(packet, type) }
     }
 
     // --- Cleanup Helpers ---
@@ -398,20 +413,23 @@ class MeshController(
         seenPackets[packetHash] = System.currentTimeMillis()
 
         if (event.type == TransportDataType.CONTROL) {
-            // FIX: The Driver/Handler has already stripped the [Header][Type] bytes.
-            // 'event.data' is the PAYLOAD.
-            val (netId, seq, hops) = PacketUtils.parseHeartbeatPayload(event.data) ?: return
-            if (topology.onHeartbeatReceived(netId, seq, hops)) {
-                val s = _state.value
-                if (s is EngineState.RadioActive) refreshAdvertising(s.groupName)
+            // UNWRAPPING: The driver now sends the FULL packet. We must parse it.
+            val (type, payload) = PacketUtils.parseControlPacket(event.data) ?: return
 
-                // RELAY LOGIC
-                val newPayload = PacketUtils.createHeartbeatPayload(netId, seq, hops + 1)
-                broadcastPayload(newPayload, TransportDataType.CONTROL)
+            if (type == PacketUtils.TYPE_HEARTBEAT) {
+                val (netId, seq, hops) = PacketUtils.parseHeartbeatPayload(payload) ?: return
+                if (topology.onHeartbeatReceived(netId, seq, hops)) {
+                    val s = _state.value
+                    if (s is EngineState.RadioActive) refreshAdvertising(s.groupName)
+
+                    // RELAY LOGIC
+                    val newPayload = PacketUtils.createHeartbeatPayload(netId, seq, hops + 1)
+                    broadcastPayload(newPayload, TransportDataType.CONTROL, PacketUtils.TYPE_HEARTBEAT)
+                }
             }
         } else {
             voiceManager.processIncomingPacket(event.data)
-            scope.launch { driver.broadcast(event.data, TransportDataType.AUDIO) }
+            broadcastPayload(event.data, TransportDataType.AUDIO)
         }
     }
 

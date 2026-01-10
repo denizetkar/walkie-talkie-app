@@ -118,17 +118,10 @@ class GattClientHandler(
             TransportDataType.CONTROL -> Config.CHAR_CONTROL_UUID to BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         }
 
-        // Centralized Wrapping Logic
-        // If it's a CONTROL packet coming from the Controller, we assume it's a Heartbeat Payload.
-        // We wrap it with the Header and Type here.
-        val packet = if (type == TransportDataType.CONTROL) {
-            PacketUtils.createControlPacket(PacketUtils.TYPE_HEARTBEAT, data)
-        } else {
-            data
-        }
-
+        // DUMB PIPE: We no longer wrap CONTROL packets here.
+        // The MeshController is responsible for the wire format.
         operationQueue.enqueue(type) {
-            writeCharacteristicInternal(uuid, packet, writeType, type)
+            writeCharacteristicInternal(uuid, data, writeType, type)
         }
     }
 
@@ -295,9 +288,10 @@ class GattClientHandler(
                             disconnect()
                         }
                     }
-                    PacketUtils.TYPE_HEARTBEAT -> {
-                        // Emit the PAYLOAD up to the driver/controller
-                        scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, payload, TransportDataType.CONTROL)) }
+                    else -> {
+                        // Pass the FULL PACKET (data) up, not just the payload.
+                        // This allows the Controller to hash the exact bytes received.
+                        scope.launch { _clientEvents.emit(ClientEvent.MessageReceived(targetDevice, data, TransportDataType.CONTROL)) }
                     }
                 }
             }

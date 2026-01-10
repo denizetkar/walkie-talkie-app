@@ -108,10 +108,10 @@ class BleDriver(
         job?.join()
     }
 
-    suspend fun broadcast(payload: ByteArray, type: TransportDataType) {
+    suspend fun broadcast(data: ByteArray, type: TransportDataType) {
         // Snapshot the current peers to avoid locking during I/O
         val currentPeers = _peers.value.values.toList()
-        currentPeers.forEach { strategy -> strategy.send(payload, type) }
+        currentPeers.forEach { strategy -> strategy.send(data, type) }
     }
 
     fun disconnectNode(nodeId: UInt) {
