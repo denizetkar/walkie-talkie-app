@@ -23,6 +23,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -55,27 +56,43 @@ fun WalkieTalkieApp() {
         }
     }
 
-    val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_ADVERTISE,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.RECORD_AUDIO
-        )
-    } else {
-        arrayOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.BLUETOOTH,
-            Manifest.permission.BLUETOOTH_ADMIN,
-            Manifest.permission.RECORD_AUDIO
-        )
+    // --- Permission Logic ---
+    // We build the list dynamically based on the Android Version.
+    val permissionsToRequest = remember(Unit) {
+        val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+
+        // Android 12 (S) and above: Modern BLE permissions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            perms.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            // Android 11 and below: Legacy Location-based BLE
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            perms.add(Manifest.permission.BLUETOOTH)
+            perms.add(Manifest.permission.BLUETOOTH_ADMIN)
+        }
+
+        // Android 13 (Tiramisu) and above: Notifications
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        perms.toTypedArray()
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
+        // We check if the *essential* permissions are granted.
+        // Note: POST_NOTIFICATIONS is technically optional for app function, but good for UX.
+        // RECORD_AUDIO and BLE are critical.
+        val essentialGranted = permissions.entries.all { (perm, granted) ->
+            if (perm == Manifest.permission.POST_NOTIFICATIONS) true // Ignore notification denial for core logic
+            else granted
+        }
+
+        if (essentialGranted) {
             viewModel.onPermissionsGranted()
         }
     }
