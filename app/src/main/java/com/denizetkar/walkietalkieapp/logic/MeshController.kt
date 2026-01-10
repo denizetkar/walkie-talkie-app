@@ -127,17 +127,23 @@ class MeshController(
 
     // --- State Machine ---
 
-    private suspend fun transitionTo(newState: EngineState): Unit = stateMutex.withLock {
-        val oldState = _state.value
-        if (oldState == newState) return
-
-        _state.value = newState
-        Log.i("MeshController", "State Change: $oldState -> $newState")
+    private suspend fun transitionTo(newState: EngineState) {
+        // CRITICAL FIX: Calculate the transition inside the lock, but execute side effects OUTSIDE.
+        // This prevents Deadlock/Livelock where driver events (needing lock) are blocked by
+        // driver.stop() (holding lock).
+        val (oldState, stateChanged) = stateMutex.withLock {
+            val old = _state.value
+            if (old == newState) return@withLock (old to false)
+            _state.value = newState
+            Log.i("MeshController", "State Change: $old -> $newState")
+            (old to true)
+        }
+        if (!stateChanged) return
 
         // Reset advertising cache on state change to ensure fresh config is applied
         lastAdvertisingConfig = null
 
-        // A. Teardown Old State
+        // A. Teardown Old State (Suspending functions here are now safe)
         if (oldState is EngineState.RadioActive) stopRadioLogic()
         if (oldState is EngineState.Discovering || oldState is EngineState.Joining) {
             driver.stopScanning()
@@ -337,6 +343,7 @@ class MeshController(
                         Log.i("MeshController", "State Change: Joining -> RadioActive")
 
                         // We need to start the Radio Logic (Heartbeats, etc)
+                        // Note: startRadioLogic is not suspending, so it's safe here.
                         startRadioLogic(s.groupName)
                     }
                 }
