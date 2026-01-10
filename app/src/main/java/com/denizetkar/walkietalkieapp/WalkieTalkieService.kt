@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.denizetkar.walkietalkieapp.logic.EngineState
 import com.denizetkar.walkietalkieapp.logic.MeshController
 import com.denizetkar.walkietalkieapp.network.BleDriver
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 import kotlin.random.nextUInt
@@ -45,7 +47,6 @@ class WalkieTalkieService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForegroundService()
 
         serviceScope.launch {
             try {
@@ -63,6 +64,31 @@ class WalkieTalkieService : Service() {
             } catch (e: Exception) {
                 Log.e("WalkieTalkieService", "Fatal Init Error", e)
                 // In a real app, you might emit a specific Error state here
+            }
+        }
+
+        // REACTIVE LIFECYCLE MANAGEMENT
+        // Observe the MeshController state.
+        // - Joining/RadioActive -> Promote to Foreground (Active Mic/Radio usage)
+        // - Idle/Discovering -> Demote to Background (Battery saving)
+        serviceScope.launch {
+            meshControllerState.collectLatest { controller ->
+                if (controller == null) return@collectLatest
+
+                controller.state.collect { state ->
+                    val shouldBeForeground = when (state) {
+                        is EngineState.Joining,
+                        is EngineState.RadioActive -> true
+                        is EngineState.Idle,
+                        is EngineState.Discovering -> false
+                    }
+
+                    if (shouldBeForeground) {
+                        promoteToForeground(state)
+                    } else {
+                        demoteToBackground()
+                    }
+                }
             }
         }
     }
@@ -88,7 +114,7 @@ class WalkieTalkieService : Service() {
         super.onDestroy()
     }
 
-    private fun startForegroundService() {
+    private fun promoteToForeground(state: EngineState) {
         val channelId = "WalkieTalkieChannel"
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(channelId, "Walkie Talkie Service", NotificationManager.IMPORTANCE_LOW)
@@ -97,24 +123,43 @@ class WalkieTalkieService : Service() {
         val notificationIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE)
 
+        val contentText = when (state) {
+            is EngineState.Joining -> "Connecting to group..."
+            is EngineState.RadioActive -> "Live: ${state.groupName} (${state.peerCount} Peers)"
+            else -> "Walkie Talkie Active"
+        }
+
         val notification: Notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Walkie Talkie Active")
-            .setContentText("Radio is ON.")
+            .setContentText(contentText)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                startForeground(
+                    1,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             } else {
                 startForeground(1, notification)
             }
+            Log.d("WalkieTalkieService", "Promoted to FOREGROUND")
         } catch (e: Exception) {
             Log.w("WalkieTalkieService", "Could not promote to Foreground.", e)
         }
+    }
+
+    private fun demoteToBackground() {
+        // STOP_FOREGROUND_REMOVE: Removes the notification and the foreground status.
+        // The service continues running if it is bound to the Activity, but without special privileges.
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        Log.d("WalkieTalkieService", "Demoted to BACKGROUND")
     }
 }

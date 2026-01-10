@@ -14,13 +14,13 @@ object Config {
     // --- Audio Configuration ---
     // 48kHz is the native sample rate for most Android devices (avoids resampling)
     const val AUDIO_SAMPLE_RATE = 48000
-
     // 60ms Frame = ~16 packets/sec.
     // This is much friendlier to BLE than the previous 40ms (25 packets/sec).
     const val AUDIO_FRAME_SIZE_MS = 60
-
     // Max depth of the jitter buffer before we drop packets to catch up.
     const val AUDIO_JITTER_BUFFER_MS = 1000
+    // Time to wait in between consecutive audio session start attempts
+    const val AUDIO_SESSION_START_DELAY = 1000L
 
     // --- Protocol Layouts (Byte Offsets & Sizes) ---
     // Service Data: [NodeID(4)] [NetworkID(4)] [Hops(1)] [Avail(1)]

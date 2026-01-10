@@ -12,14 +12,17 @@ import android.os.Looper
 import android.util.Log
 import com.denizetkar.walkietalkieapp.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.Config
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import uniffi.walkie_talkie_engine.AudioConfig
 import uniffi.walkie_talkie_engine.AudioEngine
@@ -155,35 +158,50 @@ class VoiceManager(
     // --- Private Helpers ---
 
     private suspend fun manageAudioSession(config: AudioConfig): Nothing = coroutineScope {
-        var engine: AudioEngine? = null
-        try {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            requestAudioFocus()
-
-            engine = AudioEngine(config, packetTransport, engineErrorCallback, ownNodeId)
-            engine.startSession()
-            setMicrophoneEnabled(false)
-
-            activeEngine.set(engine)
-
-            awaitCancellation()
-        } catch (e: Exception) {
-            if (e !is kotlinx.coroutines.CancellationException) {
-                Log.e("VoiceManager", "Failed to start Rust Engine", e)
-            }
-            throw e
-        } finally {
-            Log.i("VoiceManager", "Stopping Audio Engine (Cleanup)")
-            activeEngine.set(null)
+        // CRITICAL UPDATE: Retry Loop
+        // We might try to start the audio engine BEFORE the Service has finished
+        // promoting itself to Foreground. If that happens, Android throws a SecurityException.
+        // We catch that, wait, and retry.
+        while (isActive) {
+            var engine: AudioEngine? = null
             try {
-                engine?.stopSession()
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                requestAudioFocus()
+
+                engine = AudioEngine(config, packetTransport, engineErrorCallback, ownNodeId)
+                // This will throw SecurityException if Service is not yet Foreground
+                engine.startSession()
+                setMicrophoneEnabled(false)
+
+                activeEngine.set(engine)
+                Log.i("VoiceManager", "Audio Engine Started Successfully")
+
+                // If successful, we hang here until cancelled
+                awaitCancellation()
             } catch (e: Exception) {
-                Log.e("VoiceManager", "Error stopping engine", e)
+                // If the coroutine was cancelled (user left group), rethrow to exit the loop
+                if (e is CancellationException) throw e
+
+                Log.w("VoiceManager", "Engine start failed. Retrying...", e)
+                // Wait for the Service to catch up
+                delay(Config.AUDIO_SESSION_START_DELAY)
+            } finally {
+                // This block runs when we are cancelled OR when we loop due to error
+                Log.i("VoiceManager", "Stopping Audio Engine (Cleanup)")
+                activeEngine.set(null)
+                try {
+                    engine?.stopSession()
+                } catch (e: Exception) {
+                    Log.e("VoiceManager", "Error stopping engine", e)
+                }
+                abandonAudioFocus()
+                audioManager.clearCommunicationDeviceCompat()
+                audioManager.mode = AudioManager.MODE_NORMAL
             }
-            abandonAudioFocus()
-            audioManager.clearCommunicationDeviceCompat()
-            audioManager.mode = AudioManager.MODE_NORMAL
         }
+
+        // This is unreachable because of the while(isActive) loop + awaitCancellation
+        throw CancellationException()
     }
 
     private fun updateDeviceLists() {

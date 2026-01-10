@@ -104,7 +104,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
         val context = getApplication<Application>()
         val intent = Intent(context, WalkieTalkieService::class.java)
         try {
-            context.startForegroundService(intent)
+            // CHANGED: Use startService instead of startForegroundService.
+            // This allows the service to start in the "background" (bound) state.
+            // It will promote itself to Foreground only when necessary (Joining a group).
+            context.startService(intent)
             context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             _appState.update { it.copy(serviceStartupFailed = false) }
         } catch (e: Exception) {
