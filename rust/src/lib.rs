@@ -517,9 +517,10 @@ mod real_impl {
                             packet_to_decode = Some(Some(data));
                         } else {
                             // Miss - Check lookahead window using constant
-                            let has_future = peer.jitter_buffer.keys().any(|&k|
-                                k > expected && k < expected.wrapping_add(JITTER_LOOKAHEAD_WINDOW)
-                            );
+                            let has_future = peer.jitter_buffer.keys().any(|&k| {
+                                let delta = k.wrapping_sub(expected);
+                                delta > 0 && delta < JITTER_LOOKAHEAD_WINDOW
+                            });
 
                             if has_future {
                                 // Lost -> PLC
