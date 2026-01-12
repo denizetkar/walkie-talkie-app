@@ -4,7 +4,7 @@
 
 This project demonstrates a decentralized mobile mesh network using Bluetooth 5 (BLE). It allows a group of users to communicate via voice in real-time without Internet, Wi-Fi, or cellular data. It is designed for hiking, festivals, or emergency situations where infrastructure is unavailable.
 
-> **See [ARCHITECTURE.md](./ARCHITECTURE.md) for deep technical details on the topology, protocol, and security.**
+> **See [ARCHITECTURE.md](ARCHITECTURE_LEGACY.md) for deep technical details on the topology, protocol, and security.**
 
 ---
 
