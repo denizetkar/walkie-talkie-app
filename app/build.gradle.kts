@@ -1,8 +1,8 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import com.android.build.api.dsl.ApplicationExtension
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -12,7 +12,7 @@ val jnaAar by configurations.creating {
     isTransitive = false
 }
 
-android {
+configure<ApplicationExtension> {
     namespace = "com.denizetkar.walkietalkieapp"
     compileSdk = 36
 
@@ -50,17 +50,17 @@ android {
         sourceCompatibility = JavaVersion.VERSION_19
         targetCompatibility = JavaVersion.VERSION_19
     }
-    kotlin {
-        compilerOptions {
-            jvmTarget = JvmTarget.JVM_19
-        }
-    }
     packaging {
         jniLibs {
             pickFirsts.add("lib/**/libc++_shared.so")
             pickFirsts.add("lib/**/libjnidispatch.so")
             pickFirsts.add("lib/**/libwalkie_talkie_engine.so")
         }
+    }
+}
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_19)
     }
 }
 
