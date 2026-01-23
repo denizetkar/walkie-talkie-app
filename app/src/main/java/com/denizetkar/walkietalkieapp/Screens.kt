@@ -4,52 +4,21 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.denizetkar.walkietalkieapp.network.DiscoveredGroup
+import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 
 @Composable
 fun ServiceErrorScreen(onRetry: () -> Unit) {
@@ -70,18 +39,16 @@ fun PermissionRequiredScreen(onGrantClick: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary)
+        Icon(
+            Icons.Default.Bluetooth,
+            contentDescription = null,
+            Modifier.size(64.dp),
+            MaterialTheme.colorScheme.primary
+        )
         Spacer(modifier = Modifier.height(16.dp))
         Text("Permissions Needed", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            "To function as a Walkie-Talkie, this app needs access to Bluetooth (to find peers) and the Microphone (to talk).",
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-        Button(onClick = onGrantClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Grant Permissions")
-        }
+        Button(onClick = onGrantClick) { Text("Grant Permissions") }
     }
 }
 
@@ -109,7 +76,7 @@ fun CreateGroupScreen(
     if (error != null) {
         AlertDialog(
             onDismissRequest = onErrorAck,
-            title = { Text("Cannot Create Group") },
+            title = { Text("Error") },
             text = { Text(error) },
             confirmButton = {
                 Button(onClick = onErrorAck) { Text("OK") }
@@ -122,7 +89,7 @@ fun CreateGroupScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Create a New Group", style = MaterialTheme.typography.headlineMedium)
+        Text("Create Group", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
         OutlinedTextField(
             value = text,
@@ -168,7 +135,7 @@ fun JoinGroupScreen(
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
-                    Text("Verifying Access Code...")
+                    Text("Joining...")
                 }
             },
             confirmButton = {}
@@ -216,18 +183,14 @@ fun JoinGroupScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         if (discoveredGroups.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Scanning...", modifier = Modifier.padding(top = 64.dp))
-            }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Scanning...") }
         } else {
             LazyColumn {
-                items(discoveredGroups.size) {
-                    val group = discoveredGroups[it]
+                items(discoveredGroups.size) { i ->
+                    val group = discoveredGroups[i]
                     ListItem(
                         headlineContent = { Text(group.name, fontWeight = FontWeight.Bold) },
-                        supportingContent = { Text("Signal: ${group.highestRssi} dBm") },
+                        supportingContent = { Text("Signal: ${group.rssi} dBm") },
                         trailingContent = {
                             Button(onClick = { selectedGroup = group }) {
                                 Text("Join")
@@ -246,14 +209,12 @@ fun RadioScreen(
     groupName: String?,
     accessCode: String?,
     peerCount: Int,
-
     availableMics: List<AudioDeviceUi>,
     availableSpeakers: List<AudioDeviceUi>,
     selectedMicId: Int,
     selectedSpeakerId: Int,
     onMicSelect: (Int) -> Unit,
     onSpeakerSelect: (Int) -> Unit,
-
     onLeave: () -> Unit,
     onTalkStart: () -> Unit,
     onTalkStop: () -> Unit
@@ -275,9 +236,16 @@ fun RadioScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("GROUP: ${groupName ?: "Unknown"}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "GROUP: ${groupName ?: "Unknown"}",
+                    style = MaterialTheme.typography.titleLarge
+                )
                 Spacer(modifier = Modifier.height(4.dp))
-                Text("ACCESS CODE: $accessCode", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    "CODE: $accessCode",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
@@ -314,7 +282,12 @@ fun RadioScreen(
                 )
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White, modifier = Modifier.size(48.dp))
+                Icon(
+                    Icons.Default.Mic,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(48.dp)
+                )
                 Text(
                     text = when {
                         !isNetworkReady -> "SEARCHING..."

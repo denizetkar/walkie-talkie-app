@@ -1,69 +1,91 @@
 package com.denizetkar.walkietalkieapp.bluetooth
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
-import android.bluetooth.BluetoothGattServer
-import android.bluetooth.BluetoothGattServerCallback
-import android.bluetooth.BluetoothGattService
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
-import android.bluetooth.BluetoothStatusCodes
+import android.bluetooth.*
 import android.content.Context
 import android.os.Build
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
-import com.denizetkar.walkietalkieapp.logic.PacketUtils
-import com.denizetkar.walkietalkieapp.logic.ProtocolUtils
+import com.denizetkar.walkietalkieapp.protocol.HandshakeLogic
+import com.denizetkar.walkietalkieapp.network.ServerEvent
+import com.denizetkar.walkietalkieapp.network.ConnectionFailure
+import com.denizetkar.walkietalkieapp.network.TransportAddress
 import com.denizetkar.walkietalkieapp.network.TransportDataType
-import kotlinx.coroutines.CoroutineScope
+import com.denizetkar.walkietalkieapp.protocol.Packet
+import com.denizetkar.walkietalkieapp.protocol.Protocol
+import com.denizetkar.walkietalkieapp.utils.retryWithBackoff
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-
-sealed class ServerEvent {
-    data class ClientConnected(val device: BluetoothDevice) : ServerEvent()
-    data class ClientAuthenticated(val device: BluetoothDevice, val nodeId: UInt) : ServerEvent()
-    data class ClientDisconnected(val device: BluetoothDevice) : ServerEvent()
-    data class MessageReceived(val device: BluetoothDevice, val data: ByteArray, val type: TransportDataType) : ServerEvent()
-    data class Error(val device: BluetoothDevice, val message: String) : ServerEvent()
-}
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class GattServerHandler(
     private val context: Context,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val accessCodeProvider: () -> String?
 ) {
-    var currentAccessCode: String? = null
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private var gattServer: BluetoothGattServer? = null
 
-    // We only track these for internal logic (Auth/Queue), not for connection management.
-    private val pendingChallenges = ConcurrentHashMap<String, String>()
-    private val pendingDisconnects = ConcurrentHashMap.newKeySet<String>()
+    // Key: Device Address
+    // Value: The Actor responsible for serializing writes to that specific device.
+    private val clientQueues = ConcurrentHashMap<TransportAddress, BleOperationQueue>()
 
-    // CONSISTENCY: Use BleOperationQueue to prioritize Control packets and serialize access
-    private val operationQueue = BleOperationQueue(scope) { stopServer() }
+    // We only track these for internal logic (Auth/Queue), not for connection management.
+    private val pendingChallenges = ConcurrentHashMap<TransportAddress, String>()
+    // Bridge: Maps Device Address -> The Continuation waiting for 'onNotificationSent'
+    private val pendingNotifications = ConcurrentHashMap<TransportAddress, CancellableContinuation<Unit>>()
+    // Tracks pending unauthenticated connections. If they time out, we kill them.
+    private val connectionFuses = ConcurrentHashMap<TransportAddress, Job>()
 
     private val _serverEvents = MutableSharedFlow<ServerEvent>(
-        extraBufferCapacity = Config.EVENT_FLOW_BUFFER_CAPACITY,
+        extraBufferCapacity = 256,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
-    val serverEvents: SharedFlow<ServerEvent> = _serverEvents
+    val serverEvents: SharedFlow<ServerEvent> = _serverEvents.asSharedFlow()
+
+    companion object {
+        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
 
     @SuppressLint("MissingPermission")
     private val gattCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-            val address = device.address.uppercase()
+            val address = TransportAddress.from(device.address)
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d("GattServer", "New Connection: $address")
+
+                // LIFECYCLE: Create Queue
+                // We STRICTLY overwrite any existing queue. If a zombie queue existed, it is now
+                // unreachable and will be GC'd (or timed out). We want the fresh state.
+                clientQueues[address] = BleOperationQueue(scope)
+
+                // LIFECYCLE: Light the Fuse
+                // If auth doesn't happen within timeout, disconnect.
+                val fuse = scope.launch {
+                    delay(Config.BLE_CONNECT_TIMEOUT)
+                    Log.w("GattServer", "Fuse Blown: Disconnecting zombie $address")
+                    disconnect(device)
+                }
+                connectionFuses[address] = fuse
+
                 scope.launch { _serverEvents.emit(ServerEvent.ClientConnected(device)) }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                // RACE CONDITION FIX:
+                // If the device is technically still CONNECTED in the Manager, this DISCONNECTED event
+                // belongs to an old session (Ghost/Zombie Disconnect). We must ignore it.
+                val actualState = bluetoothManager.getConnectionState(device, BluetoothProfile.GATT)
+                if (actualState == BluetoothProfile.STATE_CONNECTED) {
+                    Log.w("GattServer", "Ignored GHOST Disconnect for $address (Manager says Connected)")
+                    return
+                }
+
                 Log.d("GattServer", "Disconnected: $address")
                 cleanupDeviceData(address)
                 scope.launch { _serverEvents.emit(ServerEvent.ClientDisconnected(device)) }
@@ -71,15 +93,11 @@ class GattServerHandler(
         }
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
-            val normalizedAddress = device.address.uppercase()
-            Log.d("GattServer", "MTU Changed for $normalizedAddress: $mtu")
+            val address = TransportAddress.from(device.address)
+            Log.d("GattServer", "MTU Changed for $address: $mtu")
 
             if (mtu < Config.BLE_MTU_MIN) {
-                Log.e("GattServer", "MTU too low ($mtu) for $normalizedAddress. Disconnecting.")
-                scope.launch {
-                    _serverEvents.emit(ServerEvent.Error(device, "MTU too low"))
-                    disconnect(device)
-                }
+                fail(device, ConnectionFailure.Io("MTU too low ($mtu < ${Config.BLE_MTU_MIN}) for $address"))
             }
         }
 
@@ -87,7 +105,8 @@ class GattServerHandler(
             device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
             preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
         ) {
-            Log.d("GattServer", "Descriptor Write Request: ${descriptor.uuid} from ${device.address}")
+            val address = TransportAddress.from(device.address)
+            Log.d("GattServer", "Descriptor Write Request: ${descriptor.uuid} from $address")
             if (responseNeeded) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
             }
@@ -101,6 +120,7 @@ class GattServerHandler(
 
             when (characteristic.uuid) {
                 Config.CHAR_DATA_UUID -> {
+                    // Audio Packet (Fast path)
                     scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, value, TransportDataType.AUDIO)) }
                 }
                 Config.CHAR_CONTROL_UUID -> handleControlMessage(device, value)
@@ -108,140 +128,179 @@ class GattServerHandler(
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-            // Signal the queue that the radio is free for the next packet
-            operationQueue.operationCompleted()
-
-            val normalizedAddress = device.address.uppercase()
-            if (pendingDisconnects.contains(normalizedAddress)) {
-                Log.i("GattServer", "Packet flushed. Closing connection for $normalizedAddress")
-                gattServer?.cancelConnection(device)
-                pendingDisconnects.remove(normalizedAddress)
+            val address = TransportAddress.from(device.address)
+            val cont = pendingNotifications.remove(address)
+            // CRITICAL: Check isActive. If the OperationQueue timed out, the continuation is cancelled.
+            if (cont?.isActive == true) {
+                if (status == BluetoothGatt.GATT_SUCCESS) cont.resume(Unit)
+                else cont.resumeWithException(Exception("Status: $status"))
             }
         }
-    }
-
-    companion object {
-        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 
     @SuppressLint("MissingPermission")
     fun startServer() {
         if (gattServer != null) return
-
-        gattServer = bluetoothManager.openGattServer(context, gattCallback)
-        setupService()
-        Log.d("GattServer", "GATT Server Started")
+        try {
+            gattServer = bluetoothManager.openGattServer(context, gattCallback)
+            if (gattServer == null) {
+                Log.e("GattServer", "openGattServer returned null (Bluetooth off?)")
+                return
+            }
+            setupService()
+            Log.d("GattServer", "GATT Server Started")
+        } catch (e: Exception) {
+            Log.e("GattServer", "Failed to start GATT Server", e)
+        }
     }
 
     private fun handleControlMessage(device: BluetoothDevice, data: ByteArray) {
-        val (type, payload) = PacketUtils.parseControlPacket(data) ?: return
+        val packet = Packet.fromBytes(data, isControlChar = true)
+        if (packet !is Packet.Control) return
 
-        when (type) {
-            PacketUtils.TYPE_PING -> Log.d("GattServer", "Received PING from ${device.address}")
-            PacketUtils.TYPE_CLIENT_HELLO -> {
-                Log.d("GattServer", "Received HELLO from ${device.address}. Sending Challenge.")
-                scope.launch { sendChallenge(device) }
+        when (packet.opCode) {
+            Protocol.OP_HELLO -> {
+                val address = TransportAddress.from(device.address)
+                Log.d("GattServer", "Received HELLO from $address. Sending Challenge.")
+                sendChallenge(device)
             }
-            PacketUtils.TYPE_AUTH_RESPONSE -> handleAuthResponse(device, payload)
+            Protocol.OP_AUTH_RESPONSE -> {
+                if (packet is Packet.Control.Raw) handleAuthResponse(device, packet.data)
+            }
             else -> {
                 // Pass the FULL PACKET (data) up, not just the payload.
-                // This allows the Controller to hash the exact bytes received.
                 scope.launch { _serverEvents.emit(ServerEvent.MessageReceived(device, data, TransportDataType.CONTROL)) }
             }
         }
     }
 
     @SuppressLint("MissingPermission")
-    private suspend fun sendChallenge(device: BluetoothDevice) {
+    private fun sendChallenge(device: BluetoothDevice) {
         val nonce = UUID.randomUUID().toString().substring(0, 8)
-        pendingChallenges[device.address.uppercase()] = nonce
-        val packet = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_CHALLENGE, nonce.toByteArray(Charsets.UTF_8))
-        notifyDevice(device, packet, TransportDataType.CONTROL)
+        val address = TransportAddress.from(device.address)
+        pendingChallenges[address] = nonce
+        val packet = Packet.Control.Raw(Protocol.OP_AUTH_CHALLENGE, nonce.toByteArray(Charsets.UTF_8))
+        sendTo(device, packet.toBytes(), TransportDataType.CONTROL)
     }
 
     @SuppressLint("MissingPermission")
     private fun handleAuthResponse(device: BluetoothDevice, payload: ByteArray) {
-        val address = device.address.uppercase()
+        val address = TransportAddress.from(device.address)
         val nonce = pendingChallenges.remove(address) ?: run {
             Log.w("GattServer", "Duplicate or invalid Auth Response from $address")
             return
         }
-        val code = currentAccessCode ?: return
+        val code = accessCodeProvider() ?: return
+        val clientNodeId = HandshakeLogic.verifyResponse(payload, code, nonce)
+        if (clientNodeId != null) {
+            Log.i("GattServer", "Authenticated Node: $clientNodeId")
 
-        val clientNodeId = ProtocolUtils.verifyHandshake(payload, code, nonce)
-        scope.launch {
-            if (clientNodeId != null) {
-                Log.i("GattServer", "Authenticated Node: $clientNodeId")
-                pendingChallenges.remove(address)
-                val successPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x01))
-                notifyDevice(device, successPacket, TransportDataType.CONTROL)
-                _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId))
-            } else {
-                Log.w("GattServer", "Auth Failed. Sending NACK.")
-                val failPacket = PacketUtils.createControlPacket(PacketUtils.TYPE_AUTH_RESULT, byteArrayOf(0x00))
-                pendingDisconnects.add(address)
-                notifyDevice(device, failPacket, TransportDataType.CONTROL)
-            }
+            // DEFUSE THE FUSE
+            connectionFuses.remove(address)?.cancel()
+
+            val successPacket = Packet.Control.Raw(Protocol.OP_AUTH_RESULT, byteArrayOf(0x01))
+            sendTo(device, successPacket.toBytes(), TransportDataType.CONTROL)
+            scope.launch { _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId)) }
+        } else {
+            Log.w("GattServer", "Auth Failed. Sending NACK.")
+            val failPacket = Packet.Control.Raw(Protocol.OP_AUTH_RESULT, byteArrayOf(0x00))
+            sendTo(device, failPacket.toBytes(), TransportDataType.CONTROL)
+            fail(device, ConnectionFailure.AuthRejected("Wrong Access Code"))
         }
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun sendTo(device: BluetoothDevice, data: ByteArray, type: TransportDataType) {
-        // DUMB PIPE: We no longer wrap CONTROL packets here.
-        // The MeshController is responsible for the wire format.
-        notifyDevice(device, data, type)
-    }
-
-    @SuppressLint("MissingPermission")
-    private suspend fun notifyDevice(device: BluetoothDevice, data: ByteArray, type: TransportDataType) {
+    fun sendTo(device: BluetoothDevice, data: ByteArray, type: TransportDataType) {
         val server = gattServer ?: return
         val service = server.getService(Config.APP_SERVICE_UUID) ?: return
         val uuid = if (type == TransportDataType.AUDIO) Config.CHAR_DATA_UUID else Config.CHAR_CONTROL_UUID
         val char = service.getCharacteristic(uuid) ?: return
 
-        // Enqueue the operation. The Queue handles serialization and prioritization.
-        operationQueue.enqueue(type) {
-            val maxAttempts = if (type == TransportDataType.CONTROL) Config.GATT_RETRY_ATTEMPTS else 1
+        // LOOKUP: Get the specific queue for this device
+        val address = TransportAddress.from(device.address)
+        val queue = clientQueues[address] ?: run {
+            Log.w("GattServer", "Attempted to send to $address but no queue exists (Disconnected?)")
+            return
+        }
 
-            repeat(maxAttempts) {
-                val success = server.notifyCompat(device, char, data)
-
-                if (success) {
-                    // Success! The stack accepted the packet.
-                    // We now wait for onNotificationSent to call operationCompleted().
-                    return@enqueue
+        queue.enqueue(type) {
+            try {
+                val maxAttempts = if (type == TransportDataType.CONTROL) Config.GATT_RETRY_ATTEMPTS else 1
+                retryWithBackoff(maxAttempts, Config.GATT_RETRY_COOLDOWN) {
+                    notify(server, device, char, data, type)
                 }
-
-                // Stack busy. If Control, wait and retry.
-                if (type == TransportDataType.CONTROL) delay(Config.GATT_RETRY_COOLDOWN)
+            } catch (t: Throwable) {
+                handleNotifyError(t, device, type)
             }
+        }
+    }
 
-            // If we get here, we failed to send.
-            // Since notifyCompat returned false, onNotificationSent will NEVER fire.
-            // We must manually unblock the queue.
-            if (type == TransportDataType.CONTROL) {
-                Log.e("GattServer", "CRITICAL: FAILED to write CONTROL to $uuid after $maxAttempts attempts.")
-            } else {
-                Log.w("GattServer", "Dropped Audio Packet (Stack Busy)")
+    /**
+     * Encapsulates the "Suspend -> Resume" logic.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun notify(
+        server: BluetoothGattServer,
+        device: BluetoothDevice,
+        char: BluetoothGattCharacteristic,
+        data: ByteArray,
+        type: TransportDataType
+    ) {
+        // Determine Reliability:
+        // CONTROL = Indication (ACK required) -> confirm = true
+        // AUDIO = Notification (No ACK) -> confirm = false
+        val confirm = (type == TransportDataType.CONTROL)
+        val address = TransportAddress.from(device.address)
+
+        if (confirm) {
+            // SUSPENDING PATH (Control/Indication)
+            // We must wait for onNotificationSent to ensure the stack is ready for the next one.
+            suspendCancellableCoroutine { cont ->
+                pendingNotifications[address] = cont
+                val success = notifyCompat(server, device, char, data, confirm)
+                if (!success) {
+                    pendingNotifications.remove(address)
+                    if (cont.isActive) cont.resumeWithException(Exception("Stack Busy"))
+                }
+                // If success == true, we wait for onNotificationSent
             }
-            operationQueue.operationCompleted()
+        } else {
+            // FIRE-AND-FORGET PATH (Audio/Notification)
+            // We do not wait for callbacks for audio to prevent blocking the queue on slow receivers.
+            val success = notifyCompat(server, device, char, data, confirm)
+            if (!success) throw Exception("Stack Busy")
+        }
+    }
+
+    private fun handleNotifyError(t: Throwable, device: BluetoothDevice, type: TransportDataType) {
+        // If any packet times out, it's fatal. Because it can cause desync in the BLE operation queue.
+        if (t is CancellationException) {
+            fail(device, ConnectionFailure.Timeout("Notify Characteristic Timeout: ${t.message}"))
+            throw t
+        }
+
+        if (type == TransportDataType.CONTROL) {
+            fail(device, ConnectionFailure.Io("Notify Failed: ${t.message}"))
+        } else {
+            Log.w("GattServer", "Dropped Audio Packet (Stack Busy)")
         }
     }
 
     @SuppressLint("MissingPermission")
-    @Suppress("DEPRECATION")
-    private fun BluetoothGattServer.notifyCompat(
+    private fun notifyCompat(
+        server: BluetoothGattServer,
         device: BluetoothDevice,
-        characteristic: BluetoothGattCharacteristic,
-        data: ByteArray
+        char: BluetoothGattCharacteristic,
+        data: ByteArray,
+        confirm: Boolean
     ): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notifyCharacteristicChanged(device, characteristic, false, data) == BluetoothStatusCodes.SUCCESS
+            server.notifyCharacteristicChanged(device, char, confirm, data) == BluetoothStatusCodes.SUCCESS
         } else {
-            // This assignment is now safe because BleOperationQueue ensures
-            // only one coroutine executes this block at a time.
-            characteristic.value = data
-            notifyCharacteristicChanged(device, characteristic, false)
+            @Suppress("DEPRECATION")
+            char.value = data
+            @Suppress("DEPRECATION")
+            server.notifyCharacteristicChanged(device, char, confirm)
         }
     }
 
@@ -249,15 +308,19 @@ class GattServerHandler(
     private fun setupService() {
         val service = BluetoothGattService(Config.APP_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
 
-        val dataChar = BluetoothGattCharacteristic(Config.CHAR_DATA_UUID,
+        val dataChar = BluetoothGattCharacteristic(
+            Config.CHAR_DATA_UUID,
             BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-            BluetoothGattCharacteristic.PERMISSION_WRITE)
+            BluetoothGattCharacteristic.PERMISSION_WRITE
+        )
         dataChar.addDescriptor(BluetoothGattDescriptor(CCCD_UUID, BluetoothGattDescriptor.PERMISSION_WRITE or BluetoothGattDescriptor.PERMISSION_READ))
         service.addCharacteristic(dataChar)
 
-        val controlChar = BluetoothGattCharacteristic(Config.CHAR_CONTROL_UUID,
+        val controlChar = BluetoothGattCharacteristic(
+            Config.CHAR_CONTROL_UUID,
             BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-            BluetoothGattCharacteristic.PERMISSION_WRITE)
+            BluetoothGattCharacteristic.PERMISSION_WRITE
+        )
         controlChar.addDescriptor(BluetoothGattDescriptor(CCCD_UUID, BluetoothGattDescriptor.PERMISSION_WRITE or BluetoothGattDescriptor.PERMISSION_READ))
         service.addCharacteristic(controlChar)
 
@@ -266,27 +329,41 @@ class GattServerHandler(
 
     @SuppressLint("MissingPermission")
     fun disconnect(device: BluetoothDevice) {
-        Log.d("GattServer", "Requesting disconnect for ${device.address}")
-        gattServer?.cancelConnection(device)
+        val address = TransportAddress(device.address)
+        Log.d("GattServer", "Requesting disconnect for $address")
+        try {
+            gattServer?.cancelConnection(device)
+        } catch (_: Exception) {}
+        cleanupDeviceData(address)
     }
 
     @SuppressLint("MissingPermission")
     fun stopServer() {
-        operationQueue.shutdown()
         try {
             gattServer?.close()
         } catch (_: Exception) {}
         gattServer = null
+        clientQueues.values.forEach { it.shutdown() }
         cleanupDeviceData(null)
     }
 
-    private fun cleanupDeviceData(address: String?) {
+    private fun cleanupDeviceData(address: TransportAddress?) {
         if (address != null) {
+            clientQueues.remove(address)?.shutdown()
             pendingChallenges.remove(address)
-            pendingDisconnects.remove(address)
+            pendingNotifications.remove(address)?.cancel()
+            connectionFuses.remove(address)?.cancel()
         } else {
+            clientQueues.clear()
             pendingChallenges.clear()
-            pendingDisconnects.clear()
+            pendingNotifications.clear()
+            connectionFuses.clear()
         }
+    }
+
+    private fun fail(device: BluetoothDevice, reason: ConnectionFailure) {
+        Log.e("GattServer", "Error: $reason")
+        scope.launch { _serverEvents.emit(ServerEvent.Error(device, reason)) }
+        disconnect(device)
     }
 }

@@ -1,446 +1,501 @@
 package com.denizetkar.walkietalkieapp.logic
 
-import android.content.Context
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
-import com.denizetkar.walkietalkieapp.network.AdvertisingConfig
-import com.denizetkar.walkietalkieapp.network.BleDriver
-import com.denizetkar.walkietalkieapp.network.BleDriverEvent
-import com.denizetkar.walkietalkieapp.network.DiscoveredGroup
-import com.denizetkar.walkietalkieapp.network.TransportDataType
-import com.denizetkar.walkietalkieapp.network.TransportNode
+import com.denizetkar.walkietalkieapp.domain.*
+import com.denizetkar.walkietalkieapp.protocol.Packet
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import uniffi.walkie_talkie_engine.PacketTransport
 import uniffi.walkie_talkie_engine.initLogger
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.max
+import kotlin.random.Random
+import kotlin.random.nextUInt
 
-sealed class EngineState {
-    data object Idle : EngineState()
-    data object Discovering : EngineState()
-    data class Joining(val groupName: String) : EngineState()
-    data class RadioActive(val groupName: String, val peerCount: Int) : EngineState()
-}
-
+/**
+ * The Brain of the Mesh.
+ *
+ * ARCHITECTURE (Actor Model):
+ * This class isolates state mutations to a single sequential loop.
+ * - INPUT:  [dispatch] enqueues [Action]s into a non-blocking Channel.
+ * - LOGIC:  [processingLoop] consumes actions one by one.
+ * - STATE:  [AppState] is the Single Source of Truth, updated only inside the loop.
+ * - OUTPUT: [Effect]s are emitted to drivers/UI.
+ */
 class MeshController(
-    context: Context,
-    private val driver: BleDriver,
-    private val scope: CoroutineScope,
-    private val ownNodeId: UInt
+    // Scope is required to launch the Actor loop. It should match the Service lifecycle.
+    scope: CoroutineScope
 ) {
-    // --- State ---
-    private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
-    val state = _state.asStateFlow()
+    // --- State (Single Source of Truth) ---
+    // Start with a random ID, but it will be rotated on every session start.
+    private val _state = MutableStateFlow(AppState(myself = Random.nextUInt()))
+    val state: StateFlow<AppState> = _state.asStateFlow()
 
-    // Protection against parallel state transitions
-    private val stateMutex = Mutex()
+    // --- Effects (Outputs to the World) ---
+    private val _effects = MutableSharedFlow<Effect>(extraBufferCapacity = 64)
+    val effects: SharedFlow<Effect> = _effects.asSharedFlow()
 
-    private val _discoveredGroups = MutableStateFlow<List<DiscoveredGroup>>(emptyList())
-    val discoveredGroups = _discoveredGroups.asStateFlow()
-    private val foundGroupsMap = ConcurrentHashMap<String, DiscoveredGroup>()
+    // --- Actor Input Channel ---
+    // UNLIMITED capacity ensures we never block the sender (UI/Driver/Audio Threads).
+    // The consumer loop is fast enough (CPU bound) to drain this instantly.
+    private val actionChannel = Channel<Action>(Channel.UNLIMITED)
 
-    // --- Logic & Subsystems ---
-    private val topology = TopologyEngine(ownNodeId)
-    private val seenPackets = ConcurrentHashMap<Int, Long>()
-    private val lastHeardFrom = ConcurrentHashMap<UInt, Long>()
+    // --- Internal Logic State (Confined to processingLoop) ---
+    /**
+     * Deduplication Cache. Maps PacketHash -> TimestampMs.
+     * Used to ignore packets we have already processed or relayed.
+     */
+    private val packetCache = mutableMapOf<Int, Long>()
 
-    // Cache to prevent spamming the driver with identical advertising requests
-    private var lastAdvertisingConfig: AdvertisingConfig? = null
+    /**
+     * Liveness Tracker. Maps PeerId -> LastHeardTimestampMs.
+     * If a peer stays silent too long, we disconnect them.
+     */
+    private val peerLiveness = mutableMapOf<PeerId, Long>()
 
-    // Define Transport Callback (Rust -> Kotlin -> BLE)
-    private val packetTransport = object : PacketTransport {
-        override fun sendPacket(data: ByteArray) {
-            // Audio packets are already formatted by Rust (Seq + NodeID + Opus)
-            // We just send them as AUDIO type.
-            broadcastPayload(data, TransportDataType.AUDIO)
-        }
-    }
-
-    // Voice Manager (Single Source of Truth for Audio)
-    private val voiceManager = VoiceManager(context, packetTransport, ownNodeId, scope)
-
-    // Exposed State for UI
-    val availableInputs = voiceManager.availableInputs
-    val availableOutputs = voiceManager.availableOutputs
-    val selectedInputId = voiceManager.selectedInputId
-    val selectedOutputId = voiceManager.selectedOutputId
-
-    // --- Jobs ---
-    private var heartbeatJob: Job? = null
-    private var cleanupJob: Job? = null
-    private var packetCleanupJob: Job? = null
-    private var livenessJob: Job? = null
+    // Heartbeat State
+    private var lastHeartbeatSent = 0L
+    private var lastRootSeen = 0L
 
     init {
-        try { initLogger() } catch (_: Exception) {}
-        scope.launch { driver.events.collect { handleDriverEvent(it) } }
-        scope.launch { driver.connectedPeers.collect { handlePeerListChange(it) } }
-        startPacketCleanup()
-    }
-
-    // --- Public API ---
-
-    fun checkSystemRequirements(): Result<Unit> = driver.validateCapabilities()
-
-    fun startGroupScan() {
-        Log.d("MeshController", "Action: Start Group Scan")
-        scope.launch { transitionTo(EngineState.Discovering) }
-    }
-
-    fun stopGroupScan() {
-        scope.launch {
-            if (_state.value is EngineState.Discovering) {
-                transitionTo(EngineState.Idle)
-            }
-        }
-    }
-
-    fun createGroup(name: String, code: String) {
-        Log.d("MeshController", "Action: Create Group $name")
-        driver.setCredentials(code, ownNodeId)
-        scope.launch { transitionTo(EngineState.RadioActive(name, 0)) }
-    }
-
-    fun joinGroup(name: String, code: String) {
-        Log.d("MeshController", "Action: Join Group $name")
-        driver.setCredentials(code, ownNodeId)
-        scope.launch { transitionTo(EngineState.Joining(name)) }
-    }
-
-    fun leave() {
-        Log.d("MeshController", "Action: Leave")
-        scope.launch { transitionTo(EngineState.Idle) }
-    }
-
-    fun startTalking() = voiceManager.setMicrophoneEnabled(true)
-    fun stopTalking() = voiceManager.setMicrophoneEnabled(false)
-
-    fun setInputDevice(id: Int) = voiceManager.setInputDevice(id)
-    fun setOutputDevice(id: Int) = voiceManager.setOutputDevice(id)
-
-    // --- State Machine ---
-
-    private suspend fun transitionTo(newState: EngineState) {
-        // CRITICAL FIX: Calculate the transition inside the lock, but execute side effects OUTSIDE.
-        // This prevents Deadlock/Livelock where driver events (needing lock) are blocked by
-        // driver.stop() (holding lock).
-        val (oldState, stateChanged) = stateMutex.withLock {
-            val old = _state.value
-            if (old == newState) return@withLock (old to false)
-            _state.value = newState
-            Log.i("MeshController", "State Change: $old -> $newState")
-            (old to true)
-        }
-        if (!stateChanged) return
-
-        // Reset advertising cache on state change to ensure fresh config is applied
-        lastAdvertisingConfig = null
-
-        // A. Teardown Old State (Suspending functions here are now safe)
-        if (oldState is EngineState.RadioActive) stopRadioLogic()
-        if (oldState is EngineState.Discovering || oldState is EngineState.Joining) {
-            driver.stopScanning()
-            stopGroupCleanup()
+        // Initialize Rust Logger to pipe Rust logs to Android Logcat
+        try {
+            initLogger()
+        } catch (e: Exception) {
+            Log.w("MeshController", "Could not init Rust logger (might be already init)", e)
         }
 
-        // B. Setup New State
-        when (newState) {
-            is EngineState.Idle -> {
-                driver.stop()
-                foundGroupsMap.clear()
-                _discoveredGroups.value = emptyList()
-            }
-            is EngineState.Discovering -> {
-                foundGroupsMap.clear()
-                _discoveredGroups.value = emptyList()
-                startGroupCleanup()
-                driver.startScanning()
-            }
-            is EngineState.Joining -> {
-                driver.startScanning()
-            }
-            is EngineState.RadioActive -> {
-                startRadioLogic(newState.groupName)
-            }
+        // START THE ACTOR LOOP
+        // We use a dedicated Dispatcher for Logic to ensure it doesn't get starved by UI or blocking IO.
+        scope.launch(Dispatchers.Default) {
+            processingLoop()
         }
     }
 
     /**
-     * Hard Destroy. Called from Service.onDestroy().
-     * This method must be synchronous (non-suspending) and fast.
+     * Public API: Enqueues an action for processing.
+     * This is non-blocking and thread-safe.
      */
-    fun destroy() {
-        Log.d("MeshController", "CMD: Destroy (Hard)")
-
-        // 1. Cancel Local Jobs immediately.
-        heartbeatJob?.cancel()
-        livenessJob?.cancel()
-        cleanupJob?.cancel()
-        packetCleanupJob?.cancel()
-
-        // 2. Clean up VoiceManager
-        voiceManager.destroy()
-
-        // 3. Clean up BLE Driver
-        driver.destroy()
-    }
-
-    // --- Radio Logic ---
-
-    private fun startRadioLogic(groupName: String) {
-        // 1. Audio Setup
-        voiceManager.start()
-
-        // 2. Start Concurrent Background Jobs
-        livenessJob = scope.launch { runLivenessCheck() }
-        heartbeatJob = scope.launch { runHeartbeatLoop(groupName) }
-
-        // 3. Start Scanning (Always on to receive Heartbeats)
-        driver.startScanning()
-
-        // 4. Initial Advertising
-        refreshAdvertising(groupName)
+    fun dispatch(action: Action) {
+        val result = actionChannel.trySend(action)
+        if (result.isFailure) {
+            Log.e("MeshController", "Failed to enqueue action: ${action.javaClass.simpleName}")
+        }
     }
 
     /**
-     * Soft Stop. Called during State Transitions.
-     * Suspends to allow jobs to finish gracefully.
+     * The Main Event Loop.
+     * Consumes actions sequentially. No Mutex needed because this block
+     * is the ONLY place where internal state is mutated.
      */
-    private suspend fun stopRadioLogic() {
-        // 1. Cancel Background Jobs
-        heartbeatJob?.cancel()
-        livenessJob?.cancel()
-        joinAll(heartbeatJob, livenessJob)
+    private suspend fun processingLoop() {
+        for (action in actionChannel) {
+            val currentState = _state.value
 
-        // 2. Teardown Audio
-        voiceManager.stop()
+            try {
+                when (action) {
+                    // =================================================================
+                    // USER INTENTS (UI -> Core)
+                    // =================================================================
 
-        // 3. Teardown Hardware
-        driver.stop()
+                    is Action.StartScanning -> {
+                        Log.d("MeshController", "CMD: Start Scanning")
+                        _state.update { it.copy(isBrowsing = true) }
+                    }
+                    is Action.StopScanning -> {
+                        Log.d("MeshController", "CMD: Stop Scanning")
+                        _state.update { it.copy(isBrowsing = false) }
+                    }
+
+                    is Action.CreateGroup -> {
+                        Log.i("MeshController", "USER ACTION: Create Group '${action.name}'")
+                        // ROTATE ID: To reset receiver Jitter Buffers
+                        val newNodeId = Random.nextUInt()
+                        // We are hosting, so isJoinAttempt = false (No timeout)
+                        val session = SessionContext(action.name, action.code, isJoinAttempt = false)
+                        _state.update {
+                            it.copy(
+                                myself = newNodeId,
+                                session = session,
+                                // When creating, I am the Root of a new mesh.
+                                network = NetworkTopology.Standalone(newNodeId),
+                                // Implicitly stop browsing when live
+                                isBrowsing = false
+                            )
+                        }
+                        resetInternalTimers()
+                    }
+
+                    is Action.JoinGroup -> {
+                        Log.i("MeshController", "USER ACTION: Join Group '${action.name}'")
+                        // ROTATE ID: To reset receiver Jitter Buffers
+                        val newNodeId = Random.nextUInt()
+                        // We are joining, so isJoinAttempt = true (Global Timeout active)
+                        val session = SessionContext(action.name, action.code, isJoinAttempt = true)
+                        _state.update {
+                            it.copy(
+                                myself = newNodeId,
+                                session = session,
+                                // When joining, I assume Standalone until I hear a Heartbeat from the group.
+                                network = NetworkTopology.Standalone(newNodeId),
+                                isBrowsing = false,
+                                joinError = null // Clear previous errors
+                            )
+                        }
+                        resetInternalTimers()
+                    }
+
+                    is Action.JoinGroupFailed -> {
+                        Log.e("MeshController", "Join Failed: ${action.reason}")
+                        _state.update {
+                            it.copy(
+                                session = null,
+                                joinError = action.reason
+                            )
+                        }
+                    }
+
+                    is Action.LeaveGroup -> {
+                        Log.i("MeshController", "USER ACTION: Leave Group")
+                        // 1. Reset State completely (Keep same ID for now, it rotates on next join)
+                        _state.update { AppState(myself = it.myself) }
+
+                        // 2. Clear internal caches to prevent state bleeding if we rejoin
+                        peerLiveness.clear()
+                        packetCache.clear()
+
+                        // 3. UI Feedback
+                        emit(Effect.ShowToast(action.reason))
+                    }
+
+                    // =================================================================
+                    // AUDIO CONTROLS (UI/Mic -> Core)
+                    // =================================================================
+
+                    is Action.SetMic -> {
+                        // Only allow toggling mic if we are in a session
+                        if (currentState.session != null) {
+                            Log.d("MeshController", "Mic State Changed: ${action.enabled}")
+                            _state.update { it.copy(isMicEnabled = action.enabled) }
+                        }
+                    }
+
+                    is Action.SetAudioInput -> {
+                        Log.i("MeshController", "Audio Input Selected: ${action.id}")
+                        _state.update { it.copy(selectedInputId = action.id) }
+                    }
+
+                    is Action.SetAudioOutput -> {
+                        Log.i("MeshController", "Audio Output Selected: ${action.id}")
+                        _state.update { it.copy(selectedOutputId = action.id) }
+                    }
+
+                    is Action.AudioDevicesUpdated -> {
+                        Log.d("MeshController", "Audio Devices Updated: ${action.inputs.size} Mics, ${action.outputs.size} Speakers")
+                        _state.update {
+                            it.copy(availableMics = action.inputs, availableSpeakers = action.outputs)
+                        }
+                    }
+
+                    // =================================================================
+                    // NETWORK EVENTS (Driver -> Core)
+                    // =================================================================
+
+                    is Action.PeerConnected -> {
+                        Log.i("MeshController", "PEER CONNECTED: ${action.peerId}")
+
+                        // FIX (Yo-Yo Behavior):
+                        // Once we successfully connect to ANY peer, we consider the "Join Attempt" successful.
+                        // We clear the flag so the 15s Global Timeout in handleHeartbeatTick no longer applies.
+                        // This allows the user to lose connections (0 peers) without the session being killed.
+                        val updatedSession = currentState.session?.let {
+                            if (it.isJoinAttempt) it.copy(isJoinAttempt = false) else it
+                        }
+
+                        _state.update {
+                            it.copy(
+                                connectedPeers = it.connectedPeers + action.peerId,
+                                session = updatedSession
+                            )
+                        }
+                        // Mark them as alive immediately so they don't get reaped by the next cleanup tick
+                        peerLiveness[action.peerId] = System.currentTimeMillis()
+                    }
+
+                    is Action.PeerDisconnected -> {
+                        Log.i("MeshController", "PEER DISCONNECTED: ${action.peerId}")
+                        _state.update { it.copy(connectedPeers = it.connectedPeers - action.peerId) }
+                        peerLiveness.remove(action.peerId)
+                    }
+
+                    is Action.PacketReceived -> {
+                        // If source is known, this packet proves they are alive
+                        handleIncomingPacket(currentState, action.data, action.source, action.isControl)
+                    }
+
+                    is Action.AdvertisementSeen -> {
+                        handleAdvertisement(currentState, action.group)
+                    }
+
+                    is Action.AudioDataCaptured -> {
+                        // Flood local audio to the mesh
+                        if (currentState.isMicEnabled) {
+                            // CRITICAL: Cache our own packet so we don't process our own echo
+                            markPacketAsSeen(action.data)
+                            // Audio is NOT Control (Unreliable/Fast)
+                            emit(Effect.Transmit(action.data, TransmissionStrategy.FLOOD, isControl = false, excludedSource = null))
+                        }
+                    }
+
+                    // =================================================================
+                    // SYSTEM TICKS (Timers -> Core)
+                    // =================================================================
+
+                    is Action.HeartbeatTick -> handleHeartbeatTick()
+                    is Action.CleanupTick -> handleCleanup()
+                }
+            } catch (e: Exception) {
+                Log.e("MeshController", "Error processing action ${action.javaClass.simpleName}", e)
+            }
+        }
     }
 
-    private suspend fun CoroutineScope.runLivenessCheck() {
-        while (isActive) {
-            delay(Config.CLEANUP_PERIOD)
-            val now = System.currentTimeMillis()
-            val peers = driver.connectedPeers.value
-            for (peerId in peers) {
-                val lastTime = lastHeardFrom[peerId] ?: now
-                if (now - lastTime > Config.PEER_CONNECT_TIMEOUT) {
-                    Log.w("MeshController", "Peer $peerId timed out. Disconnecting.")
-                    driver.disconnectNode(peerId)
-                    lastHeardFrom.remove(peerId)
+    // --- Logic Implementation ---
+
+    private suspend fun handleIncomingPacket(state: AppState, data: ByteArray, source: PeerId?, isControl: Boolean) {
+        // ACTOR MODEL GUARD:
+        // Due to mailbox lag, we might receive a packet AFTER the user has clicked "Leave Group"
+        // but BEFORE the driver has fully shut down.
+        // If we are not in a session, we must ignore all traffic to prevent state corruption.
+        if (state.session == null) return
+
+        // 1. Liveness Update
+        if (source != null) {
+            peerLiveness[source] = System.currentTimeMillis()
+        }
+
+        // 2. Deduplication (Stop Flooding Loops)
+        if (isPacketSeen(data)) return
+        markPacketAsSeen(data)
+
+        // 3. Parse Packet
+        val packet = Packet.fromBytes(data, isControlChar = isControl) ?: return
+
+        // 4. Process & Relay
+        when (packet) {
+            is Packet.Control.Heartbeat -> {
+                // Only relay if the heartbeat contained NEW topology information
+                val changedTopology = handleHeartbeat(packet)
+                if (changedTopology) {
+                    // Relay Logic: Increment Hops and Flood
+                    val newPacket = packet.copy(hops = packet.hops + 1)
+                    val bytes = newPacket.toBytes()
+                    markPacketAsSeen(bytes) // Cache the relayed version too
+                    // Heartbeat IS Control (Reliable)
+                    // Echo back to sender as well to update the liveness timeout
+                    emit(Effect.Transmit(bytes, TransmissionStrategy.FLOOD, isControl = true, excludedSource = null))
                 }
             }
-        }
-    }
-
-    private suspend fun CoroutineScope.runHeartbeatLoop(groupName: String) {
-        while (isActive) {
-            if (topology.checkTimeout()) refreshAdvertising(groupName)
-
-            // generateHeartbeat returns the PAYLOAD (NetID, Seq, Hops)
-            val payload = topology.generateHeartbeat()
-            if (payload != null) {
-                // WRAPPING: We pass the payload and the OpCode.
-                // broadcastPayload will handle the wrapping and hashing.
-                broadcastPayload(payload, TransportDataType.CONTROL, PacketUtils.TYPE_HEARTBEAT)
+            is Packet.Audio -> {
+                // Play Audio
+                emit(Effect.RenderAudio(data))
+                // Relay Logic: Audio is dumb flood. Always relay unique packets.
+                emit(Effect.Transmit(data, TransmissionStrategy.FLOOD, isControl = false, excludedSource = source))
             }
-            delay(Config.HEARTBEAT_INTERVAL)
+            else -> {
+                // Unknown or raw packet. No relaying for now.
+            }
         }
     }
 
-    private fun refreshAdvertising(groupName: String) {
-        val topo = topology.getCurrentState()
-        val isAvailable = driver.connectedPeers.value.size < Config.MAX_PEERS
-        val config = AdvertisingConfig(groupName, ownNodeId, topo.currentNetworkId, topo.hopsToRoot, isAvailable)
+    /**
+     * Processes a Heartbeat.
+     * Returns TRUE if our topology state changed (or sequence updated), indicating we should relay this info.
+     */
+    private fun handleHeartbeat(hb: Packet.Control.Heartbeat): Boolean {
+        val current = _state.value.network
+        var changed = false
 
-        // OPTIMIZATION: If the topology hasn't changed, don't wake up the radio.
-        // This filters out the 1Hz heartbeat updates where only the Sequence Number changed.
-        if (config == lastAdvertisingConfig) {
-            return
+        // Rule 1: Always prefer a higher Network ID (Merge Island)
+        if (hb.netId > current.rootId) {
+            Log.i("MeshController", "Topology: Found Better Root ${hb.netId}. Merging.")
+            _state.update {
+                it.copy(network = NetworkTopology.Mesh(hb.netId, hb.hops + 1, hb.seq))
+            }
+            lastRootSeen = System.currentTimeMillis()
+            changed = true
         }
-        lastAdvertisingConfig = config
+        // Rule 2: If same Network ID, update if Sequence is newer (Keepalive)
+        else if (hb.netId == current.rootId) {
+            if (current is NetworkTopology.Mesh && hb.seq > current.rootSeq) {
+                _state.update {
+                    it.copy(network = NetworkTopology.Mesh(hb.netId, hb.hops + 1, hb.seq))
+                }
+                changed = true
+            }
+            lastRootSeen = System.currentTimeMillis()
+        }
 
-        driver.startAdvertising(config)
+        return changed
     }
 
-    private fun broadcastPayload(payload: ByteArray, type: TransportDataType, controlOpCode: Byte? = null) {
-        // WRAPPING LOGIC:
-        // If it's a Control packet and we have an OpCode, wrap it.
-        // Otherwise (Audio or already wrapped), send as is.
-        val packet = if (type == TransportDataType.CONTROL && controlOpCode != null) {
-            PacketUtils.createControlPacket(controlOpCode, payload)
+    private suspend fun handleAdvertisement(state: AppState, group: DiscoveredGroup) {
+        // 1. Discovery Logic (UI List)
+        // We group by NAME. If we see "Hiking" again, we check if it's a better signal.
+        val existing = state.discoveredGroups.find { it.name == group.name }
+
+        val updatedGroup = if (existing == null) {
+            // New Group found
+            group
         } else {
-            payload
+            // Existing Group found.
+            // If it's the SAME device (MAC), always update (RSSI might fluctuate).
+            if (existing.id == group.id) {
+                group
+            }
+            // If it's a DIFFERENT device but has BETTER signal, switch to it.
+            else if (group.rssi > existing.rssi) {
+                group
+            }
+            // Otherwise (Different device, worse signal), keep existing but refresh timestamp.
+            else {
+                existing.copy(lastSeen = System.currentTimeMillis())
+            }
         }
 
-        // HASHING: Hash the EXACT bytes we are putting on the air.
-        // This prevents us from processing our own echoes (relayed back by neighbors).
-        markPacketAsSeen(packet)
-        scope.launch { driver.broadcast(packet, type) }
+        // Rebuild list: Remove old entry with same name, add new/updated entry, sort.
+        val newGroups = (state.discoveredGroups.filter { it.name != group.name } + updatedGroup)
+            .sortedByDescending { it.rssi }
+
+        _state.update { it.copy(discoveredGroups = newGroups) }
+
+        // 2. Auto-Connect Logic
+        val session = state.session ?: return
+        // We only care about groups that match our current Session Name.
+        if (group.name != session.groupName) return
+        if (!calculateConnectionStrategy(state, group)) return
+
+        Log.d("MeshController", "Strategy: Decided to connect to ${group.id} (NetID: ${group.netId})")
+        emit(Effect.ConnectTo(group.id, group.netId, state.myself))
     }
 
-    // --- Cleanup Helpers ---
+    /**
+     * The Convergence Logic.
+     * Determines if we should initiate a connection to a discovered peer.
+     */
+    private fun calculateConnectionStrategy(state: AppState, target: DiscoveredGroup): Boolean {
+        // Don't connect to myself (shouldn't happen with NodeID check, but safety first)
+        if (target.netId == state.myself) return false
 
-    private fun startGroupCleanup() {
-        cleanupJob?.cancel()
-        cleanupJob = scope.launch {
-            while (isActive) {
-                delay(Config.CLEANUP_PERIOD)
-                val now = System.currentTimeMillis()
-                val removed = foundGroupsMap.values.removeIf { now - it.lastSeen > Config.GROUP_ADVERTISEMENT_TIMEOUT }
-                if (removed) {
-                    _discoveredGroups.value = foundGroupsMap.values.sortedByDescending { it.highestRssi }
-                }
+        // Don't connect if already connected
+        if (state.connectedPeers.contains(target.netId)) return false
+
+        // PRIORITY 1: Convergence (Island Merging)
+        // If they have a higher Network ID, they are a "Better Root".
+        // We ALWAYS want to connect to them, even if we are full.
+        if (target.netId > state.network.rootId) return true
+
+        // PRIORITY 2: Fill Stable Slots (up to 3)
+        // If we are lonely, connect to anyone to form a mesh.
+        // NOTE: If we just joined a group, connectedPeers is empty, so this returns TRUE.
+        if (state.connectedPeers.size < Config.TARGET_PEERS) return true
+
+        return false
+    }
+
+    private suspend fun handleHeartbeatTick() {
+        val state = _state.value
+        val session = state.session ?: return
+        val now = System.currentTimeMillis()
+        val myId = state.myself
+
+        // 1. GLOBAL JOIN TIMEOUT CHECK
+        // Only applies if we are trying to join (not hosting) AND we have no peers yet.
+        // NOTE: Because of the fix in PeerConnected, isJoinAttempt is cleared upon first connection.
+        // So this block is effectively disabled once we have successfully joined the mesh at least once.
+        if (session.isJoinAttempt && state.connectedPeers.isEmpty()) {
+            if (now - session.startTime > Config.GROUP_JOIN_TIMEOUT) {
+                Log.w("MeshController", "Join Timeout: Could not find peers in ${Config.GROUP_JOIN_TIMEOUT}ms")
+                _state.update { it.copy(session = null, joinError = "Connection Timed Out") }
+                return
+            }
+        }
+
+        // 2. Timeout Check (Self-Healing)
+        // If we haven't heard from Root in a while, we declare independence.
+        if (state.network is NetworkTopology.Mesh) {
+            if (now - lastRootSeen > Config.HEARTBEAT_TIMEOUT) {
+                Log.w("MeshController", "Topology: Root ${state.network.rootId} Timed Out. Reverting to Standalone.")
+                _state.update { it.copy(network = NetworkTopology.Standalone(myId)) }
+            }
+        }
+
+        // 3. Transmit Heartbeat (Only if I am Root)
+        // If I am Standalone or I am the Root of the Mesh, I generate the heartbeat.
+        if (state.network is NetworkTopology.Standalone || state.network.rootId == myId) {
+            if (now - lastHeartbeatSent > Config.HEARTBEAT_INTERVAL) {
+                // Generate new sequence
+                val currentSeq = (state.network as? NetworkTopology.Mesh)?.rootSeq ?: 0
+                val newSeq = currentSeq + 1
+
+                // Update local state
+                _state.update { it.copy(network = NetworkTopology.Mesh(myId, 0, newSeq)) }
+
+                // Transmit
+                val hb = Packet.Control.Heartbeat(myId, newSeq, 0)
+                val bytes = hb.toBytes()
+                // CRITICAL: Cache our own heartbeat
+                markPacketAsSeen(bytes)
+                // Heartbeat IS Control (Reliable)
+                emit(Effect.Transmit(bytes, TransmissionStrategy.FLOOD, isControl = true, excludedSource = null))
+
+                lastHeartbeatSent = now
             }
         }
     }
 
-    private fun stopGroupCleanup() {
-        cleanupJob?.cancel()
-        cleanupJob = null
-    }
+    private suspend fun handleCleanup() {
+        val now = System.currentTimeMillis()
 
-    private fun startPacketCleanup() {
-        packetCleanupJob?.cancel()
-        packetCleanupJob = scope.launch {
-            while (isActive) {
-                delay(Config.CLEANUP_PERIOD)
-                val now = System.currentTimeMillis()
-                seenPackets.entries.removeIf { (now - it.value) > Config.PACKET_CACHE_TIMEOUT }
+        // 1. Prune Packet Cache
+        val iter = packetCache.iterator()
+        while (iter.hasNext()) {
+            if (now - iter.next().value > Config.PACKET_CACHE_TIMEOUT) iter.remove()
+        }
+
+        // 2. Prune Dead Peers
+        val peersToCheck = _state.value.connectedPeers.toList()
+        peersToCheck.forEach { peerId ->
+            val lastSeen = peerLiveness[peerId] ?: now
+            if (now - lastSeen > Config.PEER_LIVENESS_TIMEOUT) {
+                Log.w("MeshController", "Liveness: Peer $peerId timed out (${now - lastSeen}ms > ${Config.PEER_LIVENESS_TIMEOUT}ms). Disconnecting.")
+                emit(Effect.Disconnect(peerId))
             }
         }
+
+        // 3. Prune Discovered Groups
+        val currentGroups = _state.value.discoveredGroups
+        val freshGroups = currentGroups.filter { now - it.lastSeen < Config.GROUP_ADVERTISEMENT_TIMEOUT }
+        if (freshGroups.size != currentGroups.size) {
+            _state.update { it.copy(discoveredGroups = freshGroups) }
+        }
+    }
+
+    private fun isPacketSeen(data: ByteArray): Boolean {
+        return packetCache.containsKey(data.contentHashCode())
     }
 
     private fun markPacketAsSeen(data: ByteArray) {
-        val hash = data.contentHashCode()
-        seenPackets[hash] = System.currentTimeMillis()
+        packetCache[data.contentHashCode()] = System.currentTimeMillis()
     }
 
-    // --- Event Handling ---
-
-    private suspend fun handleDriverEvent(event: BleDriverEvent) {
-        when (event) {
-            is BleDriverEvent.PeerDiscovered -> handleDiscovery(event.node)
-            is BleDriverEvent.PeerConnected -> lastHeardFrom[event.nodeId] = System.currentTimeMillis()
-            is BleDriverEvent.PeerDisconnected -> lastHeardFrom.remove(event.nodeId)
-            is BleDriverEvent.DataReceived -> handleData(event)
-            else -> {}
-        }
+    private suspend fun emit(effect: Effect) {
+        _effects.emit(effect)
     }
 
-    private suspend fun handlePeerListChange(peers: Set<UInt>) {
-        // We use a local variable to capture the intent to transition.
-        // We must NOT call transitionTo inside the lock, because transitionTo acquires the lock.
-        // Kotlin Mutex is non-reentrant -> Deadlock.
-        var pendingTransition: EngineState? = null
-
-        // STRICT LOCKING: Acquire lock immediately to avoid race conditions
-        stateMutex.withLock {
-            val s = _state.value
-            val count = peers.size
-            when (s) {
-                is EngineState.RadioActive -> {
-                    if (s.peerCount != count) {
-                        // NOTE: We do NOT use transitionTo here.
-                        // Changing peer count is a property update, not a lifecycle change.
-                        // calling transitionTo would trigger stopRadioLogic/startRadioLogic,
-                        // causing audio to cut out.
-                        _state.value = s.copy(peerCount = count)
-                        refreshAdvertising(s.groupName)
-                    }
-                }
-                is EngineState.Joining -> {
-                    if (count > 0) {
-                        // We are connected! Prepare to transition to RadioActive.
-                        pendingTransition = EngineState.RadioActive(s.groupName, count)
-                    }
-                }
-                else -> {}
-            }
-        }
-
-        // Execute the lifecycle transition outside the lock
-        if (pendingTransition != null) transitionTo(pendingTransition)
-    }
-
-    private suspend fun handleDiscovery(node: TransportNode) {
-        val s = _state.value
-
-        if (s is EngineState.Discovering) {
-            val existing = foundGroupsMap[node.name]
-            val rssi = max(node.rssi, existing?.highestRssi ?: Config.WORST_RSSI)
-            foundGroupsMap[node.name] = DiscoveredGroup(node.name, rssi)
-            _discoveredGroups.value = foundGroupsMap.values.sortedByDescending { it.highestRssi }
-            return
-        }
-        if (s is EngineState.Joining && node.name == s.groupName) {
-            connectSafely(node)
-            return
-        }
-        if (s is EngineState.RadioActive && node.name == s.groupName) {
-            val topo = topology.getCurrentState()
-            val currentPeers = driver.connectedPeers.value
-
-            // Check existing connection (simple optimization)
-            // BUT: We rely on Driver to deduplicate if we are wrong
-            if (currentPeers.contains(node.nodeId)) return
-
-            var shouldConnect = false
-            if (node.networkId > topo.currentNetworkId) {
-                shouldConnect = true
-            } else if (currentPeers.size < Config.TARGET_PEERS) {
-                if (node.isAvailable || node.networkId < topo.currentNetworkId) shouldConnect = true
-            } else if (currentPeers.size < Config.MAX_PEERS) {
-                if (node.networkId < topo.currentNetworkId) shouldConnect = true
-            }
-
-            if (shouldConnect) connectSafely(node)
-        }
-    }
-
-    private fun connectSafely(node: TransportNode) {
-        scope.launch { driver.connectTo(node.id, node.nodeId) }
-    }
-
-    private fun handleData(event: BleDriverEvent.DataReceived) {
-        lastHeardFrom[event.fromNodeId] = System.currentTimeMillis()
-        val packetHash = event.data.contentHashCode()
-        if (seenPackets.containsKey(packetHash)) return
-        seenPackets[packetHash] = System.currentTimeMillis()
-
-        if (event.type == TransportDataType.CONTROL) {
-            // UNWRAPPING: The driver now sends the FULL packet. We must parse it.
-            val (type, payload) = PacketUtils.parseControlPacket(event.data) ?: return
-
-            if (type == PacketUtils.TYPE_HEARTBEAT) {
-                val (netId, seq, hops) = PacketUtils.parseHeartbeatPayload(payload) ?: return
-                if (topology.onHeartbeatReceived(netId, seq, hops)) {
-                    val s = _state.value
-                    if (s is EngineState.RadioActive) refreshAdvertising(s.groupName)
-
-                    // RELAY LOGIC
-                    val newPayload = PacketUtils.createHeartbeatPayload(netId, seq, hops + 1)
-                    broadcastPayload(newPayload, TransportDataType.CONTROL, PacketUtils.TYPE_HEARTBEAT)
-                }
-            }
-        } else {
-            voiceManager.processIncomingPacket(event.data)
-            broadcastPayload(event.data, TransportDataType.AUDIO)
-        }
-    }
-
-    private suspend fun joinAll(vararg jobs: Job?) {
-        jobs.filterNotNull().joinAll()
+    private fun resetInternalTimers() {
+        lastHeartbeatSent = 0L
+        lastRootSeen = System.currentTimeMillis()
     }
 }

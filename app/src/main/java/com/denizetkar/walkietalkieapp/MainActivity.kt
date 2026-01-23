@@ -56,42 +56,29 @@ fun WalkieTalkieApp() {
         }
     }
 
-    // --- Permission Logic ---
-    // We build the list dynamically based on the Android Version.
-    val permissionsToRequest = remember(Unit) {
+    val permissionsToRequest = remember {
         val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-
-        // Android 12 (S) and above: Modern BLE permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             perms.add(Manifest.permission.BLUETOOTH_SCAN)
             perms.add(Manifest.permission.BLUETOOTH_ADVERTISE)
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            // Android 11 and below: Legacy Location-based BLE
             perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
             perms.add(Manifest.permission.BLUETOOTH)
             perms.add(Manifest.permission.BLUETOOTH_ADMIN)
         }
-
-        // Android 13 (Tiramisu) and above: Notifications
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-
         perms.toTypedArray()
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        // We check if the *essential* permissions are granted.
-        // Note: POST_NOTIFICATIONS is technically optional for app function, but good for UX.
-        // RECORD_AUDIO and BLE are critical.
         val essentialGranted = permissions.entries.all { (perm, granted) ->
-            if (perm == Manifest.permission.POST_NOTIFICATIONS) true // Ignore notification denial for core logic
-            else granted
+            if (perm == Manifest.permission.POST_NOTIFICATIONS) true else granted
         }
-
         if (essentialGranted) {
             viewModel.onPermissionsGranted()
         }
@@ -112,11 +99,9 @@ fun WalkieTalkieApp() {
                 onGrantClick = { permissionLauncher.launch(permissionsToRequest) }
             )
         }
-
         state.serviceStartupFailed -> {
             ServiceErrorScreen(onRetry = { viewModel.retryConnection() })
         }
-
         !state.isServiceBound -> { LoadingScreen("Starting Audio Engine...") }
         else -> {
             WalkieTalkieNavHost(viewModel, state)
@@ -125,7 +110,7 @@ fun WalkieTalkieApp() {
 }
 
 @Composable
-fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppState) {
+fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
     val navController = rememberNavController()
 
     Scaffold(
@@ -194,11 +179,8 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppState) {
             }
 
             composable("radio") {
-                // FIX: If the group name becomes null (Timeout/Disconnect/Kick),
-                // we must automatically leave the Radio screen to avoid showing "Unknown" UI state.
                 LaunchedEffect(state.groupName) {
                     if (state.groupName == null) {
-                        viewModel.leaveGroup()
                         navController.navigate("create") { popUpTo("create") { inclusive = true } }
                     }
                 }
@@ -207,18 +189,13 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppState) {
                     groupName = state.groupName,
                     accessCode = state.accessCode,
                     peerCount = state.peerCount,
-
                     availableMics = state.availableMics,
                     availableSpeakers = state.availableSpeakers,
                     selectedMicId = state.selectedMicId,
                     selectedSpeakerId = state.selectedSpeakerId,
                     onMicSelect = { viewModel.setMicrophone(it) },
                     onSpeakerSelect = { viewModel.setSpeaker(it) },
-
-                    onLeave = {
-                        viewModel.leaveGroup()
-                        navController.navigate("create") { popUpTo("create") { inclusive = true } }
-                    },
+                    onLeave = { viewModel.leaveGroup() },
                     onTalkStart = { viewModel.startTalking() },
                     onTalkStop = { viewModel.stopTalking() }
                 )

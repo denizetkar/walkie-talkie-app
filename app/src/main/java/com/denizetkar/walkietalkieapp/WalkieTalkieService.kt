@@ -10,84 +10,151 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.denizetkar.walkietalkieapp.logic.EngineState
+import com.denizetkar.walkietalkieapp.domain.*
 import com.denizetkar.walkietalkieapp.logic.MeshController
+import com.denizetkar.walkietalkieapp.logic.VoiceManager
 import com.denizetkar.walkietalkieapp.network.BleDriver
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import kotlin.random.Random
-import kotlin.random.nextUInt
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 
 class WalkieTalkieService : Service() {
 
     // Scope for parallel I/O (Drivers, Connections)
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    // Scope for Logic (Mesh State Machine)
-    // REASON: MeshController is now Mutex-guarded (Thread Safe).
-    // We allow parallel execution for better throughput.
-    private val logicScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
+    // The Core
     private val _meshController = MutableStateFlow<MeshController?>(null)
     val meshControllerState = _meshController.asStateFlow()
+    private var driver: BleDriver? = null
+    private var voiceManager: VoiceManager? = null
+
+    // Inputs from UI (via Binder)
+    private val uiActions = MutableSharedFlow<Action>(extraBufferCapacity = 64)
 
     private val binder = LocalBinder()
 
+    // Pocket Mode: CPU WakeLock (Lazy initialization makes this a val)
+    private val wakeLock by lazy {
+        try {
+            val pm = getSystemService(PowerManager::class.java)
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WalkieTalkie::CpuLock")
+        } catch (e: Exception) {
+            Log.w("WalkieTalkieService", "Failed to create WakeLock", e)
+            null
+        }
+    }
+
     inner class LocalBinder : Binder() {
         fun getService(): WalkieTalkieService = this@WalkieTalkieService
+        fun dispatchAction(action: Action) {
+            uiActions.tryEmit(action)
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
+        Log.i("WalkieTalkieService", "Initializing WalkieTalkieService")
 
-        serviceScope.launch {
+        // 1. Acquire WakeLock (Pocket Mode)
+        // Accessing the lazy property here triggers creation.
+        wakeLock?.let { lock ->
             try {
-                Log.i("WalkieTalkieService", "Initializing Engine in Background...")
-
-                // Driver runs on the Service Scope
-                val driver = BleDriver(this@WalkieTalkieService, serviceScope)
-                val myNodeId = Random.nextUInt()
-                Log.i("WalkieTalkieService", "Generated Node ID: $myNodeId")
-
-                // Controller runs on the Logic Scope
-                val controller = MeshController(this@WalkieTalkieService, driver, logicScope, myNodeId)
-                _meshController.value = controller
-                Log.i("WalkieTalkieService", "Engine Initialized.")
+                lock.acquire(Config.WAKE_LOCK_TIMEOUT)
+                Log.d("WalkieTalkieService", "WakeLock Acquired")
             } catch (e: Exception) {
-                Log.e("WalkieTalkieService", "Fatal Init Error", e)
-                // In a real app, you might emit a specific Error state here
+                Log.w("WalkieTalkieService", "Failed to acquire WakeLock", e)
             }
         }
 
-        // REACTIVE LIFECYCLE MANAGEMENT
-        // Observe the MeshController state.
-        // - Joining/RadioActive -> Promote to Foreground (Active Mic/Radio usage)
-        // - Idle/Discovering -> Demote to Background (Battery saving)
+        val controller = MeshController(serviceScope)
+
+        // STANDARD DIRECT LANE: Both drivers get the same dispatch reference
+        val dispatch = controller::dispatch
+
+        val driverInstance = BleDriver(this, serviceScope, dispatch)
+        driver = driverInstance
+
+        val voiceManagerInstance = VoiceManager(this, serviceScope, dispatch)
+        voiceManager = voiceManagerInstance
+
+        _meshController.value = controller
+
+        // --- 1. Event Aggregation (Inputs -> Core) ---
+        // We merge UI events and Timers. Drivers dispatch directly.
         serviceScope.launch {
-            meshControllerState.collectLatest { controller ->
-                if (controller == null) return@collectLatest
+            // Tickers
+            val heartbeats = flow {
+                while (currentCoroutineContext().isActive) {
+                    delay(Config.HEARTBEAT_INTERVAL)
+                    emit(Action.HeartbeatTick)
+                }
+            }
+            val cleanups = flow {
+                while (currentCoroutineContext().isActive) {
+                    delay(Config.CLEANUP_PERIOD)
+                    emit(Action.CleanupTick)
+                }
+            }
 
-                controller.state.collect { state ->
-                    val shouldBeForeground = when (state) {
-                        is EngineState.Joining,
-                        is EngineState.RadioActive -> true
-                        is EngineState.Idle,
-                        is EngineState.Discovering -> false
-                    }
+            // Merge UI and Timers
+            merge(
+                uiActions,
+                heartbeats,
+                cleanups
+            ).collect { action ->
+                controller.dispatch(action)
+            }
+        }
 
-                    if (shouldBeForeground) {
-                        promoteToForeground(state)
-                    } else {
-                        demoteToBackground()
+        // --- 2. Effect Handling (Core -> Outputs) ---
+
+        // A. Network Effects -> Driver
+        // Driver should react to configuration changes (Scanning/Advertising)
+        driverInstance.bind(controller.state, controller.effects)
+
+        // B. Audio Configuration -> Voice Manager
+        val gateFlow = controller.state
+            .map { it.isMicEnabled }
+            .distinctUntilChanged()
+
+        // Combine inputs: Device selection AND Node ID (Rotation)
+        val audioConfigFlow = combine(
+            controller.state.map { it.selectedInputId }.distinctUntilChanged(),
+            controller.state.map { it.selectedOutputId }.distinctUntilChanged(),
+            controller.state.map { it.myself }.distinctUntilChanged()
+        ) { inId, outId, nodeId ->
+            Triple(inId, outId, nodeId)
+        }
+
+        voiceManagerInstance.bind(gateFlow, audioConfigFlow)
+
+        // C. Audio Render & UI Effects
+        serviceScope.launch {
+            controller.effects.collect { effect ->
+                when (effect) {
+                    is Effect.RenderAudio -> voiceManagerInstance.renderAudio(effect.data)
+                    is Effect.ShowToast -> {
+                        mainScope.launch {
+                            Toast.makeText(this@WalkieTalkieService, effect.message, Toast.LENGTH_SHORT).show()
+                        }
                     }
+                    else -> {} // Handled by bound drivers
+                }
+            }
+        }
+
+        // --- 3. Lifecycle & Foreground Management ---
+        serviceScope.launch {
+            controller.state.collectLatest { state ->
+                if (state.session != null) {
+                    promoteToForeground(state)
+                } else {
+                    demoteToBackground()
                 }
             }
         }
@@ -102,30 +169,33 @@ class WalkieTalkieService : Service() {
     }
 
     override fun onDestroy() {
-        _meshController.value?.let {
-            it.leave()
-            it.destroy()
-        }
+        // Release WakeLock
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d("WalkieTalkieService", "WakeLock Released")
+            }
+        } catch (_: Exception) {}
 
-        // Cancel both scopes
-        logicScope.cancel()
+        voiceManager?.close()
+        driver?.close()
         serviceScope.cancel()
+        mainScope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
-    private fun promoteToForeground(state: EngineState) {
+    private fun promoteToForeground(state: AppState) {
         val channelId = "WalkieTalkieChannel"
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(channelId, "Walkie Talkie Service", NotificationManager.IMPORTANCE_LOW)
         manager.createNotificationChannel(channel)
 
-        // CHANGED: Added flags to ensure we resume the existing Activity instead of creating a new one.
+        // Ensure we resume the existing Activity instead of creating a new one.
         val notificationIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
 
-        // CHANGED: Added FLAG_UPDATE_CURRENT to ensure the intent extras (if any) are updated.
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -133,11 +203,10 @@ class WalkieTalkieService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val contentText = when (state) {
-            is EngineState.Joining -> "Connecting to group..."
-            is EngineState.RadioActive -> "Live: ${state.groupName} (${state.peerCount} Peers)"
-            else -> "Walkie Talkie Active"
-        }
+        val peerCount = state.connectedPeers.size
+        val groupName = state.session?.groupName ?: "Unknown"
+
+        val contentText = "Live: $groupName ($peerCount Peers)"
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Walkie Talkie Active")
@@ -160,16 +229,12 @@ class WalkieTalkieService : Service() {
             } else {
                 startForeground(1, notification)
             }
-            Log.d("WalkieTalkieService", "Promoted to FOREGROUND")
         } catch (e: Exception) {
             Log.w("WalkieTalkieService", "Could not promote to Foreground.", e)
         }
     }
 
     private fun demoteToBackground() {
-        // STOP_FOREGROUND_REMOVE: Removes the notification and the foreground status.
-        // The service continues running if it is bound to the Activity, but without special privileges.
         stopForeground(STOP_FOREGROUND_REMOVE)
-        Log.d("WalkieTalkieService", "Demoted to BACKGROUND")
     }
 }

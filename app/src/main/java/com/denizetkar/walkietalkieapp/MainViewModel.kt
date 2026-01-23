@@ -11,37 +11,45 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
-import com.denizetkar.walkietalkieapp.logic.EngineState
+import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.domain.AppState
+import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 import com.denizetkar.walkietalkieapp.logic.MeshController
-import com.denizetkar.walkietalkieapp.network.DiscoveredGroup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
 
-// Shared Data Class for UI (Defined here or in a separate file, ensuring visibility)
+// Shared Data Class for UI
 data class AudioDeviceUi(val id: Int, val displayName: String)
 
-data class AppState(
+/**
+ * UI State Model.
+ * This is a subset/mapping of the domain [AppState].
+ */
+data class AppUiState(
     val hasPermissions: Boolean = false,
     val isServiceBound: Boolean = false,
     val serviceStartupFailed: Boolean = false,
 
+    // Session State
     val groupName: String? = null,
     val accessCode: String? = null,
     val peerCount: Int = 0,
+
+    // UI Logic
     val isScanning: Boolean = false,
-    val discoveredGroups: List<DiscoveredGroup> = emptyList(),
     val isJoining: Boolean = false,
     val joinError: String? = null,
 
+    val discoveredGroups: List<DiscoveredGroup> = emptyList(),
+
+    // Audio State
     val availableMics: List<AudioDeviceUi> = emptyList(),
     val availableSpeakers: List<AudioDeviceUi> = emptyList(),
     val selectedMicId: Int = 0,
@@ -50,22 +58,26 @@ data class AppState(
 
 class MainViewModel(application: Application) : AndroidViewModel(application), DefaultLifecycleObserver {
 
-    private var meshController: MeshController? = null
+    // Reactive Binder: Allows suspending wait instead of polling
+    private val _binder = MutableStateFlow<WalkieTalkieService.LocalBinder?>(null)
     private var stateCollectionJob: Job? = null
 
-    private val _appState = MutableStateFlow(AppState())
+    private val _appState = MutableStateFlow(AppUiState())
     val appState = _appState.asStateFlow()
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            val binder = service as WalkieTalkieService.LocalBinder
-            val walkieService = binder.getService()
+            val localBinder = service as WalkieTalkieService.LocalBinder
+            _binder.value = localBinder
+
+            val walkieService = localBinder.getService()
+
             viewModelScope.launch {
                 try {
                     // Wait for the controller to be initialized in the service
-                    meshController = walkieService.meshControllerState.filterNotNull().first()
+                    val controller = walkieService.meshControllerState.filterNotNull().first()
                     _appState.update { it.copy(isServiceBound = true, serviceStartupFailed = false) }
-                    subscribeToController()
+                    subscribeToController(controller)
                 } catch (e: Exception) {
                     Log.e("MainViewModel", "Service Init Failed", e)
                     _appState.update { it.copy(isServiceBound = false, serviceStartupFailed = true) }
@@ -75,11 +87,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
 
         override fun onServiceDisconnected(name: ComponentName?) {
             stateCollectionJob?.cancel()
-            meshController = null
+            _binder.value = null
             _appState.update { it.copy(isServiceBound = false) }
         }
 
         override fun onBindingDied(name: ComponentName?) {
+            _binder.value = null
             _appState.update { it.copy(isServiceBound = false) }
         }
     }
@@ -104,9 +117,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
         val context = getApplication<Application>()
         val intent = Intent(context, WalkieTalkieService::class.java)
         try {
-            // CHANGED: Use startService instead of startForegroundService.
-            // This allows the service to start in the "background" (bound) state.
-            // It will promote itself to Foreground only when necessary (Joining a group).
             context.startService(intent)
             context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             _appState.update { it.copy(serviceStartupFailed = false) }
@@ -116,114 +126,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
         }
     }
 
-    private fun subscribeToController() {
-        val controller = meshController ?: return
+    private fun subscribeToController(controller: MeshController) {
         stateCollectionJob?.cancel()
-
         stateCollectionJob = viewModelScope.launch(Dispatchers.Default) {
-            // 1. Observe Engine State
-            launch {
-                controller.state.collect { engineState ->
-                    _appState.update { current ->
-                        when (engineState) {
-                            is EngineState.Idle -> current.copy(
-                                groupName = null,
-                                accessCode = null,
-                                peerCount = 0,
-                                isScanning = false,
-                                isJoining = false
-                            )
-                            is EngineState.Discovering -> current.copy(
-                                isScanning = true,
-                                isJoining = false
-                            )
-                            is EngineState.Joining -> current.copy(
-                                isJoining = true,
-                                groupName = engineState.groupName
-                            )
-                            is EngineState.RadioActive -> current.copy(
-                                groupName = engineState.groupName,
-                                peerCount = engineState.peerCount,
-                                isJoining = false,
-                                isScanning = false // It scans internally, but UI doesn't need to show spinner
-                            )
-                        }
-                    }
-                }
-            }
+            controller.state.collect { coreState ->
+                _appState.update { ui ->
+                    ui.copy(
+                        groupName = coreState.session?.groupName,
+                        accessCode = coreState.session?.accessCode,
+                        peerCount = coreState.connectedPeers.size,
+                        discoveredGroups = coreState.discoveredGroups,
+                        // We are joining if there is a session but no peers yet
+                        isJoining = (coreState.session != null && coreState.connectedPeers.isEmpty()),
+                        // We are scanning if NO session is active
+                        isScanning = (coreState.session == null),
+                        // Map Error from Core
+                        joinError = coreState.joinError,
 
-            // 2. Observe Discovered Groups
-            launch {
-                controller.discoveredGroups.collect { groups ->
-                    _appState.update { it.copy(discoveredGroups = groups) }
-                }
-            }
-
-            // 3. Observe Audio Devices (No Mapping needed, VoiceManager sends UI models)
-            launch {
-                controller.availableInputs.collect { list ->
-                    _appState.update { it.copy(availableMics = list) }
-                }
-            }
-
-            // 4. Audio Outputs
-            launch {
-                controller.availableOutputs.collect { list ->
-                    _appState.update { it.copy(availableSpeakers = list) }
-                }
-            }
-
-            // 5. Selected Mic
-            launch {
-                controller.selectedInputId.collect { id ->
-                    _appState.update { it.copy(selectedMicId = id) }
-                }
-            }
-
-            // 6. Selected Speaker
-            launch {
-                controller.selectedOutputId.collect { id ->
-                    _appState.update { it.copy(selectedSpeakerId = id) }
+                        // Map Audio State
+                        availableMics = coreState.availableMics,
+                        availableSpeakers = coreState.availableSpeakers,
+                        selectedMicId = coreState.selectedInputId,
+                        selectedSpeakerId = coreState.selectedOutputId
+                    )
                 }
             }
         }
     }
 
+    // --- Safe Dispatcher ---
+    // Suspends until the service is bound, then dispatches.
+    private fun dispatch(action: Action) {
+        viewModelScope.launch {
+            val binder = _binder.filterNotNull().first()
+            binder.dispatchAction(action)
+        }
+    }
+
+    // --- User Actions ---
+
     fun startScanning() {
-        if (_appState.value.groupName != null) return
-        meshController?.startGroupScan()
+        dispatch(Action.StartScanning)
     }
 
     fun stopScanning() {
-        meshController?.stopGroupScan()
+        dispatch(Action.StopScanning)
     }
 
     fun createGroup(name: String) {
-        if (!checkSystemRequirements()) return
-
         val code = Random.nextInt(1000, 9999).toString()
-        _appState.update { it.copy(groupName = name, accessCode = code) }
-        meshController?.createGroup(name, code)
+        dispatch(Action.CreateGroup(name, code))
     }
 
     fun joinGroup(name: String, code: String) {
-        if (!checkSystemRequirements()) return
-        val controller = meshController ?: return
-
-        _appState.update { it.copy(isJoining = true, joinError = null, accessCode = code) }
-        controller.joinGroup(name, code)
-        viewModelScope.launch {
-            try {
-                withTimeout(Config.GROUP_JOIN_TIMEOUT) {
-                    controller.state.first { it is EngineState.RadioActive }
-                }
-                _appState.update { it.copy(accessCode = code) }
-            } catch (_: TimeoutCancellationException) {
-                Log.w("MainViewModel", "Group Join Timeout: $name")
-                controller.leave()
-                _appState.update { it.copy(isJoining = false, joinError = "Connection Timed Out", accessCode = null) }
-            }
-        }
+        _appState.update { it.copy(isJoining = true, joinError = null) }
+        dispatch(Action.JoinGroup(name, code))
     }
 
     fun ackJoinError() {
@@ -231,35 +188,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
     }
 
     fun leaveGroup() {
-        meshController?.leave()
+        dispatch(Action.LeaveGroup())
+        _appState.update { it.copy(isJoining = false, groupName = null) }
     }
 
-    fun startTalking() = viewModelScope.launch(Dispatchers.IO) { meshController?.startTalking() }
-    fun stopTalking() = viewModelScope.launch(Dispatchers.IO) { meshController?.stopTalking() }
-
-    fun setMicrophone(id: Int) = viewModelScope.launch(Dispatchers.IO) { meshController?.setInputDevice(id) }
-    fun setSpeaker(id: Int) = viewModelScope.launch(Dispatchers.IO) { meshController?.setOutputDevice(id) }
+    fun startTalking() = dispatch(Action.SetMic(true))
+    fun stopTalking() = dispatch(Action.SetMic(false))
+    fun setMicrophone(id: Int) = dispatch(Action.SetAudioInput(id))
+    fun setSpeaker(id: Int) = dispatch(Action.SetAudioOutput(id))
 
     override fun onCleared() {
         super.onCleared()
         if (!_appState.value.isServiceBound) return
-
         try {
             getApplication<Application>().unbindService(serviceConnection)
         } catch (e: Exception) {
             Log.w("MainViewModel", "Unbind failed", e)
         }
-    }
-
-    private fun checkSystemRequirements(): Boolean {
-        val check = meshController?.checkSystemRequirements()
-        if (check == null || check.isFailure) {
-            val error = check?.exceptionOrNull()?.message ?: "Service not bound"
-            Log.e("MainViewModel", "System Requirements Failed: $error")
-            _appState.update { it.copy(joinError = error) }
-            return false
-        }
-
-        return true
     }
 }
