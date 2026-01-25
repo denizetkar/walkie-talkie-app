@@ -4,7 +4,7 @@
 
 This project demonstrates a decentralized mobile mesh network using Bluetooth 5 (BLE). It allows a group of users to communicate via voice in real-time without Internet, Wi-Fi, or cellular data. It is designed for hiking, festivals, or emergency situations where infrastructure is unavailable.
 
-> **See [ARCHITECTURE.md](ARCHITECTURE_LEGACY.md) for deep technical details on the topology, protocol, and security.**
+> **See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for deep technical details on the topology, protocol, and security.**
 
 ---
 
@@ -53,8 +53,10 @@ This project uses a hybrid approach to leverage the best tools for each job:
 ### Directory Structure
 ```text
 ├── app/src/main/java/com/denizetkar/walkietalkieapp/
-│   ├── logic/           # The Brain (MeshNetworkManager, TopologyEngine)
+│   ├── domain/          # State, Actions, Effects (Pure Data)
+│   ├── logic/           # The Brain (MeshController, VoiceManager)
 │   ├── network/         # Transport Interface (BleDriver, TransportModels)
+│   ├── protocol/        # Packet definitions, Handshake logic
 │   ├── bluetooth/       # BLE Implementation (GattServer, GattClient, OperationQueue)
 │   ├── engine/          # Generated UniFFI Bindings (Rust Interface)
 │   └── MainActivity.kt
