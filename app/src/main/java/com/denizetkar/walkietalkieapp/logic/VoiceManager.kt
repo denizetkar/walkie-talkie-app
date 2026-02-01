@@ -13,6 +13,8 @@ import com.denizetkar.walkietalkieapp.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.domain.Action
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -52,6 +54,10 @@ class VoiceManager(
 
     // Serializes hardware access to prevent starting a new stream while old one is closing
     private val hardwareMutex = Mutex()
+
+    // ACTOR: Trigger channel to serialize device updates on background thread.
+    // Conflated = We only care about the latest hardware state.
+    private val deviceUpdateTrigger = Channel<Unit>(Channel.CONFLATED)
 
     // --- Audio Focus Configuration (Immutable) ---
     private val focusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
@@ -99,21 +105,26 @@ class VoiceManager(
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
             Log.d("VoiceManager", "System: Devices Added")
-            updateDeviceLists()
+            deviceUpdateTrigger.trySend(Unit)
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
             Log.d("VoiceManager", "System: Devices Removed")
-            updateDeviceLists()
+            deviceUpdateTrigger.trySend(Unit)
         }
     }
 
     init {
-        // 1. Register for updates (Requires Main Looper Handler)
+        // 1. Start the Actor Loop to handle device updates off the main thread
+        scope.launch(Dispatchers.IO) {
+            deviceUpdateTrigger.consumeEach { updateDeviceLists() }
+        }
+
+        // 2. Register for updates (Requires Main Looper Handler)
         audioManager.registerAudioDeviceCallback(deviceCallback, Handler(Looper.getMainLooper()))
 
-        // 2. Initial scan of hardware to populate UI lists
-        updateDeviceLists()
+        // 3. Initial scan of hardware to populate UI lists
+        deviceUpdateTrigger.trySend(Unit)
     }
 
     /**
@@ -127,20 +138,24 @@ class VoiceManager(
     /**
      * Binds the Voice Manager to the Control Flows.
      * @param micGate Flow<Boolean>: True = Unmute (PTT Pressed), False = Mute.
-     * @param configFlow Flow<Triple<Int, Int, UInt>>: (InputId, OutputId, NodeId) for device selection and
-     * atomic restarts on ID rotation.
+     * @param configFlow Flow<Triple<Int, Int, UInt>?>: (InputId, OutputId, NodeId). NULL stops the engine.
      */
-    fun bind(micGate: Flow<Boolean>, configFlow: Flow<Triple<Int, Int, UInt>>) {
+    fun bind(micGate: Flow<Boolean>, configFlow: Flow<Triple<Int, Int, UInt>?>) {
         // 1. Lifecycle & Configuration
         // Whenever the device selection changes OR the Node ID rotates, restart engine.
         scope.launch(Dispatchers.IO) {
-            configFlow.collectLatest { (inputId, outputId, nodeId) ->
+            configFlow.collectLatest { config ->
                 // CRITICAL: Acquire lock. This waits for the previous 'manageEngineLifecycle'
                 // to finish its 'finally' block (cleanup) before starting the new one.
                 hardwareMutex.withLock {
-                    currentInputId.set(inputId)
-                    currentOutputId.set(outputId)
-                    manageEngineLifecycle(inputId, outputId, nodeId)
+                    if (config != null) {
+                        val (inputId, outputId, nodeId) = config
+                        currentInputId.set(inputId)
+                        currentOutputId.set(outputId)
+                        manageEngineLifecycle(inputId, outputId, nodeId)
+                    } else {
+                        stopEngine()
+                    }
                 }
             }
         }
@@ -258,6 +273,7 @@ class VoiceManager(
     }
 
     private fun updateDeviceLists() {
+        // Warning: getDevices is blocking. The Actor in init {} ensures this runs on IO thread.
         val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).map {
             AudioDeviceUi(it.id, it.toFriendlyName(isInput = true))
         }

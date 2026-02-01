@@ -450,7 +450,9 @@ class MeshController(
                 // Heartbeat IS Control (Reliable)
                 emit(Effect.Transmit(bytes, TransmissionStrategy.FLOOD, isControl = true, excludedSource = null))
 
+                // Update self-liveness so we don't timeout ourselves
                 lastHeartbeatSent = now
+                lastRootSeen = now
             }
         }
     }
