@@ -22,9 +22,15 @@ class BleAdvertiserModule(
     private var advertisingSetCallback: AdvertisingSetCallback? = null
 
     @SuppressLint("MissingPermission")
-    fun start(config: AdvertisingConfig) {
-        if (adapter == null) return
-        val advertiser = adapter.bluetoothLeAdvertiser ?: return
+    fun start(config: AdvertisingConfig): Boolean {
+        if (adapter == null) {
+            Log.e("BleAdvertiser", "Bluetooth Adapter is NULL")
+            return false
+        }
+        val advertiser = adapter.bluetoothLeAdvertiser ?: run {
+            Log.e("BleAdvertiser", "BLE Advertiser is NULL (Bluetooth might be off or not supported)")
+            return false
+        }
 
         // Ensure Server is ready to accept connections
         serverHandler.startServer()
@@ -43,20 +49,23 @@ class BleAdvertiserModule(
             .addServiceData(pUuid, payload.array())
             .build()
 
-        // 2. Scan Response (Group Name) - Uses new HandshakeLogic for truncation
+        // 2. Scan Response (Group Name)
         val nameBytes = HandshakeLogic.truncateUtf8(config.groupName, Config.MAX_ADVERTISING_NAME_BYTES)
         val scanResponseData = AdvertiseData.Builder()
             .addManufacturerData(Config.BLE_MANUFACTURER_ID, nameBytes)
             .build()
 
+        // If already running, update data only (Success assumed if we got this far)
         if (currentAdvertisingSet != null) {
             try {
                 currentAdvertisingSet?.setAdvertisingData(mainData)
                 currentAdvertisingSet?.setScanResponseData(scanResponseData)
-            } catch (_: Exception) {
+                return true
+            } catch (e: Exception) {
+                Log.e("BleAdvertiser", "Failed to update set", e)
+                // If update fails, try full restart
                 stop()
             }
-            return
         }
 
         val parameters = AdvertisingSetParameters.Builder()
@@ -70,15 +79,21 @@ class BleAdvertiserModule(
         advertisingSetCallback = object : AdvertisingSetCallback() {
             override fun onAdvertisingSetStarted(advertisingSet: AdvertisingSet?, txPower: Int, status: Int) {
                 if (status == ADVERTISE_SUCCESS) {
+                    Log.i("BleAdvertiser", "Advertising started successfully.")
                     currentAdvertisingSet = advertisingSet
+                } else {
+                    Log.e("BleAdvertiser", "Advertising failed to start. Status: $status")
+                    // Note: We can't return 'false' from here (async), but the initial start call below catches immediate errors.
                 }
             }
         }
 
-        try {
+        return try {
             advertiser.startAdvertisingSet(parameters, mainData, scanResponseData, null, null, advertisingSetCallback)
+            true
         } catch (e: Exception) {
-            Log.e("BleAdvertiser", "Start failed", e)
+            Log.e("BleAdvertiser", "Start failed with exception", e)
+            false
         }
     }
 

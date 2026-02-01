@@ -156,6 +156,23 @@ class MeshController(
                         }
                     }
 
+                    is Action.ScanFailed -> {
+                        Log.e("MeshController", "Scan Failed: ${action.reason}")
+                        _state.update { it.copy(isBrowsing = false) }
+
+                        if (currentState.session != null) {
+                            _state.update {
+                                it.copy(
+                                    session = null, // <--- Triggers UI Navigation to Home
+                                    joinError = "Scanning Failed: ${action.reason}"
+                                )
+                            }
+                        }
+                        else {
+                            emit(Effect.ShowToast("Warning: Background Scanning Failed (${action.reason})"))
+                        }
+                    }
+
                     is Action.LeaveGroup -> {
                         Log.i("MeshController", "USER ACTION: Leave Group")
                         // 1. Reset State completely (Keep same ID for now, it rotates on next join)

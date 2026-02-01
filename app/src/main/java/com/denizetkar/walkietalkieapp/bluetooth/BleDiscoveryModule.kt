@@ -7,6 +7,7 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.os.ParcelUuid
+import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.TransportNode
 import com.denizetkar.walkietalkieapp.utils.ScanRateLimiter
@@ -34,20 +35,39 @@ class BleDiscoveryModule(
     private val rateLimiter = ScanRateLimiter()
 
     @SuppressLint("MissingPermission")
-    fun start() {
-        if (adapter == null) return
-        if (activeSession.get() != null) return
+    fun start(): Boolean {
+        if (adapter == null) {
+            Log.e("BleDiscovery", "Bluetooth Adapter is NULL")
+            return false
+        }
+        // If scanner is null, Bluetooth is likely off
+        if (adapter.bluetoothLeScanner == null) {
+            Log.e("BleDiscovery", "BLE Advertiser is NULL (Bluetooth might be off or not supported)")
+            return false
+        }
+        // Idempotency: If already scanning, return true
+        if (activeSession.get() != null) return true
 
-        val token = rateLimiter.tryAcquire() ?: return
+        val token = rateLimiter.tryAcquire() ?: run {
+            Log.w("BleDiscovery", "Scan Rate Limited (Android Throttling)")
+            // We return true here to prevent crashing the UI loop,
+            // effectively just "skipping" this specific scan attempt.
+            return true
+        }
         val newSession = ScanSession()
-
-        if (activeSession.compareAndSet(null, newSession)) {
+        return if (activeSession.compareAndSet(null, newSession)) {
             if (!newSession.start()) {
+                Log.e("BleDiscovery", "Failed to start Scan Session")
                 activeSession.set(null)
                 rateLimiter.rollback(token)
+                false
+            } else {
+                true
             }
         } else {
+            // Race condition lost, rollback token
             rateLimiter.rollback(token)
+            true
         }
     }
 
@@ -68,6 +88,7 @@ class BleDiscoveryModule(
             }
 
             override fun onScanFailed(errorCode: Int) {
+                Log.e("BleDiscovery", "Scan Failed inside callback. Error: $errorCode")
                 activeSession.compareAndSet(this@ScanSession, null)
             }
         }
@@ -87,7 +108,10 @@ class BleDiscoveryModule(
             return try {
                 scanner.startScan(filters, settings, callback)
                 true
-            } catch (_: Exception) { false }
+            } catch (e: Exception) {
+                Log.e("BleDiscovery", "Start Scan Exception", e)
+                false
+            }
         }
 
         @SuppressLint("MissingPermission")

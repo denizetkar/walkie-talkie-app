@@ -231,14 +231,22 @@ class BleDriver(
                 hopsToRoot = config.hops,
                 isAvailable = !config.isFull
             )
-            advertiserModule.start(advertisingConfig)
+            val success = advertiserModule.start(advertisingConfig)
+            if (!success) {
+                Log.e("BleDriver", "CRITICAL: Advertising Requested but Failed.")
+                dispatch(Action.JoinGroupFailed("Bluetooth Radio Unavailable or Error"))
+            }
         } else {
             advertiserModule.stop()
         }
 
         // 2. Scanning
         if (config.isScanning) {
-            discoveryModule.start()
+            val success = discoveryModule.start()
+            if (!success) {
+                Log.e("BleDriver", "CRITICAL: Scanning Requested but Failed.")
+                dispatch(Action.ScanFailed("Bluetooth Scanner Unavailable"))
+            }
         } else {
             discoveryModule.stop()
         }
