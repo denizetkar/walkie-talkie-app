@@ -22,6 +22,7 @@ import uniffi.walkie_talkie_engine.AudioConfig
 import uniffi.walkie_talkie_engine.AudioEngine
 import uniffi.walkie_talkie_engine.AudioErrorCallback
 import uniffi.walkie_talkie_engine.PacketTransport
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -58,6 +59,9 @@ class VoiceManager(
     // ACTOR: Trigger channel to serialize device updates on background thread.
     // Conflated = We only care about the latest hardware state.
     private val deviceUpdateTrigger = Channel<Unit>(Channel.CONFLATED)
+
+    // Cache the user's PTT intent to fix race condition during engine startup
+    private val isMicEnabled = AtomicBoolean(false)
 
     // --- Audio Focus Configuration (Immutable) ---
     private val focusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
@@ -164,6 +168,7 @@ class VoiceManager(
         // Whenever the PTT button is pressed/released, we toggle the software gate.
         scope.launch(Dispatchers.IO) {
             micGate.collectLatest { isOpen ->
+                isMicEnabled.set(isOpen)
                 activeEngine.get()?.setMicEnabled(isOpen)
             }
         }
@@ -211,6 +216,9 @@ class VoiceManager(
                 // CRITICAL: This throws SecurityException if the Service is not yet promoted
                 // to Foreground (Android 14+ Microphone privacy restrictions).
                 localEngine.startSession()
+
+                // Apply cached mic state immediately (Fixes PTT race condition)
+                localEngine.setMicEnabled(isMicEnabled.get())
 
                 // Publish Success
                 // Only set the atomic reference AFTER successful start to avoid race conditions
