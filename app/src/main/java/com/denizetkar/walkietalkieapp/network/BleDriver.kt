@@ -442,7 +442,7 @@ class BleDriver(
                 serverHandler.sendTo(device, packet.data, type)
             }
         } finally {
-            // FIX: Ensure disconnect command is sent even if Job is cancelled
+            // Ensure disconnect command is sent even if Job is cancelled
             withContext(NonCancellable) {
                 val address = TransportAddress.from(device.address)
                 Log.d("BleDriver", "ServerStrategy: Disconnecting $address")

@@ -37,6 +37,8 @@ class GattServerHandler(
     // Value: The Actor responsible for serializing writes to that specific device.
     private val clientQueues = ConcurrentHashMap<TransportAddress, BleOperationQueue>()
 
+    // Sync Latch for Disconnect
+    private val disconnectSignals = ConcurrentHashMap<TransportAddress, CompletableDeferred<Unit>>()
     // We only track these for internal logic (Auth/Queue), not for connection management.
     private val pendingChallenges = ConcurrentHashMap<TransportAddress, String>()
     // Bridge: Maps Device Address -> The Continuation waiting for 'onNotificationSent'
@@ -87,6 +89,11 @@ class GattServerHandler(
                 }
 
                 Log.d("GattServer", "Disconnected: $address")
+
+                // 1. SIGNAL THE WAITER
+                disconnectSignals[address]?.complete(Unit)
+
+                // 2. CLEANUP
                 cleanupDeviceData(address)
                 scope.launch { _serverEvents.emit(ServerEvent.ClientDisconnected(device)) }
             }
@@ -327,18 +334,33 @@ class GattServerHandler(
         gattServer?.addService(service)
     }
 
+    /**
+     * Suspending Disconnect.
+     * Used by the Driver to gracefully tear down the session.
+     */
     @SuppressLint("MissingPermission")
-    fun disconnect(device: BluetoothDevice) {
-        val address = TransportAddress(device.address)
+    suspend fun disconnect(device: BluetoothDevice) {
+        val address = TransportAddress.from(device.address)
         Log.d("GattServer", "Requesting disconnect for $address")
+
+        val signal = CompletableDeferred<Unit>()
+        disconnectSignals[address] = signal
+
         try {
             gattServer?.cancelConnection(device)
-        } catch (_: Exception) {}
-        cleanupDeviceData(address)
+            withTimeout(Config.PEER_DISCONNECT_TIMEOUT) {
+                signal.await()
+            }
+        } catch (e: Exception) {
+            Log.w("GattServer", "Disconnect Wait Timed Out/Failed for $address", e)
+        } finally {
+            cleanupDeviceData(address)
+        }
     }
 
     @SuppressLint("MissingPermission")
     fun stopServer() {
+        Log.d("GattServer", "CMD: Destroy (Hard)")
         try {
             gattServer?.close()
         } catch (_: Exception) {}
@@ -353,17 +375,21 @@ class GattServerHandler(
             pendingChallenges.remove(address)
             pendingNotifications.remove(address)?.cancel()
             connectionFuses.remove(address)?.cancel()
+            disconnectSignals.remove(address)
         } else {
             clientQueues.clear()
             pendingChallenges.clear()
             pendingNotifications.clear()
             connectionFuses.clear()
+            disconnectSignals.clear()
         }
     }
 
     private fun fail(device: BluetoothDevice, reason: ConnectionFailure) {
         Log.e("GattServer", "Error: $reason")
-        scope.launch { _serverEvents.emit(ServerEvent.Error(device, reason)) }
-        disconnect(device)
+        scope.launch {
+            _serverEvents.emit(ServerEvent.Error(device, reason))
+            disconnect(device)
+        }
     }
 }
