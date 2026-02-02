@@ -66,23 +66,14 @@ class GattClientHandler(
     }
 
     /**
-     * Polite disconnect with a Safety Net.
-     * Tries to disconnect cleanly, but guarantees resource release after a timeout.
+     * Polite disconnect request.
+     * Does NOT force cleanup. The Driver is responsible for timing out.
      */
     @SuppressLint("MissingPermission")
     fun disconnect() {
-        operationQueue.shutdown()
         try {
             bluetoothGatt?.disconnect()
         } catch (_: Exception) { }
-
-        // SAFETY NET: If the stack doesn't fire the callback,
-        // we assume the connection is dead and force a cleanup to prevent leaks.
-        scope.launch {
-            delay(Config.PEER_DISCONNECT_TIMEOUT)
-            Log.w("GattClient", "Disconnect callback timed out. Forcing close.")
-            close()
-        }
     }
 
     /**
@@ -250,7 +241,7 @@ class GattClientHandler(
                 val address = TransportAddress.from(targetDevice.address)
                 Log.d("GattClient", "Disconnected from $address")
                 scope.launch { _clientEvents.emit(ClientEvent.Disconnected(targetDevice)) }
-                close()
+                // NOTE: We do NOT close() here. The Driver receives the event and decides when to close.
             }
         }
 
@@ -274,6 +265,7 @@ class GattClientHandler(
 
         @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            @Suppress("DEPRECATION")
             handleIncomingData(characteristic.uuid, characteristic.value)
         }
 
@@ -355,11 +347,10 @@ class GattClientHandler(
 
     /**
      * Centralized error handler.
-     * Emits the error and triggers a polite disconnect.
+     * Emits the error. The Driver sees this and triggers the cleanup.
      */
     private fun fail(reason: ConnectionFailure) {
         Log.e("GattClient", "Error: $reason")
         scope.launch { _clientEvents.emit(ClientEvent.Error(targetDevice, reason)) }
-        disconnect()
     }
 }

@@ -415,8 +415,10 @@ class BleDriver(
                     try {
                         Log.d("BleDriver", "Initiating Polite Disconnect for $address")
                         client.disconnect()
-                        // Wait for the stack to confirm (or timeout)
-                        disconnectSignal.await()
+                        // We must not wait forever for the stack to callback.
+                        withTimeout(Config.PEER_DISCONNECT_TIMEOUT) {
+                            disconnectSignal.await()
+                        }
                     } catch (e: Exception) {
                         Log.w("BleDriver", "Polite disconnect failed or timed out: ${e.message}")
                     }
