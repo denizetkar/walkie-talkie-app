@@ -43,6 +43,9 @@ object Config {
     const val MAX_PEERS = 5
 
     // --- Timeouts & Tuning ---
+    const val SCAN_RETRY_ATTEMPTS = 6
+    const val SCAN_RETRY_COOLDOWN = 1000L
+
     const val WAKE_LOCK_TIMEOUT = 4 * 60 * 60 * 1000L
     const val GATT_RETRY_ATTEMPTS = 3
     const val GATT_RETRY_COOLDOWN = 10L

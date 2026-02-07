@@ -11,6 +11,7 @@ import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.TransportNode
 import com.denizetkar.walkietalkieapp.utils.ScanRateLimiter
+import com.denizetkar.walkietalkieapp.utils.retryWithBackoffNullable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -48,11 +49,11 @@ class BleDiscoveryModule(
         // Idempotency: If already scanning, return true
         if (activeSession.get() != null) return true
 
-        val token = rateLimiter.tryAcquire() ?: run {
-            Log.w("BleDiscovery", "Scan Rate Limited (Android Throttling)")
-            // We return true here to prevent crashing the UI loop,
-            // effectively just "skipping" this specific scan attempt.
-            return true
+        val token = retryWithBackoffNullable(
+            times = Config.SCAN_RETRY_ATTEMPTS, initialDelay = Config.SCAN_RETRY_COOLDOWN,
+        ){ rateLimiter.tryAcquire() } ?: run {
+            Log.e("BleDiscovery", "Scan Rate Limited (Android Throttling)")
+            return false
         }
         val newSession = ScanSession()
         return if (activeSession.compareAndSet(null, newSession)) {

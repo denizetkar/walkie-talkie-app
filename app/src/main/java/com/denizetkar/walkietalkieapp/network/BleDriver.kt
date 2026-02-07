@@ -1,7 +1,6 @@
 package com.denizetkar.walkietalkieapp.network
 
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -95,7 +94,7 @@ class BleDriver(
                         // INCOMING: Use our current eventually-consistent ID
                         val myNodeId = currentNodeId.get().toUInt()
                         launchPeerJob(event.nodeId, myNodeId, TransportType.INCOMING, address) { channel ->
-                            runServerConnection(event.device, channel)
+                            runServerConnection(event, channel)
                         }
                     }
                     is ServerEvent.MessageReceived -> {
@@ -272,6 +271,14 @@ class BleDriver(
         peerMutex.withLock {
             val existing = _peers.value.sessions[targetNodeId]
             if (existing != null) {
+                // If we are already connecting/connected to this node as a CLIENT (Outgoing),
+                // and the new request is also OUTGOING, just ignore it.
+                // The current job is likely still performing the handshake.
+                if (existing.type == TransportType.OUTGOING && type == TransportType.OUTGOING) {
+                    Log.d("BleDriver", "Ignored duplicate connection request for Node $targetNodeId")
+                    return
+                }
+
                 // COLLISION: Two connections to same Node ID.
                 // Tie-breaker: Higher ID wins the right to keep THEIR initiated connection.
                 val keepNew = if (type == TransportType.OUTGOING) myNodeId > targetNodeId else targetNodeId > myNodeId
@@ -307,7 +314,6 @@ class BleDriver(
             val session = PeerSession(job, channel, type, address, connectionId)
             _peers.update { it.put(targetNodeId, session) }
             job.start()  // Start the job now that state is consistent
-            dispatch(Action.PeerConnected(targetNodeId))
         }
     }
 
@@ -393,6 +399,7 @@ class BleDriver(
             // but we also keep a high-level timeout for the whole connection process here.
             client.connect()
             withTimeout(Config.BLE_CONNECT_TIMEOUT) { handshakeComplete.await() }
+            dispatch(Action.PeerConnected(targetNodeId))
 
             // 5. MAIN LOOP (The "Mouth")
             // Pump data from the channel to the client.
@@ -433,10 +440,13 @@ class BleDriver(
     // --- Server Logic ---
 
     private suspend fun runServerConnection(
-        device: BluetoothDevice,
+        event: ServerEvent.ClientAuthenticated,
         outgoing: ReceiveChannel<OutgoingPacket>
     ) {
+        val device = event.device
         try {
+            dispatch(Action.PeerConnected(event.nodeId))
+
             for (packet in outgoing) {
                 val type = if (packet.isControl) TransportDataType.CONTROL else TransportDataType.AUDIO
                 serverHandler.sendTo(device, packet.data, type)
