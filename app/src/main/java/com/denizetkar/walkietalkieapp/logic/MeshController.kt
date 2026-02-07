@@ -175,7 +175,13 @@ class MeshController(
                     is Action.LeaveGroup -> {
                         Log.i("MeshController", "USER ACTION: Leave Group")
                         // 1. Reset State completely (Keep same ID for now, it rotates on next join)
-                        _state.update { AppState(myself = it.myself) }
+                        _state.update {
+                            AppState(
+                                myself = it.myself,
+                                availableMics = it.availableMics,
+                                availableSpeakers = it.availableSpeakers,
+                            )
+                        }
 
                         // 2. Clear internal caches to prevent state bleeding if we rejoin
                         peerLiveness.clear()
