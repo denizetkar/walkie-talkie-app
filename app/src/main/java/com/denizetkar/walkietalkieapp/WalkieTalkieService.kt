@@ -20,6 +20,7 @@ import com.denizetkar.walkietalkieapp.logic.VoiceManager
 import com.denizetkar.walkietalkieapp.network.BleDriver
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import uniffi.walkie_talkie_engine.initLogger
 
 class WalkieTalkieService : Service() {
 
@@ -60,6 +61,13 @@ class WalkieTalkieService : Service() {
         super.onCreate()
         Log.i("WalkieTalkieService", "Initializing WalkieTalkieService")
 
+        // Initialize Rust Logger to pipe Rust logs to Android Logcat
+        try {
+            initLogger()
+        } catch (e: Exception) {
+            Log.w("WalkieTalkieService", "Could not init Rust logger (might be already init)", e)
+        }
+
         // 1. Acquire WakeLock (Pocket Mode)
         // Accessing the lazy property here triggers creation.
         wakeLock?.let { lock ->
@@ -91,13 +99,13 @@ class WalkieTalkieService : Service() {
             val heartbeats = flow {
                 while (currentCoroutineContext().isActive) {
                     delay(Config.HEARTBEAT_INTERVAL)
-                    emit(Action.HeartbeatTick)
+                    emit(Action.HeartbeatTick(System.currentTimeMillis()))
                 }
             }
             val cleanups = flow {
                 while (currentCoroutineContext().isActive) {
                     delay(Config.CLEANUP_PERIOD)
-                    emit(Action.CleanupTick)
+                    emit(Action.CleanupTick(System.currentTimeMillis()))
                 }
             }
 

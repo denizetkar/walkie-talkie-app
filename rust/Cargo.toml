@@ -20,10 +20,9 @@ bytes = "1.11"
 anyhow = "1.0"
 byteorder = "1.5"
 crossbeam-channel = "0.5"
+opus-codec = "0.1"
 
 # --- Android Only Dependencies ---
-# We moved opus-codec here so it doesn't break Windows builds
 [target.'cfg(target_os = "android")'.dependencies]
-opus-codec = "0.1"
 oboe = { version = "0.6", features = ["java-interface"] }
 android_logger = "0.15"

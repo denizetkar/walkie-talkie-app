@@ -4,12 +4,12 @@ import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.domain.*
 import com.denizetkar.walkietalkieapp.protocol.Packet
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import uniffi.walkie_talkie_engine.initLogger
 import kotlin.random.Random
 import kotlin.random.nextUInt
 
@@ -25,7 +25,9 @@ import kotlin.random.nextUInt
  */
 class MeshController(
     // Scope is required to launch the Actor loop. It should match the Service lifecycle.
-    scope: CoroutineScope
+    scope: CoroutineScope,
+    // Dispatcher for the actor loop. Defaults to Default (CPU-bound), but can be swapped for tests.
+    dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     // --- State (Single Source of Truth) ---
     // Start with a random ID, but it will be rotated on every session start.
@@ -58,17 +60,14 @@ class MeshController(
     private var lastHeartbeatSent = 0L
     private var lastRootSeen = 0L
 
-    init {
-        // Initialize Rust Logger to pipe Rust logs to Android Logcat
-        try {
-            initLogger()
-        } catch (e: Exception) {
-            Log.w("MeshController", "Could not init Rust logger (might be already init)", e)
-        }
+    // The internal clock. Tests can fast-forward this.
+    // Defaults to system time for safety, but is overwritten by Ticks immediately.
+    private var internalClockMs = System.currentTimeMillis()
 
+    init {
         // START THE ACTOR LOOP
         // We use a dedicated Dispatcher for Logic to ensure it doesn't get starved by UI or blocking IO.
-        scope.launch(Dispatchers.Default) {
+        scope.launch(dispatcher) {
             processingLoop()
         }
     }
@@ -113,7 +112,7 @@ class MeshController(
                         // ROTATE ID: To reset receiver Jitter Buffers
                         val newNodeId = Random.nextUInt()
                         // We are hosting, so isJoinAttempt = false (No timeout)
-                        val session = SessionContext(action.name, action.code, isJoinAttempt = false)
+                        val session = SessionContext(action.name, action.code, isJoinAttempt = false, startTime = internalClockMs)
                         _state.update {
                             it.copy(
                                 myself = newNodeId,
@@ -132,7 +131,7 @@ class MeshController(
                         // ROTATE ID: To reset receiver Jitter Buffers
                         val newNodeId = Random.nextUInt()
                         // We are joining, so isJoinAttempt = true (Global Timeout active)
-                        val session = SessionContext(action.name, action.code, isJoinAttempt = true)
+                        val session = SessionContext(action.name, action.code, isJoinAttempt = true, startTime = internalClockMs)
                         _state.update {
                             it.copy(
                                 myself = newNodeId,
@@ -237,7 +236,7 @@ class MeshController(
                             )
                         }
                         // Mark them as alive immediately so they don't get reaped by the next cleanup tick
-                        peerLiveness[action.peerId] = System.currentTimeMillis()
+                        peerLiveness[action.peerId] = internalClockMs
                     }
 
                     is Action.PeerDisconnected -> {
@@ -269,8 +268,14 @@ class MeshController(
                     // SYSTEM TICKS (Timers -> Core)
                     // =================================================================
 
-                    is Action.HeartbeatTick -> handleHeartbeatTick()
-                    is Action.CleanupTick -> handleCleanup()
+                    is Action.HeartbeatTick -> {
+                        internalClockMs = action.timeMs // Sync internal clock
+                        handleHeartbeatTick()
+                    }
+                    is Action.CleanupTick -> {
+                        internalClockMs = action.timeMs // Sync internal clock
+                        handleCleanup()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("MeshController", "Error processing action ${action.javaClass.simpleName}", e)
@@ -289,7 +294,7 @@ class MeshController(
 
         // 1. Liveness Update
         if (source != null) {
-            peerLiveness[source] = System.currentTimeMillis()
+            peerLiveness[source] = internalClockMs
         }
 
         // 2. Deduplication (Stop Flooding Loops)
@@ -340,7 +345,7 @@ class MeshController(
             _state.update {
                 it.copy(network = NetworkTopology.Mesh(hb.netId, hb.hops + 1, hb.seq))
             }
-            lastRootSeen = System.currentTimeMillis()
+            lastRootSeen = internalClockMs
             changed = true
         }
         // Rule 2: If same Network ID, update if Sequence is newer (Keepalive)
@@ -351,7 +356,7 @@ class MeshController(
                 }
                 changed = true
             }
-            lastRootSeen = System.currentTimeMillis()
+            lastRootSeen = internalClockMs
         }
 
         return changed
@@ -377,7 +382,7 @@ class MeshController(
             }
             // Otherwise (Different device, worse signal), keep existing but refresh timestamp.
             else {
-                existing.copy(lastSeen = System.currentTimeMillis())
+                existing.copy(lastSeen = internalClockMs)
             }
         }
 
@@ -424,7 +429,7 @@ class MeshController(
     private suspend fun handleHeartbeatTick() {
         val state = _state.value
         val session = state.session ?: return
-        val now = System.currentTimeMillis()
+        val now = internalClockMs
         val myId = state.myself
 
         // 1. GLOBAL JOIN TIMEOUT CHECK
@@ -475,7 +480,7 @@ class MeshController(
     }
 
     private suspend fun handleCleanup() {
-        val now = System.currentTimeMillis()
+        val now = internalClockMs
 
         // 1. Prune Packet Cache
         val iter = packetCache.iterator()
@@ -506,7 +511,7 @@ class MeshController(
     }
 
     private fun markPacketAsSeen(data: ByteArray) {
-        packetCache[data.contentHashCode()] = System.currentTimeMillis()
+        packetCache[data.contentHashCode()] = internalClockMs
     }
 
     private suspend fun emit(effect: Effect) {
@@ -515,6 +520,6 @@ class MeshController(
 
     private fun resetInternalTimers() {
         lastHeartbeatSent = 0L
-        lastRootSeen = System.currentTimeMillis()
+        lastRootSeen = internalClockMs
     }
 }

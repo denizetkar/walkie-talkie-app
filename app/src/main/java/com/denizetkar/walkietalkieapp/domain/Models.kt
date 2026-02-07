@@ -161,8 +161,8 @@ sealed class Action {
 
     // --- System Events (System/Drivers -> Core) ---
     // Periodic tickers for maintenance tasks
-    data object HeartbeatTick : Action() // ~1Hz
-    data object CleanupTick : Action()   // ~2-5Hz
+    data class HeartbeatTick(val timeMs: Long) : Action() // ~1Hz
+    data class CleanupTick(val timeMs: Long) : Action()   // ~2-5Hz
 
     /**
      * Audio chunk captured from the microphone (encoded Opus).
