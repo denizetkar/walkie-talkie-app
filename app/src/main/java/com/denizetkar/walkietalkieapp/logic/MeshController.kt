@@ -525,7 +525,7 @@ class MeshController(
     }
 
     private fun resetInternalTimers() {
-        lastHeartbeatSent = 0L
+        lastHeartbeatSent = internalClockMs
         lastRootSeen = internalClockMs
     }
 }
