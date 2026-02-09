@@ -1,9 +1,6 @@
-package com.denizetkar.walkietalkieapp
+package com.denizetkar.walkietalkieapp.protocol
 
-import com.denizetkar.walkietalkieapp.protocol.HandshakeLogic
-import com.denizetkar.walkietalkieapp.protocol.Packet
-import com.denizetkar.walkietalkieapp.protocol.Protocol
-import org.junit.Assert.*
+import org.junit.Assert
 import org.junit.Test
 
 class ProtocolTest {
@@ -19,13 +16,13 @@ class ProtocolTest {
         val bytes = original.toBytes()
 
         // Verify header (Version 0x10, OpCode 0x10)
-        assertEquals(0x10.toByte(), bytes[0])
-        assertEquals(Protocol.OP_HEARTBEAT, bytes[1])
+        Assert.assertEquals(0x10.toByte(), bytes[0])
+        Assert.assertEquals(Protocol.OP_HEARTBEAT, bytes[1])
 
         val parsed = Packet.fromBytes(bytes, isControlChar = true)
 
-        assertTrue(parsed is Packet.Control.Heartbeat)
-        assertEquals(original, parsed)
+        Assert.assertTrue(parsed is Packet.Control.Heartbeat)
+        Assert.assertEquals(original, parsed)
     }
 
     @Test
@@ -36,14 +33,14 @@ class ProtocolTest {
 
         // Client Generates
         val response = HandshakeLogic.generateResponse(accessCode, nonce, myNodeId)
-        assertEquals(16, response.size) // 12 hash + 4 ID
+        Assert.assertEquals(16, response.size) // 12 hash + 4 ID
 
         // Server Verifies (Correct Code)
         val resultSuccess = HandshakeLogic.verifyResponse(response, accessCode, nonce)
-        assertEquals(myNodeId, resultSuccess)
+        Assert.assertEquals(myNodeId, resultSuccess)
 
         // Server Verifies (Wrong Code)
         val resultFail = HandshakeLogic.verifyResponse(response, "0000", nonce)
-        assertNull(resultFail)
+        Assert.assertNull(resultFail)
     }
 }
