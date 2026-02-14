@@ -2,6 +2,7 @@ package com.denizetkar.walkietalkieapp.bluetooth
 
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.TransportDataType
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,11 +20,12 @@ import kotlinx.coroutines.yield
  * Ensures that only one BLE operation runs at a time, preventing "GATT Busy" errors.
  */
 class BleOperationQueue(
-    parentScope: CoroutineScope
+    parentScope: CoroutineScope,
+    dispatcher: CoroutineDispatcher = Dispatchers.Default
 ) {
     // The Actor lives as long as the parent (Connection/Server) lives.
     private val scope = CoroutineScope(
-        parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext.job) + Dispatchers.Default
+        parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext.job) + dispatcher
     )
 
     // Control: Unlimited buffer. We must never drop a handshake or heartbeat.

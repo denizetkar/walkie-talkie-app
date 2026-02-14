@@ -7,7 +7,9 @@ import java.util.ArrayDeque
  * This utility tracks scan attempts and blocks requests that would trigger
  * the system ban (Error Code 6).
  */
-class ScanRateLimiter {
+class ScanRateLimiter(
+    private val timeSource: () -> Long = System::currentTimeMillis
+) {
     private val history = ArrayDeque<Long>()
 
     // Android Limit: 5 scans in 30 seconds
@@ -20,7 +22,7 @@ class ScanRateLimiter {
      */
     @Synchronized
     fun tryAcquire(): Long? {
-        val nowTimeMs = System.currentTimeMillis()
+        val nowTimeMs = timeSource()
         prune(nowTimeMs)
         if (history.size >= maxAttempts) {
             return null
