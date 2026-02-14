@@ -1,14 +1,9 @@
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender as StdSender;
-use std::collections::HashMap;
-use crossbeam_channel::{unbounded, Receiver, Sender};
-
 uniffi::setup_scaffolding!("walkie_talkie_engine");
 
 // Import our new Core module
 mod audio_core;
-use audio_core::{AudioConfig, RemoteStream, wrap_packet, unwrap_packet, PCM_BUFFER_SIZE};
+// Only import what is needed for the interface
+use audio_core::AudioConfig;
 
 // ===========================================================================
 // SHARED DEFINITIONS
@@ -43,7 +38,13 @@ pub trait AudioErrorCallback: Send + Sync {
 mod real_impl {
     use super::*;
     use std::thread;
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::Sender as StdSender;
     use std::sync::mpsc::{channel, Receiver as StdReceiver};
+    use std::collections::HashMap;
+    use crossbeam_channel::{unbounded, Receiver, Sender};
+    use crate::audio_core::{RemoteStream, wrap_packet, unwrap_packet, PCM_BUFFER_SIZE};
 
     use oboe::{
         AudioInputCallback, AudioOutputCallback, AudioStreamBuilder, AudioStreamAsync,
@@ -375,7 +376,6 @@ mod real_impl {
                         let remaining = peer.valid_samples - to_copy;
                         peer.pcm_buffer.copy_within(to_copy..peer.valid_samples, 0);
                         peer.valid_samples = remaining;
-
                         peer_samples_produced += to_copy;
                         continue; // Go back to check if we filled the need
                     }

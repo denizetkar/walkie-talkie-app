@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Logic is consumed only by Android target
+
 use std::collections::BTreeMap;
 use byteorder::{ByteOrder, LittleEndian};
 use opus_codec::{Decoder, Channels, SampleRate};
@@ -247,8 +249,16 @@ impl RemoteStream {
 mod tests {
     use super::*;
 
+    // Helper: Generates a dummy Opus packet (3 bytes) that won't crash the decoder
+    // Byte sequence: 0xF8 (Config 0, Mono), 0xFF, 0xFE (Payload)
+    fn get_dummy_opus_frame() -> Vec<u8> {
+        vec![0xF8, 0xFF, 0xFE]
+    }
+
     #[test]
     fn test_protocol_wrapping() {
+        // SCENARIO: Verify binary serialization round-trip.
+        // Ensures Little-Endian format is used consistently for NodeID and SeqNum.
         let origin = 0xDEADBEEF;
         let seq = 42;
         let payload = vec![0xAA, 0xBB, 0xCC];
@@ -256,72 +266,163 @@ mod tests {
         let wrapped = wrap_packet(origin, seq, &payload);
         let (out_id, out_seq, out_data) = unwrap_packet(&wrapped).unwrap();
 
-        assert_eq!(origin, out_id);
-        assert_eq!(seq, out_seq);
-        assert_eq!(payload, out_data);
+        assert_eq!(origin, out_id, "Origin ID mismatch");
+        assert_eq!(seq, out_seq, "Sequence number mismatch");
+        assert_eq!(payload, out_data, "Payload corruption");
+    }
+
+    #[test]
+    fn test_sequence_wrapping_overflow() {
+        // SCENARIO: Sequence numbers are u16. They wrap from 65535 -> 0.
+        // BTreeMap sorts 0 before 65535, so we must ensure the engine
+        // establishes the correct "Next Expected" state BEFORE the wrap occurs.
+        let mut stream = RemoteStream::new(48000, 1000, 60);
+        let data = get_dummy_opus_frame();
+
+        // 1. Establish state: Push packets leading up to the limit (Threshold=6)
+        // Push 65530..65535.
+        for i in 65530..=65535 {
+            stream.push_packet(i, data.clone());
+        }
+
+        // 2. Process first frame to Exit Buffering
+        // Smallest key is 65530. Engine picks it.
+        // State becomes: Buffering=False, NextExpected=65531.
+        let _ = stream.process_next_frame();
+        assert!(!stream.buffering);
+        assert_eq!(stream.next_expected_seq, Some(65531));
+
+        // 3. Now introduce the wrap packets (0, 1, 2)
+        stream.push_packet(0, data.clone());
+        stream.push_packet(1, data.clone());
+        stream.push_packet(2, data.clone());
+
+        // 4. Drain the high numbers (65531..65535)
+        for _ in 65531..=65535 {
+            stream.process_next_frame();
+        }
+
+        // 5. The Moment of Truth: Wrap 65535 -> 0
+        // Previous step consumed 65535. Logic: 65535.wrapping_add(1) == 0.
+        assert_eq!(stream.next_expected_seq, Some(0));
+
+        // 6. Verify it finds packet 0 (which exists in the map)
+        stream.process_next_frame();
+        assert_eq!(stream.next_expected_seq, Some(1));
+    }
+
+    #[test]
+    fn test_buffer_overflow_protection() {
+        // SCENARIO: Network burst / Latency spike.
+        // If we receive too many packets (more than max_jitter_packets),
+        // we must drop the OLDEST ones to catch up to real-time.
+
+        // Setup: Max 10 packets allowed (600ms buffer / 60ms frame)
+        let mut stream = RemoteStream::new(48000, 600, 60);
+        let data = get_dummy_opus_frame();
+
+        // 1. Flood with 20 packets (Seq 100 to 119)
+        for i in 100..120 {
+            stream.push_packet(i, data.clone());
+        }
+
+        // 2. Initial State: Buffer holds 20 items (Overflowed)
+        // Note: The cleanup happens lazily inside `process_next_frame`.
+        assert_eq!(stream.jitter_buffer.len(), 20);
+
+        // 3. Trigger Processing
+        // Logic detects overflow -> Removes oldest 10 packets (100..109) -> Jumps to 110.
+        stream.process_next_frame();
+
+        // 4. Verify Cleanup
+        assert!(stream.jitter_buffer.len() <= 10, "Buffer should be trimmed to max size");
+
+        // 5. Verify Jump
+        // We skipped 100..109. We processed 110. Next expected is 111.
+        assert_eq!(stream.next_expected_seq, Some(111));
     }
 
     #[test]
     fn test_jitter_reordering() {
+        // SCENARIO: UDP/BLE packets arrive out of order.
+        // The Jitter Buffer (BTreeMap) should sort them automatically.
         let mut stream = RemoteStream::new(48000, 1000, 60);
+        let data = get_dummy_opus_frame();
 
-        // Simulate receiving packets out of order: 3, 1, 2
-        // We use dummy Opus data (empty vec might fail decode, so we trust logic flow or mock decoder if possible)
-        // Note: Real opus decoder needs valid frames or it returns error.
-        // For this logic test, we rely on the JitterBuffer state, assuming decode works or fails gracefully.
+        // 1. Push mixed sequence: 3, 1, 2
+        stream.push_packet(3, data.clone());
+        stream.push_packet(1, data.clone());
+        stream.push_packet(2, data.clone());
 
-        let dummy_data = vec![0u8; 10];
-
-        // 1. Push Seq 3 (Future)
-        stream.push_packet(3, dummy_data.clone());
-        assert!(stream.buffering); // Should be buffering (count 1 < 6)
-
-        // 2. Push packets out of order
-        stream.push_packet(1, dummy_data.clone());
-        stream.push_packet(2, dummy_data.clone());
-        stream.push_packet(4, dummy_data.clone());
-        stream.push_packet(5, dummy_data.clone());
-        stream.push_packet(6, dummy_data.clone()); // Count = 6. Threshold reached.
+        // 2. Fill to threshold (Need 3 more)
+        stream.push_packet(4, data.clone());
+        stream.push_packet(5, data.clone());
+        stream.push_packet(6, data.clone());
 
         // 3. Process
-        // Buffer has: 1, 2, 3, 4, 5, 6.
-        // Logic should pick 1 first.
-
-        // Force state check:
-        // We can't easily check internal BTreeMap without exposing it,
-        // but we can check `process()` outcome order if we had a mock decoder.
-        // Instead, we verify the `buffering` flag logic works.
-
-        assert!(stream.buffering);
-        // Trigger the start threshold
         let _ = stream.process_next_frame();
 
+        // 4. Verify Sorting
         assert!(!stream.buffering);
+        // Logic should pick '1' (lowest key), not '3' (first inserted)
+        // So next expected is 2.
         assert_eq!(stream.next_expected_seq, Some(2));
     }
 
     #[test]
     fn test_packet_loss_concealment_trigger() {
+        // SCENARIO: Packet 5 is lost.
+        // Logic should detect the gap (we have 6, but expected 5).
+        // It should tell Opus to generate PLC (fake audio) and move on.
         let mut stream = RemoteStream::new(48000, 1000, 60);
-        let dummy_data = vec![0u8; 10];
+        let data = get_dummy_opus_frame();
 
-        // Pre-fill to pass buffering threshold
-        for i in 0..10 {
-            if i != 5 { // SKIP SEQ 5
-                stream.push_packet(i, dummy_data.clone());
-            }
-        }
+        // 1. Fill buffer: 0, 1, 2, 3, 4, (SKIP 5), 6
+        for i in 0..5 { stream.push_packet(i, data.clone()); }
+        stream.push_packet(6, data.clone());
 
-        // Process up to gap
-        for i in 0..5 {
-            let _ = stream.process_next_frame();
-            assert_eq!(stream.next_expected_seq, Some(i + 1));
-        }
+        // 2. Drain valid packets 0..4
+        for _ in 0..5 { stream.process_next_frame(); }
+        assert_eq!(stream.next_expected_seq, Some(5));
 
-        // Now we are at expected=5. Map has 6, 7, 8...
-        // process() should see 5 is missing, but 6 is present (within lookahead).
-        // It should trigger PLC (return None to decoder) and increment expected to 6.
+        // 3. Process missing packet 5
+        // We have 6 in buffer (Lookahead window). So we know 5 is truly missing.
         let _ = stream.process_next_frame();
+
+        // 4. Verify Recovery
+        // Even though we didn't have data for 5, we should have advanced past it.
         assert_eq!(stream.next_expected_seq, Some(6));
+    }
+
+    #[test]
+    fn test_underrun_recovery() {
+        // SCENARIO: Internet cuts out. Buffer drains completely.
+        // Engine should enter "Buffering" state and wait for threshold before playing again.
+        let mut stream = RemoteStream::new(48000, 1000, 60);
+        let data = get_dummy_opus_frame();
+
+        // 1. Fill to threshold (6 packets) and drain them all immediately
+        for i in 0..6 { stream.push_packet(i, data.clone()); }
+        for _ in 0..6 { stream.process_next_frame(); }
+
+        // 2. Buffer is empty. Next call implies underrun.
+        stream.process_next_frame();
+        assert!(stream.buffering, "Should enter buffering state when empty");
+
+        // 3. Add single packet (Seq 6).
+        // Should NOT play yet because threshold (6) is not met.
+        stream.push_packet(6, data.clone());
+        let played = stream.process_next_frame();
+        assert!(!played, "Should not play single packet while buffering");
+        assert!(stream.buffering);
+
+        // 4. Fill remaining required packets (Seq 7..11)
+        for i in 7..12 { stream.push_packet(i, data.clone()); }
+
+        // 5. Verify Resume
+        let played_now = stream.process_next_frame();
+        assert!(played_now, "Should resume playing");
+        assert!(!stream.buffering);
+        assert_eq!(stream.next_expected_seq, Some(7)); // Consumed 6
     }
 }
