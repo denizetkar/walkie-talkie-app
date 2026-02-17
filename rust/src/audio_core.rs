@@ -425,4 +425,41 @@ mod tests {
         assert!(!stream.buffering);
         assert_eq!(stream.next_expected_seq, Some(7)); // Consumed 6
     }
+
+    #[test]
+    fn test_packet_parsing_failures() {
+        assert!(unwrap_packet(&[]).is_none());
+        assert!(unwrap_packet(&[0, 1, 2]).is_none());
+        // 5 bytes < HEADER_SIZE (6)
+        assert!(unwrap_packet(&[0; 5]).is_none());
+    }
+
+    #[test]
+    fn test_huge_gap_resync() {
+        let mut stream = RemoteStream::new(48000, 1000, 60);
+        let data = get_dummy_opus_frame();
+
+        // 1. Manually bypass buffering to test gap logic in isolation
+        stream.buffering = false;
+
+        // 2. Initialize Stream State
+        stream.push_packet(100, data.clone());
+        // First call: sets next_expected_seq = 100 (fallback logic), returns false
+        let _ = stream.process_next_frame();
+        assert_eq!(stream.next_expected_seq, Some(100));
+
+        // Second call: plays 100, sets next = 101
+        let _ = stream.process_next_frame();
+        assert_eq!(stream.next_expected_seq, Some(101));
+
+        // 3. Push 5000 (Huge gap)
+        stream.push_packet(5000, data.clone());
+
+        // 4. Process
+        // 5000 is far beyond 101 + Window. Should jump.
+        let played = stream.process_next_frame();
+
+        assert!(played, "Should play the new packet immediately (Resync)");
+        assert_eq!(stream.next_expected_seq, Some(5001));
+    }
 }

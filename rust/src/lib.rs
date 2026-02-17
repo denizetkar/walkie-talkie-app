@@ -224,6 +224,9 @@ mod real_impl {
             let (tx, rx) = unbounded();
             *self.packet_tx.lock().unwrap() = Some(tx);
 
+            // FIX: Initialize with a reasonable default capacity to avoid initial reallocs
+            let initial_capacity = 4096;
+
             let callback = OutputCallback {
                 peers: HashMap::new(),
                 packet_rx: rx,
@@ -231,6 +234,7 @@ mod real_impl {
                 jitter_buffer_ms: self.config.jitter_buffer_ms,
                 frame_size_ms: self.config.frame_size_ms,
                 error_callback: self.error_callback.clone(),
+                mix_buffer: Vec::with_capacity(initial_capacity),
             };
 
             let mut builder = AudioStreamBuilder::default()
@@ -323,6 +327,7 @@ mod real_impl {
         jitter_buffer_ms: i32,
         frame_size_ms: i32,
         error_callback: Arc<Box<dyn AudioErrorCallback>>,
+        mix_buffer: Vec<i32>,
     }
 
     impl AudioOutputCallback for OutputCallback {
@@ -338,8 +343,15 @@ mod real_impl {
             }
 
             let samples_needed = frames.len();
-            // 32-bit mixing accumulator prevents clipping during addition
-            let mut mix_buffer = vec![0i32; samples_needed];
+
+            // FIX: Resize buffer only if Oboe asks for more than usual (Rare)
+            // This prevents heap allocation in steady state.
+            if self.mix_buffer.len() < samples_needed {
+                self.mix_buffer.resize(samples_needed, 0);
+            }
+            // Zero out the buffer for this cycle (memset is fast)
+            self.mix_buffer[..samples_needed].fill(0);
+
             let mut dead_peers = Vec::new();
             const PEER_TIMEOUT_FRAMES: usize = 50; // ~3 seconds @ 60ms frames
 
@@ -369,7 +381,8 @@ mod real_impl {
                     if peer.valid_samples > 0 {
                         let to_copy = std::cmp::min(samples_needed - peer_samples_produced, peer.valid_samples);
                         for i in 0..to_copy {
-                            mix_buffer[peer_samples_produced + i] += peer.pcm_buffer[i] as i32;
+                            // FIX: Accumulate into reusable buffer
+                            self.mix_buffer[peer_samples_produced + i] += peer.pcm_buffer[i] as i32;
                         }
 
                         // Shift remaining data to start of buffer
@@ -400,7 +413,7 @@ mod real_impl {
 
             // 4. Downmix 32-bit -> 16-bit (Clamping)
             for i in 0..samples_needed {
-                frames[i] = mix_buffer[i].clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                frames[i] = self.mix_buffer[i].clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             }
 
             DataCallbackResult::Continue
