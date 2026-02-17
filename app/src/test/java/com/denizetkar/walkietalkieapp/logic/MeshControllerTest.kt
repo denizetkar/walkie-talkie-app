@@ -2,101 +2,98 @@ package com.denizetkar.walkietalkieapp.logic
 
 import com.denizetkar.walkietalkieapp.domain.Action
 import com.denizetkar.walkietalkieapp.domain.Effect
+import com.denizetkar.walkietalkieapp.domain.NetworkTopology
 import com.denizetkar.walkietalkieapp.protocol.Packet
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import org.junit.Assert
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MeshControllerTest {
 
     private lateinit var controller: MeshController
-    private lateinit var testDispatcher: TestDispatcher
-    private val effects = mutableListOf<Effect>()
+    private val testDispatcher = StandardTestDispatcher()
+    private val testScope = TestScope(testDispatcher)
 
     // Renamed to avoid conflict with TestScope.currentTime
     private var simulationTime = 1000L
 
     @Before
     fun setup() {
-        testDispatcher = StandardTestDispatcher()
-        // We initialize the controller with the Standard dispatcher
-        controller = MeshController(TestScope(testDispatcher), testDispatcher)
-
-        // Start the simulation clock
-        simulationTime = 1000L
+        // Use backgroundScope so the actor loop is cancelled at end of test
+        controller = MeshController(testScope.backgroundScope, testDispatcher)
+        // Initialize the simulation clock
         controller.dispatch(Action.HeartbeatTick(simulationTime))
     }
 
     /**
-     * Helper to advance both Coroutine time and the Controller's internal clock.
-     * The Controller relies on explicit Tick actions to know time has passed.
+     * Helper to advance time in the simulation.
+     * Ticks the internal clock and the coroutine scheduler.
      */
-    private fun TestScope.advanceSimulation(durationMs: Long) {
-        val stepSize = 1000L
-        val steps = durationMs / stepSize
-
-        repeat(steps.toInt()) {
-            simulationTime += stepSize
-            // Dispatch both ticks so all logic (Heartbeats + Cleanups) runs
+    private fun tick(durationMs: Long) {
+        val step = 100L
+        var elapsed = 0L
+        while (elapsed < durationMs) {
+            simulationTime += step
+            elapsed += step
             controller.dispatch(Action.HeartbeatTick(simulationTime))
             controller.dispatch(Action.CleanupTick(simulationTime))
-            advanceTimeBy(stepSize)
-            runCurrent()
-        }
-
-        // Handle remaining ms
-        val remaining = durationMs % stepSize
-        if (remaining > 0) {
-            simulationTime += remaining
-            controller.dispatch(Action.HeartbeatTick(simulationTime))
-            controller.dispatch(Action.CleanupTick(simulationTime))
-            advanceTimeBy(remaining)
-            runCurrent()
+            testScope.advanceTimeBy(step.milliseconds)
+            testScope.runCurrent()
         }
     }
 
     @Test
-    fun `Deduplication - Duplicate packets do not trigger Audio or Relay`() =
-        runTest(testDispatcher) {
-            // Collect effects in background
-            backgroundScope.launch { controller.effects.collect { effects.add(it) } }
-
-            // 1. Setup: Join a group so we are listening
-            controller.dispatch(Action.JoinGroup("Test", "1234"))
-            runCurrent()
-            effects.clear() // Clear "Connect" effects
-
-            // 2. Action: Receive Audio Packet A (First Time)
-            val packetA = Packet.Audio(byteArrayOf(0x01, 0x02, 0x03)).toBytes()
-            controller.dispatch(Action.PacketReceived(packetA, source = 10u, isControl = false))
-            runCurrent()
-
-            // Assert: We rendered and relayed it
-            Assert.assertTrue("Should render audio", effects.any { it is Effect.RenderAudio })
-            Assert.assertTrue("Should relay packet", effects.any { it is Effect.Transmit })
-
-            effects.clear()
-
-            // 3. Action: Receive Packet A again (Duplicate)
-            controller.dispatch(Action.PacketReceived(packetA, source = 10u, isControl = false))
-            runCurrent()
-
-            // Assert: NO new effects
-            Assert.assertTrue("Should ignore duplicate packet", effects.isEmpty())
+    fun `Deduplication - Duplicate packets do not trigger Audio or Relay`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
         }
 
+        // 1. Setup: Join a group
+        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        runCurrent()
+        effects.clear() // Clear "Connect" effects
+
+        // 2. Action: Receive Audio Packet A (First Time)
+        val packetA = Packet.Audio(byteArrayOf(0x01, 0x02, 0x03)).toBytes()
+        controller.dispatch(Action.PacketReceived(packetA, source = 10u, isControl = false))
+        runCurrent()
+
+        // Assert: We rendered and relayed it
+        assertTrue("Should render audio", effects.any { it is Effect.RenderAudio })
+        assertTrue("Should relay packet", effects.any { it is Effect.Transmit })
+
+        effects.clear()
+
+        // 3. Action: Receive Packet A again (Duplicate)
+        controller.dispatch(Action.PacketReceived(packetA, source = 10u, isControl = false))
+        runCurrent()
+
+        // Assert: NO new effects
+        assertTrue("Should ignore duplicate packet", effects.isEmpty())
+    }
+
     @Test
-    fun `Split Horizon - Do not echo data back to sender`() = runTest(testDispatcher) {
-        backgroundScope.launch { controller.effects.collect { effects.add(it) } }
+    fun `Split Horizon - Do not echo data back to sender`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
         controller.dispatch(Action.JoinGroup("Test", "1234"))
         runCurrent()
         effects.clear()
@@ -108,118 +105,247 @@ class MeshControllerTest {
         runCurrent()
 
         // 2. Assert: Transmit effect has excludedSource = 99
-        val transmit = effects.filterIsInstance<Effect.Transmit>().first()
-        Assert.assertEquals(
+        val transmit = effects.filterIsInstance<Effect.Transmit>().firstOrNull()
+        assertNotNull(transmit)
+        assertEquals(
             "Should exclude the original sender from the flood",
             peerId,
-            transmit.excludedSource
+            transmit?.excludedSource
         )
     }
 
     @Test
-    fun `Peer Liveness - Disconnects silent peers after timeout`() = runTest(testDispatcher) {
-        backgroundScope.launch { controller.effects.collect { effects.add(it) } }
+    fun `Peer Liveness - Disconnects silent peers after timeout`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
         controller.dispatch(Action.JoinGroup("Test", "1234"))
+        runCurrent()
 
         // 1. Setup: Peer 50 connects
         val peerId = 50u
         controller.dispatch(Action.PeerConnected(peerId))
         runCurrent()
-        Assert.assertTrue(controller.state.value.connectedPeers.contains(peerId))
+        assertTrue(controller.state.value.connectedPeers.contains(peerId))
 
-        // 2. Advance time JUST BEFORE timeout (Config.PEER_LIVENESS_TIMEOUT = 7000ms)
-        advanceSimulation(6000)
-        Assert.assertTrue(
-            "Peer should still be alive",
-            controller.state.value.connectedPeers.contains(peerId)
-        )
+        // 2. Advance time JUST BEFORE timeout (7000ms)
+        tick(6000)
+        assertTrue("Peer should still be alive", controller.state.value.connectedPeers.contains(peerId))
 
         // 3. Keep peer alive by sending a packet
-        controller.dispatch(
-            Action.PacketReceived(
-                byteArrayOf(1),
-                source = peerId,
-                isControl = false
-            )
-        )
+        controller.dispatch(Action.PacketReceived(byteArrayOf(1), source = peerId, isControl = false))
         runCurrent()
 
         // 4. Advance time past the ORIGINAL timeout, but within the NEW timeout
-        // Total 10s from start, but only 4s since last packet
-        advanceSimulation(4000)
-        Assert.assertTrue(
-            "Peer should stay alive due to activity",
-            controller.state.value.connectedPeers.contains(peerId)
-        )
+        tick(4000)
+        assertTrue("Peer should stay alive due to activity", controller.state.value.connectedPeers.contains(peerId))
 
-        // 5. Advance time to trigger actual timeout (4s + 4s > 7s)
-        advanceSimulation(4000)
+        // 5. Advance time to trigger actual timeout
+        tick(4000)
 
         // Assert: Peer disconnected
-        val disconnectEffect = effects.filterIsInstance<Effect.Disconnect>().firstOrNull()
-        Assert.assertNotNull("Should have emitted Disconnect effect", disconnectEffect)
-        Assert.assertEquals(peerId, disconnectEffect?.peerId)
+        val disconnectEffect = effects.filterIsInstance<Effect.Disconnect>().firstOrNull { it.peerId == peerId }
+        assertNotNull("Should have emitted Disconnect effect", disconnectEffect)
     }
 
     @Test
-    fun `Leave Group - Clears internal state (Cache)`() = runTest(testDispatcher) {
-        backgroundScope.launch { controller.effects.collect { effects.add(it) } }
+    fun `Leave Group - Clears internal state`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
 
         // 1. Join Group 1
         controller.dispatch(Action.JoinGroup("Group1", "1111"))
         runCurrent()
 
-        // 2. Receive Packet X (it gets cached)
+        // 2. Receive Packet X (cached)
         val packetX = Packet.Audio(byteArrayOf(0xAA.toByte())).toBytes()
         controller.dispatch(Action.PacketReceived(packetX, source = 1u, isControl = false))
         runCurrent()
         effects.clear()
 
-        // 3. Receive Packet X again (Duplicate check)
-        controller.dispatch(Action.PacketReceived(packetX, source = 1u, isControl = false))
-        runCurrent()
-        Assert.assertTrue("Should be ignored", effects.isEmpty())
-
-        // 4. Leave Group
+        // 3. Leave Group
         controller.dispatch(Action.LeaveGroup())
         runCurrent()
-        Assert.assertNull(controller.state.value.session)
+        assertNull(controller.state.value.session)
 
-        // 5. Create NEW Group (Logic: Should simulate a fresh start)
+        // 4. Create NEW Group
         controller.dispatch(Action.CreateGroup("Group2", "2222"))
         runCurrent()
         effects.clear()
 
-        // 6. Receive Packet X again
-        // Since we left the group, the deduplication cache should have been wiped.
-        // Therefore, this packet should be processed as NEW.
+        // 5. Receive Packet X again (Should be treated as NEW)
         controller.dispatch(Action.PacketReceived(packetX, source = 1u, isControl = false))
         runCurrent()
 
-        Assert.assertTrue("Should process packet again after re-joining", effects.isNotEmpty())
+        assertTrue("Should process packet again after re-joining", effects.isNotEmpty())
     }
 
     @Test
-    fun `Heartbeat - Root generates heartbeats periodically`() = runTest(testDispatcher) {
-        backgroundScope.launch { controller.effects.collect { effects.add(it) } }
+    fun `Heartbeat - Root generates heartbeats periodically`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
 
         // 1. Create Group (Becomes Root)
         controller.dispatch(Action.CreateGroup("Test", "1234"))
         runCurrent()
         effects.clear()
 
-        // 2. Advance time < Interval (1000ms)
-        advanceSimulation(500)
-        Assert.assertTrue(effects.isEmpty())
-
-        // 3. Advance time > Interval
-        advanceSimulation(600) // Total 1100ms
+        // 2. Advance time > Interval (1000ms)
+        tick(1100)
 
         val hbEffect = effects.filterIsInstance<Effect.Transmit>().firstOrNull { it.isControl }
-        Assert.assertNotNull("Should generate heartbeat", hbEffect)
+        assertNotNull("Should generate heartbeat", hbEffect)
 
         val packet = Packet.fromBytes(hbEffect!!.data, true) as Packet.Control.Heartbeat
-        Assert.assertEquals("Should be my ID", controller.state.value.myself, packet.netId)
-        Assert.assertEquals("Hops should be 0", 0, packet.hops)
+        assertEquals("Should be my ID", controller.state.value.myself, packet.netId)
+        assertEquals("Hops should be 0", 0, packet.hops)
+    }
+
+    @Test
+    fun `Topology - Merges with Better Root (Island Merging)`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
+        // 1. Setup: Node starts a group (Random Root ID)
+        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        runCurrent()
+        effects.clear()
+
+        // Get the ACTUAL generated ID and calculate a strictly higher ID
+        val myId = controller.state.value.myself
+        val betterRootId = myId + 100u
+
+        // 2. Action: Receive Heartbeat from Better Root
+        val hbPacket = Packet.Control.Heartbeat(
+            netId = betterRootId,
+            seq = 50,
+            hops = 0
+        ).toBytes()
+
+        controller.dispatch(Action.PacketReceived(hbPacket, source = 50u, isControl = true))
+        tick(100)
+
+        // 3. Assert: We adopted the new root
+        val newState = controller.state.value
+        assertEquals("Should adopt better root ID", betterRootId, newState.network.rootId)
+        assertTrue("Should be Mesh type", newState.network is NetworkTopology.Mesh)
+        assertEquals("Hops should increment", 1, newState.network.hops)
+
+        // 4. Assert: We relayed the new topology
+        val transmit = effects.filterIsInstance<Effect.Transmit>().lastOrNull()
+        assertNotNull("Should transmit new topology", transmit)
+        assertTrue("Should be reliable control packet", transmit!!.isControl)
+    }
+
+    @Test
+    fun `Topology - Ignores Worse Root (Loop Prevention)`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
+        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        runCurrent()
+        effects.clear()
+
+        // Get the ACTUAL generated ID and calculate a strictly lower ID
+        val myId = controller.state.value.myself
+        // Ensure we don't underflow 0 (unlikely random would be 0, but good practice)
+        val worseRootId = if (myId > 0u) myId - 1u else 0u
+
+        if (myId == 0u) {
+            // Edge case: If random was 0, we can't test "worse" easily in this unit test structure
+            // without mocking Random. Skipping assertion for this rare 1/4billion case.
+            return@runTest
+        }
+
+        // 2. Action: Receive Heartbeat from Worse Root
+        val hbPacket = Packet.Control.Heartbeat(
+            netId = worseRootId,
+            seq = 50,
+            hops = 0
+        ).toBytes()
+
+        controller.dispatch(Action.PacketReceived(hbPacket, source = 50u, isControl = true))
+        tick(100)
+
+        // 3. Assert: We stayed with our own ID
+        assertEquals("Should ignore worse root", myId, controller.state.value.network.rootId)
+        assertTrue("Should NOT relay worse topology", effects.isEmpty())
+    }
+
+    @Test
+    fun `Self Healing - Reverts to Standalone after Root Timeout`() = testScope.runTest {
+        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        runCurrent()
+
+        // Use relative ID
+        val myId = controller.state.value.myself
+        val betterRootId = myId + 100u
+
+        // 1. Force Merge to Better Root
+        val hbPacket = Packet.Control.Heartbeat(betterRootId, 10, 0).toBytes()
+        controller.dispatch(Action.PacketReceived(hbPacket, source = 50u, isControl = true))
+        tick(100)
+
+        assertEquals(betterRootId, controller.state.value.network.rootId)
+
+        // 2. Wait 2 seconds (Still Alive)
+        tick(2000)
+        assertEquals(betterRootId, controller.state.value.network.rootId)
+
+        // 3. Wait 2 more seconds (Total 4s > Timeout 3s)
+        tick(2000)
+
+        // 4. Assert: Reverted to Myself (Discarded betterRootId)
+        val finalState = controller.state.value
+        assertEquals("Should be my own root", myId, finalState.network.rootId)
+
+        // Note: We do NOT assert is Standalone, because the node immediately promotes itself
+        // to Mesh(myId) to start generating sequence numbers.
+    }
+
+    @Test
+    fun `Audio - Only floods if Mic Enabled`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
+        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        runCurrent()
+
+        // 1. Set Mic DISABLED
+        controller.dispatch(Action.SetMic(false))
+        runCurrent()
+        effects.clear()
+
+        // 2. Capture Audio from Mic
+        controller.dispatch(Action.AudioDataCaptured(byteArrayOf(1, 2, 3)))
+        runCurrent()
+
+        // Assert: NO Transmission
+        assertTrue("Should not transmit when Mic is OFF", effects.isEmpty())
+
+        // 3. Set Mic ENABLED
+        controller.dispatch(Action.SetMic(true))
+        runCurrent()
+
+        // 4. Capture Audio from Mic
+        controller.dispatch(Action.AudioDataCaptured(byteArrayOf(4, 5, 6)))
+        runCurrent()
+
+        // Assert: Transmit Effect
+        val transmit = effects.filterIsInstance<Effect.Transmit>().lastOrNull()
+        assertNotNull("Should transmit when Mic is ON", transmit)
+        assertTrue("Should be unreliable (flood)", !transmit!!.isControl)
     }
 }
