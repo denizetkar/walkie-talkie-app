@@ -462,4 +462,53 @@ mod tests {
         assert!(played, "Should play the new packet immediately (Resync)");
         assert_eq!(stream.next_expected_seq, Some(5001));
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        // SCENARIO 1: Pure Chaos
+        // Generate random sequence numbers and ensure the engine never panics.
+        #[test]
+        fn fuzz_no_panics_on_arbitrary_sequences(
+            seqs in proptest::collection::vec(any::<u16>(), 1..1000)
+        ) {
+            let mut stream = RemoteStream::new(48000, 1000, 60);
+            let data = get_dummy_opus_frame();
+
+            for seq in seqs {
+                stream.push_packet(seq, data.clone());
+                // We don't assert the result, just that it doesn't panic
+                let _ = stream.process_next_frame();
+            }
+        }
+
+        // SCENARIO 2: Boundary Wrapping Stress
+        // Focus specifically on the u16 overflow boundary (65535 -> 0).
+        // We generate a start point near the end, and then a series of steps (increments).
+        #[test]
+        fn fuzz_wrapping_boundary_stability(
+            start_seq in 65500u16..65535u16,
+            steps in proptest::collection::vec(1u16..50u16, 1..200)
+        ) {
+            let mut stream = RemoteStream::new(48000, 1000, 60);
+            let data = get_dummy_opus_frame();
+
+            let mut current_seq = start_seq;
+
+            // 1. Seed the initial packet
+            stream.push_packet(current_seq, data.clone());
+            let _ = stream.process_next_frame();
+
+            for step in steps {
+                // Advance sequence by random step (simulating gap)
+                current_seq = current_seq.wrapping_add(step);
+
+                stream.push_packet(current_seq, data.clone());
+
+                // Try to process multiple times to drain buffer
+                let _ = stream.process_next_frame();
+                let _ = stream.process_next_frame();
+            }
+        }
+    }
 }

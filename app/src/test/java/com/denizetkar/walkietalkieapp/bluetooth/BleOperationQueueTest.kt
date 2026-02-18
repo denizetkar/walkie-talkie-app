@@ -1,11 +1,12 @@
-package com.denizetkar.walkietalkieapp
+package com.denizetkar.walkietalkieapp.bluetooth
 
-import com.denizetkar.walkietalkieapp.bluetooth.BleOperationQueue
+import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.TransportDataType
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.*
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -87,5 +88,62 @@ class BleOperationQueueTest {
         )
 
         assertEquals(expected, executionLog)
+    }
+
+    @Test
+    fun `Flood - Drops OLD audio packets when queue is full`() = runTest(UnconfinedTestDispatcher()) {
+        val queue = BleOperationQueue(backgroundScope, UnconfinedTestDispatcher(testScheduler))
+        val completedAudioOps = mutableListOf<Int>()
+
+        // 1. Block the actor so we can fill the buffer
+        queue.enqueue(TransportDataType.CONTROL) { delay(100) }
+
+        // 2. Flood Audio
+        // Capacity is Config.MAX_AUDIO_QUEUE_CAPACITY (Default 8).
+        // We try to add 20 items.
+        // 0..19
+        val totalFlood = 20
+        repeat(totalFlood) { id ->
+            queue.enqueue(TransportDataType.AUDIO) { completedAudioOps.add(id) }
+        }
+
+        // 3. Unblock
+        advanceTimeBy(200)
+
+        // 4. Assert
+        // The Channel is configured with DROP_OLDEST.
+        // If capacity is 8, it should keep the *last* 8 items added (12..19).
+        // Items 0..11 should be dropped immediately during enqueue.
+        val capacity = Config.MAX_AUDIO_QUEUE_CAPACITY
+        assertEquals("Should only process capacity limit", capacity, completedAudioOps.size)
+
+        val expected = ((totalFlood - capacity) until totalFlood).toList()
+        assertEquals("Should keep NEWEST packets", expected, completedAudioOps)
+    }
+
+    @Test
+    fun `Responsiveness - Control packet survives Audio flood`() = runTest(UnconfinedTestDispatcher()) {
+        val queue = BleOperationQueue(backgroundScope, UnconfinedTestDispatcher(testScheduler))
+        val log = mutableListOf<String>()
+
+        // 1. Block actor
+        queue.enqueue(TransportDataType.CONTROL) { delay(10) }
+
+        // 2. Flood Audio (Fill buffer completely)
+        repeat(15) { queue.enqueue(TransportDataType.AUDIO) { log.add("Audio") } }
+
+        // 3. Add Critical Control Packet
+        // Since Control Channel is UNLIMITED, this should be accepted.
+        queue.enqueue(TransportDataType.CONTROL) { log.add("CriticalHandshake") }
+
+        // 4. Unblock
+        advanceTimeBy(100)
+
+        // 5. Assert
+        // We expect the CriticalHandshake to be present.
+        assertTrue("Control packet must not be dropped", log.contains("CriticalHandshake"))
+
+        // Bonus: It should probably run BEFORE most audio due to priority
+        // (The priority test covers strict ordering, this covers survival).
     }
 }

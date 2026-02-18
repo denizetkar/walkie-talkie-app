@@ -26,3 +26,6 @@ opus-codec = "0.1"
 [target.'cfg(target_os = "android")'.dependencies]
 oboe = { version = "0.6", features = ["java-interface"] }
 android_logger = "0.15"
+
+[dev-dependencies]
+proptest = "1.10.0"

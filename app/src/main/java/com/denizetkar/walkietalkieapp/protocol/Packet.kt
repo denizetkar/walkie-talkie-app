@@ -111,7 +111,7 @@ sealed class Packet {
                         val pBuf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
                         val netId = pBuf.int.toUInt()
                         val seq = pBuf.int
-                        val hops = pBuf.get().toInt()
+                        val hops = pBuf.get().toInt() and 0xFF
                         Control.Heartbeat(netId, seq, hops)
                     } catch (_: Exception) { null }
                 }

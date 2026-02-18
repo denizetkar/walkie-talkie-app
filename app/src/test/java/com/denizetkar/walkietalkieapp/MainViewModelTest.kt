@@ -1,0 +1,228 @@
+package com.denizetkar.walkietalkieapp
+
+import android.app.Application
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import app.cash.turbine.test
+import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.domain.AppState
+import com.denizetkar.walkietalkieapp.domain.Effect
+import com.denizetkar.walkietalkieapp.domain.SessionContext
+import com.denizetkar.walkietalkieapp.logic.MeshController
+import io.mockk.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.*
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TestWatcher
+import org.junit.runner.Description
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class MainViewModelTest {
+
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
+    private val application = mockk<Application>(relaxed = true)
+    private val service = mockk<WalkieTalkieService>(relaxed = true)
+    private val binder = mockk<WalkieTalkieService.LocalBinder>(relaxed = true)
+    private val controller = mockk<MeshController>(relaxed = true)
+
+    // Reactive State mocks
+    private val controllerState = MutableStateFlow(AppState(myself = 1u))
+    private val controllerEffects = MutableSharedFlow<Effect>()
+    private val serviceControllerState = MutableStateFlow<MeshController?>(null)
+
+    private lateinit var viewModel: MainViewModel
+
+    @Before
+    fun setup() {
+        // Wiring Mocks
+        every { binder.getService() } returns service
+        every { service.meshControllerState } returns serviceControllerState
+        every { controller.state } returns controllerState
+        every { controller.effects } returns controllerEffects
+
+        // Initialize ViewModel
+        viewModel = MainViewModel(application, UnconfinedTestDispatcher())
+    }
+
+    @After
+    fun tearDown() {
+        clearAllMocks()
+    }
+
+    /**
+     * Helper to simulate the Service Binding process.
+     * This captures the ServiceConnection passed to bindService and triggers onServiceConnected.
+     */
+    private fun connectService() {
+        // 1. Grant Permissions
+        viewModel.onPermissionsGranted()
+
+        val connectionSlot = slot<ServiceConnection>()
+        verify {
+            application.bindService(
+                any(),
+                capture(connectionSlot),
+                Context.BIND_AUTO_CREATE
+            )
+        }
+
+        // 2. Mock the Binder connection
+        connectionSlot.captured.onServiceConnected(
+            ComponentName(application, WalkieTalkieService::class.java),
+            binder
+        )
+
+        // 3. Mock the Service initializing the Controller
+        // Because we use UnconfinedTestDispatcher, this updates the state synchronously immediately.
+        serviceControllerState.value = controller
+    }
+
+    @Test
+    fun `Permissions - Granting permissions triggers Service Binding`() = runTest {
+        viewModel.onPermissionsGranted()
+
+        verify {
+            application.startService(any<Intent>())
+            application.bindService(any(), any(), Context.BIND_AUTO_CREATE)
+        }
+
+        viewModel.appState.test {
+            val state = awaitItem()
+            assertTrue(state.hasPermissions)
+            assertFalse(state.isServiceBound)
+        }
+    }
+
+    @Test
+    fun `Service Connection - Binds and subscribes to Controller`() = runTest {
+        // In this test, we call connectService() INSIDE the turbine block.
+        // Therefore, we DO see all the transitions.
+        viewModel.appState.test {
+            awaitItem() // 1. Initial (Empty)
+
+            connectService()
+
+            // 2. Permissions Granted
+            val permissionState = awaitItem()
+            assertTrue(permissionState.hasPermissions)
+
+            // 3. Service Bound
+            val boundState = awaitItem()
+            assertTrue(boundState.isServiceBound)
+
+            // 4. Core Sync
+            // When controller is attached, we get the initial state from controllerState flow
+            val coreSyncState = awaitItem()
+            assertTrue("Should sync core state", coreSyncState.isServiceBound)
+            // By default, session is null, so isScanning becomes true
+            assertTrue(coreSyncState.isScanning)
+        }
+    }
+
+    @Test
+    fun `State Mapping - Core AppState maps correctly to UI State`() = runTest {
+        // Setup: Connect first. State flows settle to "Ready".
+        connectService()
+
+        viewModel.appState.test {
+            // Because we connected BEFORE testing, we only get the CURRENT state.
+            // We do NOT get the history (Permissions->Bound->Sync).
+            val initialState = awaitItem()
+            assertTrue("Should start in ready state", initialState.isServiceBound)
+
+            // ACTION: Update Core State
+            val session = SessionContext("Hiking", "9999", isJoinAttempt = false)
+            controllerState.value = AppState(
+                myself = 1u,
+                session = session,
+                connectedPeers = setOf(2u, 3u)
+            )
+
+            // ASSERT: UI updates to match
+            val uiState = awaitItem()
+            assertEquals("Hiking", uiState.groupName)
+            assertEquals("9999", uiState.accessCode)
+            assertEquals(2, uiState.peerCount)
+        }
+    }
+
+    @Test
+    fun `Join Logic - Join Action updates UI to Joining State`() = runTest {
+        connectService()
+
+        viewModel.appState.test {
+            awaitItem() // Consume current "Ready" state
+
+            // ACTION: User taps join
+            viewModel.joinGroup("Camp", "1234")
+
+            // ASSERT: Optimistic UI update
+            val joiningState = awaitItem()
+            assertTrue(joiningState.isJoining)
+            assertNull(joiningState.joinError)
+
+            verify { binder.dispatchAction(Action.JoinGroup("Camp", "1234")) }
+        }
+    }
+
+    @Test
+    fun `Error Handling - Maps Join Error from Core`() = runTest {
+        connectService()
+
+        viewModel.appState.test {
+            awaitItem() // Consume current "Ready" state
+
+            // ACTION: Core reports error
+            controllerState.value = AppState(
+                myself = 1u,
+                joinError = "Timeout"
+            )
+
+            // ASSERT: UI shows error
+            val errorState = awaitItem()
+            assertEquals("Timeout", errorState.joinError)
+        }
+    }
+
+    @Test
+    fun `Leave Group - Clears local state and dispatches action`() = runTest {
+        connectService()
+
+        // Setup: In a group
+        controllerState.value = AppState(
+            myself = 1u,
+            session = SessionContext("Test", "1111", false)
+        )
+
+        viewModel.leaveGroup()
+
+        verify { binder.dispatchAction(Action.LeaveGroup()) }
+    }
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class MainDispatcherRule(
+    private val testDispatcher: TestDispatcher = UnconfinedTestDispatcher()
+) : TestWatcher() {
+    override fun starting(description: Description) {
+        Dispatchers.setMain(testDispatcher)
+    }
+
+    override fun finished(description: Description) {
+        Dispatchers.resetMain()
+    }
+}

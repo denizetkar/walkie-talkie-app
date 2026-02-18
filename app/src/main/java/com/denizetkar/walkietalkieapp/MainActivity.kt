@@ -45,7 +45,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun WalkieTalkieApp() {
     val context = LocalContext.current
-    val viewModel: MainViewModel = viewModel()
+    val viewModel: MainViewModel = viewModel(factory = MainViewModel.Factory)
     val state by viewModel.appState.collectAsState()
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current

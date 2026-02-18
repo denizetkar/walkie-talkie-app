@@ -10,11 +10,15 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.CreationExtras
 import com.denizetkar.walkietalkieapp.domain.Action
 import com.denizetkar.walkietalkieapp.domain.AppState
 import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 import com.denizetkar.walkietalkieapp.logic.MeshController
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,7 +60,11 @@ data class AppUiState(
     val selectedSpeakerId: Int = 0
 )
 
-class MainViewModel(application: Application) : AndroidViewModel(application), DefaultLifecycleObserver {
+class MainViewModel(
+    application: Application,
+    // INJECTED DISPATCHER: Allows swapping for tests
+    private val backgroundDispatcher: CoroutineDispatcher = Dispatchers.Default
+) : AndroidViewModel(application), DefaultLifecycleObserver {
 
     // Reactive Binder: Allows suspending wait instead of polling
     private val _binder = MutableStateFlow<WalkieTalkieService.LocalBinder?>(null)
@@ -128,7 +136,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
 
     private fun subscribeToController(controller: MeshController) {
         stateCollectionJob?.cancel()
-        stateCollectionJob = viewModelScope.launch(Dispatchers.Default) {
+        stateCollectionJob = viewModelScope.launch(backgroundDispatcher) {
             controller.state.collect { coreState ->
                 _appState.update { ui ->
                     ui.copy(
@@ -157,7 +165,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
     // --- Safe Dispatcher ---
     // Suspends until the service is bound, then dispatches.
     private fun dispatch(action: Action) {
-        viewModelScope.launch {
+        viewModelScope.launch(backgroundDispatcher) {
             val binder = _binder.filterNotNull().first()
             binder.dispatchAction(action)
         }
@@ -174,8 +182,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
     }
 
     fun createGroup(name: String) {
-        val code = Random.nextInt(1000, 9999).toString()
-        dispatch(Action.CreateGroup(name, code))
+        viewModelScope.launch(backgroundDispatcher) {
+            val code = Random.nextInt(1000, 9999).toString()
+            dispatch(Action.CreateGroup(name, code))
+        }
     }
 
     fun joinGroup(name: String, code: String) {
@@ -204,6 +214,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application), D
             getApplication<Application>().unbindService(serviceConnection)
         } catch (e: Exception) {
             Log.w("MainViewModel", "Unbind failed", e)
+        }
+    }
+
+    companion object {
+        val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
+                val application = checkNotNull(extras[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                return MainViewModel(
+                    application = application,
+                    backgroundDispatcher = Dispatchers.Default
+                ) as T
+            }
         }
     }
 }

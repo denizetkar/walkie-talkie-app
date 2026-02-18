@@ -188,8 +188,8 @@ class VoiceManager(
      * Tries to start the engine, and keeps retrying if it fails.
      * Only exits if the coroutine is cancelled (Config Change or App Exit).
      */
-    private suspend fun manageEngineLifecycle(inputId: Int, outputId: Int, nodeId: UInt) {
-        Log.i("VoiceManager", "Lifecycle: Requesting Engine Start (In=$inputId, Out=$outputId, Node=$nodeId)")
+    private suspend fun manageEngineLifecycle(inputId: Int, outputId: Int, ownNodeId: UInt) {
+        Log.i("VoiceManager", "Lifecycle: Requesting Engine Start (In=$inputId, Out=$outputId, Node=$ownNodeId)")
 
         // Retry Loop (Restored Feature from Legacy Code)
         while (currentCoroutineContext().isActive) {
@@ -209,7 +209,6 @@ class VoiceManager(
                     inputDeviceId = inputId,
                     outputDeviceId = outputId
                 )
-                val ownNodeId = nodeId.toInt().toUInt() // UniFFI mapping check
                 localEngine = AudioEngine(config, packetTransport, errorCallback, ownNodeId)
 
                 // This call interacts with Oboe/AAudio.
