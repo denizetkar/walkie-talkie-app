@@ -6,17 +6,25 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.denizetkar.walkietalkieapp.bluetooth.BleAdvertiserModule
 import com.denizetkar.walkietalkieapp.bluetooth.BleDiscoveryModule
+import com.denizetkar.walkietalkieapp.bluetooth.GattClientHandler
 import com.denizetkar.walkietalkieapp.bluetooth.GattServerHandler
 import com.denizetkar.walkietalkieapp.domain.Action
 import com.denizetkar.walkietalkieapp.domain.AppState
 import com.denizetkar.walkietalkieapp.domain.Effect
 import com.denizetkar.walkietalkieapp.domain.SessionContext
-import io.mockk.*
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.mockkConstructor
+import io.mockk.runs
+import io.mockk.unmockkAll
+import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -26,14 +34,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
-import org.robolectric.shadows.ShadowBluetoothAdapter
+import org.robolectric.shadows.ShadowLog
 
 @RunWith(RobolectricTestRunner::class)
 @OptIn(ExperimentalCoroutinesApi::class)
 class BleDriverTest {
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
-    private val testDispatcher = StandardTestDispatcher()
+    private val testDispatcher = UnconfinedTestDispatcher()
     private val testScope = TestScope(testDispatcher)
 
     // Spies / Mocks
@@ -43,45 +51,51 @@ class BleDriverTest {
 
     private lateinit var driver: BleDriver
     private lateinit var realAdapter: BluetoothAdapter
-    private lateinit var shadowAdapter: ShadowBluetoothAdapter
+
+    // We control the events the ClientHandler emits to the Driver
+    private val mockClientEvents = MutableSharedFlow<ClientEvent>()
+    private val mockGattClientHandler = mockk<GattClientHandler>(relaxed = true)
 
     @Before
     fun setup() {
+        ShadowLog.stream = System.out
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         realAdapter = manager.adapter
-        shadowAdapter = Shadows.shadowOf(realAdapter)
-        // Use explicit setter to avoid protected property access error
-        shadowAdapter.setEnabled(true)
+        Shadows.shadowOf(realAdapter).setEnabled(true)
 
         // Mock the Android Builders that Robolectric/Android Stub doesn't handle.
         mockModules()
 
-        // Use backgroundScope. This ensures collectors launched by the Driver
-        // are automatically cancelled when the test ends, preventing UncompletedCoroutinesError.
-        driver = BleDriver(context, testScope.backgroundScope) { action ->
-            actions.add(action)
-        }
+        // Setup the Mock Client Handler
+        every { mockGattClientHandler.clientEvents } returns mockClientEvents
+        every { mockGattClientHandler.connect() } just runs
+        every { mockGattClientHandler.close() } just runs
+
+        // Inject dependency via factory
+        driver = BleDriver(
+            context,
+            testScope.backgroundScope,
+            testDispatcher,
+            clientHandlerFactory = { _, _, _, _, _ -> mockGattClientHandler },
+            { action -> actions.add(action) },
+        )
         driver.bind(stateFlow, effectFlow)
     }
 
     private fun mockModules() {
-        // Mock GattServerHandler
+        // We still need to mock these to prevent them from doing real work
         mockkConstructor(GattServerHandler::class)
         every { anyConstructed<GattServerHandler>().startServer() } just runs
         every { anyConstructed<GattServerHandler>().stopServer() } just runs
-        // Inferred types, removed explicit <ServerEvent> to fix unused import
         every { anyConstructed<GattServerHandler>().serverEvents } returns MutableSharedFlow()
 
-        // Mock BleAdvertiserModule
         mockkConstructor(BleAdvertiserModule::class)
         every { anyConstructed<BleAdvertiserModule>().start(any()) } returns true
         every { anyConstructed<BleAdvertiserModule>().stop() } just runs
 
-        // Mock BleDiscoveryModule
         mockkConstructor(BleDiscoveryModule::class)
         every { anyConstructed<BleDiscoveryModule>().start() } returns true
         every { anyConstructed<BleDiscoveryModule>().stop() } just runs
-        // Inferred types, removed explicit <TransportNode> to fix unused import
         every { anyConstructed<BleDiscoveryModule>().events } returns MutableSharedFlow()
     }
 
@@ -145,11 +159,42 @@ class BleDriverTest {
             myself = 10u,
             session = SessionContext("Test", "1234", false)
         )
+        advanceUntilIdle()
 
         effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
         advanceUntilIdle()
 
-        // Success is defined by lack of crash/error
-        assertTrue(true)
+        // Verify we called connect() on the injected mock
+        verify(exactly = 1) { mockGattClientHandler.connect() }
+    }
+
+    @Test
+    fun `Connection - Handles GATT 133 Error gracefully`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        val device = realAdapter.getRemoteDevice(targetMac)
+
+        stateFlow.value = AppState(
+            myself = 10u,
+            session = SessionContext("Test", "9999", false)
+        )
+        advanceUntilIdle()
+
+        // 1. Order Connection
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        advanceUntilIdle()
+
+        // 2. Simulate Error from the Mock Handler
+        testScope.launch {
+            mockClientEvents.emit(
+                ClientEvent.Error(
+                    device = device,
+                    reason = ConnectionFailure.Io("Status 133")
+                )
+            )
+        }
+        advanceUntilIdle()
+
+        // 3. Assert: The driver should NOT emit PeerConnected
+        assertTrue(actions.none { it is Action.PeerConnected })
     }
 }

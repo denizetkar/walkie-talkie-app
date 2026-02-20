@@ -84,10 +84,10 @@ class WalkieTalkieService : Service() {
         // STANDARD DIRECT LANE: Both drivers get the same dispatch reference
         val dispatch = controller::dispatch
 
-        val driverInstance = BleDriver(this, serviceScope, dispatch)
+        val driverInstance = BleDriver(this, serviceScope, dispatch=dispatch)
         driver = driverInstance
 
-        val voiceManagerInstance = VoiceManager(this, serviceScope, dispatch)
+        val voiceManagerInstance = VoiceManager(this, serviceScope, dispatch=dispatch)
         voiceManager = voiceManagerInstance
 
         _meshController.value = controller

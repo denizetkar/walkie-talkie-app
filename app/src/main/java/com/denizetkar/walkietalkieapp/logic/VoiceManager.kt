@@ -41,7 +41,9 @@ class VoiceManager(
     context: Context,
     private val scope: CoroutineScope,
     // STANDARD DIRECT LANE: Fast path for high-frequency events (Mic Audio)
-    private val dispatch: (Action) -> Unit
+    private val dispatch: (Action) -> Unit,
+    // TEST HOOK: Allows injecting a mock AudioEngine
+    private val engineFactory: (AudioConfig, PacketTransport, AudioErrorCallback, UInt) -> AudioEngine = ::AudioEngine
 ) {
     // --- Internal State ---
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -64,7 +66,7 @@ class VoiceManager(
     private val isMicEnabled = AtomicBoolean(false)
 
     // --- Audio Focus Configuration (Immutable) ---
-    private val focusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+    internal val focusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
@@ -209,7 +211,8 @@ class VoiceManager(
                     inputDeviceId = inputId,
                     outputDeviceId = outputId
                 )
-                localEngine = AudioEngine(config, packetTransport, errorCallback, ownNodeId)
+                // Use the factory (Real by default, Mock in tests)
+                localEngine = engineFactory(config, packetTransport, errorCallback, ownNodeId)
 
                 // This call interacts with Oboe/AAudio.
                 // CRITICAL: This throws SecurityException if the Service is not yet promoted

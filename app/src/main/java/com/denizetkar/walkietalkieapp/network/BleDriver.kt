@@ -1,6 +1,7 @@
 package com.denizetkar.walkietalkieapp.network
 
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -32,6 +33,10 @@ class BleDriver(
     private val context: Context,
     // The scope where long-running connection jobs live
     private val scope: CoroutineScope,
+    // INJECTION POINT: Allows tests to swap IO for TestDispatcher
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    // FACTORY INJECTION: Allows tests to supply a mock Handler
+    private val clientHandlerFactory: (Context, CoroutineScope, BluetoothDevice, PeerId, String) -> GattClientHandler = ::GattClientHandler,
     // STANDARD DIRECT LANE: Fast path for high-frequency events (Audio/Packets)
     private val dispatch: (Action) -> Unit
 ) {
@@ -295,15 +300,16 @@ class BleDriver(
             // We use a unique ID for this connection attempt to prevent "Innocent Kill" bugs
             val connectionId = UUID.randomUUID()
             val channel = Channel<OutgoingPacket>(Channel.UNLIMITED)
-            // LAZY START: Prevents "Dead-on-Arrival" race condition.
-            // We ensure the registry is updated BEFORE the job can possibly fail or finish.
-            val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            // To prevent "Dead-on-Arrival" races
+            val readySignal = CompletableDeferred<Unit>()
+            val job = scope.launch(ioDispatcher) {
+                readySignal.await() // Wait for registry insertion to finish safely
                 try {
                     block(channel)
                 } catch (_: CancellationException) {
                     Log.d("BleDriver", "Peer Job $targetNodeId cancelled")
                 } catch (e: Exception) {
-                    Log.e("BleDriver", "Peer Job $targetNodeId failed: ${e.message}")
+                    Log.e("BleDriver", "Peer Job $targetNodeId failed: ${e.message}", e)
                 } finally {
                     // AUTOMATIC CLEANUP
                     // We must lock to ensure we don't remove a NEW connection that replaced us
@@ -313,7 +319,7 @@ class BleDriver(
             // ATOMIC UPDATE: Session and Address Index update together
             val session = PeerSession(job, channel, type, address, connectionId)
             _peers.update { it.put(targetNodeId, session) }
-            job.start()  // Start the job now that state is consistent
+            readySignal.complete(Unit) // Unleash the job
         }
     }
 
@@ -344,7 +350,7 @@ class BleDriver(
         // long enough to process the Disconnected event for the "Polite Disconnect".
         // SupervisorJob ensures a crash in the client doesn't crash the Driver.
         val clientScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-        val client = GattClientHandler(context, clientScope, device, myNodeId, code)
+        val client = clientHandlerFactory(context, clientScope, device, myNodeId, code)
 
         // 2. DISCONNECT SIGNAL
         // A latch that opens when the stack confirms disconnection.
