@@ -57,7 +57,7 @@
 
 # 4. Keep UniFFI Generated Bindings
 # Prevents R8 from renaming the specific Kotlin classes generated for your engine.
--keep class com.denizetkar.walkietalkieapp.engine.uniffi.** { *; }
+-keep class uniffi.** { *; }
 
 # 5. Keep Native Method Names
 # Ensures JNI can match 'external fun' names to the C symbols in the .so file.

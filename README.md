@@ -52,14 +52,15 @@ This project uses a hybrid approach to leverage the best tools for each job:
 
 ### Directory Structure
 ```text
-├── app/src/main/java/com/denizetkar/walkietalkieapp/
-│   ├── domain/          # State, Actions, Effects (Pure Data)
-│   ├── logic/           # The Brain (MeshController, VoiceManager)
-│   ├── network/         # Transport Interface (BleDriver, TransportModels)
-│   ├── protocol/        # Packet definitions, Handshake logic
-│   ├── bluetooth/       # BLE Implementation (GattServer, GattClient, OperationQueue)
-│   ├── engine/          # Generated UniFFI Bindings (Rust Interface)
-│   └── MainActivity.kt
+├── app/src/main/java/
+│   ├── com/denizetkar/walkietalkieapp/
+│   |   ├── domain/          # State, Actions, Effects (Pure Data)
+│   |   ├── logic/           # The Brain (MeshController, VoiceManager)
+│   |   ├── network/         # Transport Interface (BleDriver, TransportModels)
+│   |   ├── protocol/        # Packet definitions, Handshake logic
+│   |   ├── bluetooth/       # BLE Implementation (GattServer, GattClient, OperationQueue)
+│   |   └── MainActivity.kt
+│   └── uniffi/          # Generated UniFFI Bindings (Rust Interface)
 ├── rust/                # Rust Library (Audio Engine)
 │   ├── src/             # Rust Source (lib.rs, Oboe impl)
 │   ├── build.ps1        # PowerShell Build Script (NDK Glue)

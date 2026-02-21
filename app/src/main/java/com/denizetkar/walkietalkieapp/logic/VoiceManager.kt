@@ -40,6 +40,8 @@ import java.util.concurrent.atomic.AtomicReference
 class VoiceManager(
     context: Context,
     private val scope: CoroutineScope,
+    // INJECTED DISPATCHER: Allows tests to swap IO for TestDispatcher
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     // STANDARD DIRECT LANE: Fast path for high-frequency events (Mic Audio)
     private val dispatch: (Action) -> Unit,
     // TEST HOOK: Allows injecting a mock AudioEngine
@@ -122,7 +124,7 @@ class VoiceManager(
 
     init {
         // 1. Start the Actor Loop to handle device updates off the main thread
-        scope.launch(Dispatchers.IO) {
+        scope.launch(ioDispatcher) {
             deviceUpdateTrigger.consumeEach { updateDeviceLists() }
         }
 
@@ -149,7 +151,7 @@ class VoiceManager(
     fun bind(micGate: Flow<Boolean>, configFlow: Flow<Triple<Int, Int, UInt>?>) {
         // 1. Lifecycle & Configuration
         // Whenever the device selection changes OR the Node ID rotates, restart engine.
-        scope.launch(Dispatchers.IO) {
+        scope.launch(ioDispatcher) {
             configFlow.collectLatest { config ->
                 // CRITICAL: Acquire lock. This waits for the previous 'manageEngineLifecycle'
                 // to finish its 'finally' block (cleanup) before starting the new one.
@@ -168,7 +170,7 @@ class VoiceManager(
 
         // 2. Mic Gate (Hot Mic Control)
         // Whenever the PTT button is pressed/released, we toggle the software gate.
-        scope.launch(Dispatchers.IO) {
+        scope.launch(ioDispatcher) {
             micGate.collectLatest { isOpen ->
                 isMicEnabled.set(isOpen)
                 activeEngine.get()?.setMicEnabled(isOpen)
@@ -235,13 +237,14 @@ class VoiceManager(
                 // we must rethrow to exit the loop and allow collectLatest to start the new block.
                 if (e is CancellationException) {
                     cleanupEngine(localEngine)
+                    localEngine = null // Prevent double-cleanup in finally
                     throw e
                 }
 
                 // Abnormal Error (SecurityException, Hardware Busy, etc.)
                 Log.w("VoiceManager", "Engine Start Failed/Crashed: ${e.message}. Retrying in ${Config.AUDIO_SESSION_START_DELAY}ms...", e)
-                // Clean up partial state (if any) before retrying
                 cleanupEngine(localEngine)
+                localEngine = null // Prevent double-cleanup in finally
                 delay(Config.AUDIO_SESSION_START_DELAY)
             } finally {
                 // Ensure we always clean up when leaving this scope (just in case)

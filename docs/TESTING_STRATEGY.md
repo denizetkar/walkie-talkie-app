@@ -13,7 +13,7 @@ We aim for a high degree of confidence without requiring a fleet of physical dev
 | :--- | :--- | :--- | :--- | :--- |
 | **L1: Core Logic** | `MeshController`, `Protocol` | **JUnit 5** + Coroutines Test | Topology, Routing, State Machine. | **Host (JVM)** |
 | **L2: Audio Math** | `audio_core.rs` | **Rust** (`cargo test`) | Jitter Buffer, Packet Loss Concealment (PLC), OpCode wrapping. | **Host (Native)** |
-| **L3: Integration** | `BleDriver`, `VoiceManager` | **Android Instrumented** | Permissions, Service Binding, FFI Bridge. | **Device / Emulator** |
+| **L3: Integration** | `BleDriver`, `VoiceManager` | **Robolectric JVM** | Permissions, Service Binding, FFI Bridge. | **Host (JVM)** |
 | **L4: Field** | Full App | **Manual** | Range, Latency, Battery, Interference. | **Physical World** |
 
 ---
@@ -62,9 +62,9 @@ To ensure high-quality audio, we must verify the Jitter Buffer and PLC logic. We
 
 ---
 
-## 4. L3: Android Integration (Device)
+## 4. L3: Android Integration (Robolectric JVM)
 
-These tests verify that the "Muscles" (Drivers) are correctly wired to the System.
+These tests verify that the "Muscles" (Drivers) are correctly wired to the System. By using **Robolectric**, we can run these locally on the JVM without needing physical devices or flaky emulators.
 
 ### Key Scenarios
 1.  **Service Lifecycle:**
