@@ -13,7 +13,7 @@ We aim for a high degree of confidence without requiring a fleet of physical dev
 | :--- | :--- | :--- | :--- | :--- |
 | **L1: Core Logic** | `MeshController`, `Protocol` | **JUnit 5** + Coroutines Test | Topology, Routing, State Machine. | **Host (JVM)** |
 | **L2: Audio Math** | `audio_core.rs` | **Rust** (`cargo test`) | Jitter Buffer, Packet Loss Concealment (PLC), OpCode wrapping. | **Host (Native)** |
-| **L3: Integration** | `BleDriver`, `VoiceManager` | **Robolectric JVM** | Permissions, Service Binding, FFI Bridge. | **Host (JVM)** |
+| **L3: Integration** | `BleDriver`, `VoiceManager`, **`Screens`** | **Robolectric + Compose UI Tests** | Permissions, Service Binding, FFI Bridge, **UI Interactions**. | **Host (JVM)** |
 | **L4: Field** | Full App | **Manual** | Range, Latency, Battery, Interference. | **Physical World** |
 
 ---
@@ -64,9 +64,9 @@ To ensure high-quality audio, we must verify the Jitter Buffer and PLC logic. We
 
 ## 4. L3: Android Integration (Robolectric JVM)
 
-These tests verify that the "Muscles" (Drivers) are correctly wired to the System. By using **Robolectric**, we can run these locally on the JVM without needing physical devices or flaky emulators.
+These tests verify that the "Muscles" (Drivers) are correctly wired to the System, and that the UI renders the State correctly. By using **Robolectric**, we can run these locally on the JVM without needing physical devices or flaky emulators.
 
-### Key Scenarios
+### A. Driver Integration
 1.  **Service Lifecycle:**
     *   Start Service -> Verify `WakeLock` acquired.
     *   Stop Service -> Verify `WakeLock` released.
@@ -75,6 +75,15 @@ These tests verify that the "Muscles" (Drivers) are correctly wired to the Syste
     *   Deny Permissions -> Verify `BleDriver` stops and UI shows error.
 3.  **UniFFI Bridge:**
     *   Call `VoiceManager.start()` -> Verify Rust `init_logger` is called without crashing.
+
+### B. UI Components (Compose)
+We test Jetpack Compose screens using `createComposeRule()` hosted inside Robolectric. This allows us to test UI logic (like the Push-To-Talk button states) in milliseconds.
+1.  **Radio Screen:**
+    *   *Action:* User presses and holds the "HOLD TO TALK" button.
+    *   *Assert:* The `onTalkStart` callback fires, and UI transitions to "TALKING".
+2.  **Join Group Screen:**
+    *   *Action:* User clicks "Join" on a discovered group.
+    *   *Assert:* Access Code dialog appears and requires 4 digits before enabling the "Connect" button.
 
 ---
 
