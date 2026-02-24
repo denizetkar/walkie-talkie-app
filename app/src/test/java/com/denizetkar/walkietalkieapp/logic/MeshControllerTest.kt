@@ -1,6 +1,7 @@
 package com.denizetkar.walkietalkieapp.logic
 
 import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.domain.Effect
 import com.denizetkar.walkietalkieapp.domain.NetworkTopology
 import com.denizetkar.walkietalkieapp.protocol.Packet
@@ -347,5 +348,84 @@ class MeshControllerTest {
         val transmit = effects.filterIsInstance<Effect.Transmit>().lastOrNull()
         assertNotNull("Should transmit when Mic is ON", transmit)
         assertTrue("Should be unreliable (flood)", !transmit!!.isControl)
+    }
+
+    @Test
+    fun `Join Timeout - Drops session if no peers connect within 15 seconds`() = testScope.runTest {
+        // 1. Action: Try to join a group
+        controller.dispatch(Action.JoinGroup("GhostCamp", "1234"))
+        runCurrent()
+
+        assertNotNull("Session should be active while attempting to join", controller.state.value.session)
+        assertTrue("isJoinAttempt flag should be true", controller.state.value.session?.isJoinAttempt == true)
+
+        // 2. Advance time past the 15-second Global Join Timeout
+        tick(Config.GROUP_JOIN_TIMEOUT + 500L) // 15,500 ms
+
+        // 3. Assert: Session killed, Error populated
+        assertNull("Session should be dropped after timeout", controller.state.value.session)
+        assertEquals("Connection Timed Out", controller.state.value.joinError)
+    }
+
+    @Test
+    fun `Yo-Yo Fix - Session survives if peer drops to zero after successfully joining once`() = testScope.runTest {
+        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        runCurrent()
+
+        // 1. Peer connects! (We have found the mesh)
+        controller.dispatch(Action.PeerConnected(10u))
+        runCurrent()
+
+        // Assert the fix worked: isJoinAttempt is cleared
+        assertTrue("isJoinAttempt should be cleared after first connection", controller.state.value.session?.isJoinAttempt == false)
+
+        // 2. Peer immediately disconnects (The user walked out of range)
+        controller.dispatch(Action.PeerDisconnected(10u))
+        runCurrent()
+
+        assertTrue("Roster should be empty", controller.state.value.connectedPeers.isEmpty())
+
+        // 3. Wait past the global timeout limit (15.5 seconds)
+        tick(Config.GROUP_JOIN_TIMEOUT + 500L)
+
+        // 4. Assert: The user is still in the group, waiting to get back in range!
+        assertNotNull("Session MUST survive the Yo-Yo effect", controller.state.value.session)
+        assertNull("There should be no timeout error", controller.state.value.joinError)
+    }
+
+    @Test
+    fun `Driver Failures - ScanFailed handles background and active sessions gracefully`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
+        // --- SCENARIO A: Background Browsing ---
+        controller.dispatch(Action.StartScanning)
+        runCurrent()
+        assertTrue(controller.state.value.isBrowsing)
+
+        controller.dispatch(Action.ScanFailed("BLE Crash"))
+        runCurrent()
+
+        // Browsing aborted, but we stay on the Home Screen (Toast is emitted)
+        assertTrue("Browsing should stop on failure", !controller.state.value.isBrowsing)
+        val toast = effects.filterIsInstance<Effect.ShowToast>().lastOrNull()
+        assertTrue("Should emit warning toast", toast?.message?.contains("BLE Crash") == true)
+
+        effects.clear()
+
+        // --- SCENARIO B: Active Session (Critical Failure) ---
+        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        runCurrent()
+        assertNotNull(controller.state.value.session)
+
+        // Driver reports the scanner died while we were trying to maintain the mesh
+        controller.dispatch(Action.ScanFailed("Hardware Reset"))
+        runCurrent()
+
+        // Assert: Session is aborted, user kicked back to Home Screen with an error dialog
+        assertNull("Session should be dropped on critical hardware failure", controller.state.value.session)
+        assertTrue("Join error should contain hardware failure reason", controller.state.value.joinError?.contains("Hardware Reset") == true)
     }
 }
