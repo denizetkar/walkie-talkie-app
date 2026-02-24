@@ -36,7 +36,7 @@ class BleDriver(
     // INJECTION POINT: Allows tests to swap IO for TestDispatcher
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     // FACTORY INJECTION: Allows tests to supply a mock Handler
-    private val clientHandlerFactory: (Context, CoroutineScope, BluetoothDevice, PeerId, String) -> GattClientHandler = ::GattClientHandler,
+    private val clientHandlerFactory: (Context, CoroutineScope, BluetoothDevice, PeerId, String, CoroutineDispatcher) -> GattClientHandler = ::GattClientHandler,
     // STANDARD DIRECT LANE: Fast path for high-frequency events (Audio/Packets)
     private val dispatch: (Action) -> Unit
 ) {
@@ -51,7 +51,7 @@ class BleDriver(
     // --- Sub-Modules ---
     private val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
     private val adapter = btManager.adapter
-    private val serverHandler = GattServerHandler(context, scope) { currentAccessCode.get() }
+    private val serverHandler = GattServerHandler(context, scope, ioDispatcher) { currentAccessCode.get() }
     private val advertiserModule = BleAdvertiserModule(adapter, serverHandler)
     private val discoveryModule = BleDiscoveryModule(adapter, scope)
 
@@ -350,7 +350,7 @@ class BleDriver(
         // long enough to process the Disconnected event for the "Polite Disconnect".
         // SupervisorJob ensures a crash in the client doesn't crash the Driver.
         val clientScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-        val client = clientHandlerFactory(context, clientScope, device, myNodeId, code)
+        val client = clientHandlerFactory(context, clientScope, device, myNodeId, code, ioDispatcher)
 
         // 2. DISCONNECT SIGNAL
         // A latch that opens when the stack confirms disconnection.

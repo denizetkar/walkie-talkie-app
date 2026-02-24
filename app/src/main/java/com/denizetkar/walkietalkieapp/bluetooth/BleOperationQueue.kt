@@ -21,11 +21,11 @@ import kotlinx.coroutines.yield
  */
 class BleOperationQueue(
     parentScope: CoroutineScope,
-    dispatcher: CoroutineDispatcher = Dispatchers.Default
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
     // The Actor lives as long as the parent (Connection/Server) lives.
     private val scope = CoroutineScope(
-        parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext.job) + dispatcher
+        parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext.job) + ioDispatcher
     )
 
     // Control: Unlimited buffer. We must never drop a handshake or heartbeat.

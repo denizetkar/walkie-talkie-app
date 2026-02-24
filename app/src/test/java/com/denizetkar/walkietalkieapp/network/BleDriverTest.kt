@@ -76,7 +76,7 @@ class BleDriverTest {
             context,
             testScope.backgroundScope,
             testDispatcher,
-            clientHandlerFactory = { _, _, _, _, _ -> mockGattClientHandler },
+            clientHandlerFactory = { _, _, _, _, _, _ -> mockGattClientHandler },
             { action -> actions.add(action) },
         )
         driver.bind(stateFlow, effectFlow)

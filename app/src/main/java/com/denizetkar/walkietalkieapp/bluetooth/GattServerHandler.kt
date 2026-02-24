@@ -28,6 +28,7 @@ import kotlin.coroutines.resumeWithException
 class GattServerHandler(
     private val context: Context,
     private val scope: CoroutineScope,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val accessCodeProvider: () -> String?
 ) {
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -66,7 +67,7 @@ class GattServerHandler(
                 // LIFECYCLE: Create Queue
                 // We STRICTLY overwrite any existing queue. If a zombie queue existed, it is now
                 // unreachable and will be GC'd (or timed out). We want the fresh state.
-                clientQueues[address] = BleOperationQueue(scope)
+                clientQueues[address] = BleOperationQueue(scope, ioDispatcher)
 
                 // LIFECYCLE: Light the Fuse
                 // If auth doesn't happen within timeout, disconnect.

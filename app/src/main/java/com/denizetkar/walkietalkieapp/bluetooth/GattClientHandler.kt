@@ -30,11 +30,12 @@ class GattClientHandler(
     val scope: CoroutineScope, // Exposed for Driver to launch event collector
     val targetDevice: BluetoothDevice,
     private val ownNodeId: PeerId,
-    private val accessCode: String
+    private val accessCode: String,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
     private var bluetoothGatt: BluetoothGatt? = null
     // If 'scope' dies, the queue operations die automatically.
-    private val operationQueue = BleOperationQueue(scope)
+    private val operationQueue = BleOperationQueue(scope, ioDispatcher)
     private var currentMtu = Config.BLE_DEFAULT_MTU
 
     // --- Callback Bridge ---
