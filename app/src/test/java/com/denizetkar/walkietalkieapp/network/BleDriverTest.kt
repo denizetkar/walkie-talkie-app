@@ -3,6 +3,7 @@ package com.denizetkar.walkietalkieapp.network
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.denizetkar.walkietalkieapp.bluetooth.BleAdvertiserModule
 import com.denizetkar.walkietalkieapp.bluetooth.BleDiscoveryModule
@@ -28,6 +29,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -35,6 +37,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.shadows.ShadowLog
+import org.robolectric.shadows.ShadowLooper
 
 @RunWith(RobolectricTestRunner::class)
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -196,5 +199,29 @@ class BleDriverTest {
 
         // 3. Assert: The driver should NOT emit PeerConnected
         assertTrue(actions.none { it is Action.PeerConnected })
+    }
+
+    @Test
+    fun `System Events - Turning off Bluetooth forces Leave Group`() = testScope.runTest {
+        stateFlow.value = AppState(
+            myself = 10u,
+            session = SessionContext("Hiking", "1234", false)
+        )
+        advanceUntilIdle()
+
+        // 1. Send the broadcast
+        val intent = Intent(BluetoothAdapter.ACTION_STATE_CHANGED).apply {
+            putExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.STATE_OFF)
+        }
+        context.sendBroadcast(intent)
+
+        // 2. CRITICAL: Force Robolectric to process the Android Main Thread queue
+        ShadowLooper.shadowMainLooper().idle()
+        // 3. Force Coroutines to process the resulting dispatch
+        advanceUntilIdle()
+
+        val leaveAction = actions.filterIsInstance<Action.LeaveGroup>().lastOrNull()
+        assertNotNull("Should dispatch LeaveGroup when Bluetooth dies", leaveAction)
+        assertTrue(leaveAction!!.reason.contains("Disabled"))
     }
 }

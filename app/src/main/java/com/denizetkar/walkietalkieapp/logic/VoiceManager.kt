@@ -67,6 +67,9 @@ class VoiceManager(
     // Cache the user's PTT intent to fix race condition during engine startup
     private val isMicEnabled = AtomicBoolean(false)
 
+    // A conflated channel ensures we don't queue up multiple crash signals
+    private val engineCrashSignal = Channel<Unit>(Channel.CONFLATED)
+
     // --- Audio Focus Configuration (Immutable) ---
     internal val focusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
@@ -105,7 +108,7 @@ class VoiceManager(
     private val errorCallback = object : AudioErrorCallback {
         override fun onEngineError(code: Int) {
             Log.e("VoiceManager", "CRITICAL: Rust Engine Error Code $code")
-            // The retry loop in manageEngineLifecycle will handle restart automatically
+            engineCrashSignal.trySend(Unit)
         }
     }
 
@@ -229,22 +232,19 @@ class VoiceManager(
                 activeEngine.set(localEngine)
                 Log.i("VoiceManager", "Audio Engine Started Successfully")
 
-                // 3. Keep alive until cancelled
-                awaitCancellation()
-
+                // 3. Keep alive until cancelled externally OR an internal crash occurs
+                engineCrashSignal.tryReceive() // Clear any stale signals from previous runs
+                engineCrashSignal.receive()    // Suspend here.
+                throw Exception("Rust Engine internal crash")
             } catch (e: Exception) {
                 // If the coroutine was cancelled (e.g. user selected different mic),
                 // we must rethrow to exit the loop and allow collectLatest to start the new block.
                 if (e is CancellationException) {
-                    cleanupEngine(localEngine)
-                    localEngine = null // Prevent double-cleanup in finally
                     throw e
                 }
 
                 // Abnormal Error (SecurityException, Hardware Busy, etc.)
                 Log.w("VoiceManager", "Engine Start Failed/Crashed: ${e.message}. Retrying in ${Config.AUDIO_SESSION_START_DELAY}ms...", e)
-                cleanupEngine(localEngine)
-                localEngine = null // Prevent double-cleanup in finally
                 delay(Config.AUDIO_SESSION_START_DELAY)
             } finally {
                 // Ensure we always clean up when leaving this scope (just in case)

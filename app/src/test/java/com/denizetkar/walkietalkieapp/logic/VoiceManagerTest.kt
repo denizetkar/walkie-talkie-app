@@ -5,13 +5,16 @@ import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import androidx.test.core.app.ApplicationProvider
+import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.domain.Action
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -22,6 +25,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.shadows.ShadowLog
 import uniffi.walkie_talkie_engine.AudioEngine
+import uniffi.walkie_talkie_engine.AudioErrorCallback
 
 @RunWith(RobolectricTestRunner::class)
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -181,6 +185,53 @@ class VoiceManagerTest {
 
         verify(exactly = 1) { engine1.stopSession() }
         verify(exactly = 1) { engine2.startSession() }
+
+        testVoiceManager.close()
+    }
+
+    @Test
+    fun `Error Recovery - Rust Engine crash triggers automatic restart`() = testScope.runTest {
+        val engines = mutableListOf<AudioEngine>()
+        val localMicGateFlow = MutableStateFlow(false)
+        val localConfigFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(Triple(0, 0, 1u))
+
+        var capturedErrorCallback: AudioErrorCallback? = null
+
+        // 1. MOCK THE SYSTEM DEPENDENCY, NOT THE TARGET OBJECT
+        // This ensures Robolectric/MockK handles the focus safely without breaking coroutines.
+        every { spyAudioManager.requestAudioFocus(any<android.media.AudioFocusRequest>()) } returns AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        every { spyAudioManager.abandonAudioFocusRequest(any()) } returns AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+
+        // 2. USE A REAL, UN-SPIED VOICEMANAGER
+        val testVoiceManager = VoiceManager(
+            context = mockContext,
+            scope = testScope.backgroundScope,
+            ioDispatcher = testDispatcher,
+            dispatch = { actions.add(it) },
+            engineFactory = { _, _, cb, _ ->
+                capturedErrorCallback = cb
+                val engine = mockk<AudioEngine>(relaxed = true)
+                engines.add(engine)
+                engine
+            }
+        ) // Notice: No spyk() here!
+
+        testVoiceManager.bind(localMicGateFlow, localConfigFlow)
+        advanceUntilIdle()
+
+        assertEquals("Should start first engine", 1, engines.size)
+        verify(exactly = 1) { engines[0].startSession() }
+
+        // Trigger the crash signal from Rust
+        capturedErrorCallback?.onEngineError(-899)
+
+        // Advance time to surpass the AUDIO_SESSION_START_DELAY in the try/catch block
+        advanceTimeBy(Config.AUDIO_SESSION_START_DELAY + 100L)
+        runCurrent()
+
+        assertEquals("Should create a second engine after crash", 2, engines.size)
+        verify(exactly = 1) { engines[0].stopSession() }
+        verify(exactly = 1) { engines[1].startSession() }
 
         testVoiceManager.close()
     }
