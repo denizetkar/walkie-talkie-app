@@ -117,7 +117,7 @@ val buildRust = tasks.register<Exec>("buildRust") {
     outputs.upToDateWhen { false }
     workingDir = file("../rust")
     val script = file("../rust/build.ps1")
-    commandLine("powershell", "-ExecutionPolicy", "Bypass", "-File", script.absolutePath)
+    commandLine("pwsh", "-ExecutionPolicy", "Bypass", "-File", script.absolutePath)
     doFirst { println(">>> STARTING RUST BUILD <<<") }
 }
 

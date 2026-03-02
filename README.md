@@ -77,7 +77,6 @@ This project uses a hybrid approach to leverage the best tools for each job:
 2.  **Rust Toolchain** (`rustup` with `aarch64-linux-android` target).
 3.  **Android NDK** (Version 29+).
 4.  **Cargo NDK**: `cargo install cargo-ndk`.
-5.  **Python**: Required for `uniffi-bindgen` to generate Kotlin code.
 
 ### Building
 1.  Clone the repo.

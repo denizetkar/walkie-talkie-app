@@ -64,3 +64,7 @@
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+
+# Ignore desktop AWT references inside JNA for Android builds
+-dontwarn java.awt.**
+-dontwarn com.sun.jna.**

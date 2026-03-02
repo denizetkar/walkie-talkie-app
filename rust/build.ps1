@@ -2,23 +2,46 @@
 $NDK_VERSION = "29.0.14206865"
 $CMAKE_VERSION = "4.1.2"
 
-$ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"
-$NDK_PATH = "$ANDROID_SDK_ROOT\ndk\$NDK_VERSION"
-$CMAKE_BIN = "$ANDROID_SDK_ROOT\cmake\$CMAKE_VERSION\bin"
+$ANDROID_SDK_ROOT = $env:ANDROID_HOME ?? (Join-Path $env:LOCALAPPDATA 'Android/Sdk')
+$NDK_PATH = "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+$CMAKE_BIN = "$ANDROID_SDK_ROOT/cmake/$CMAKE_VERSION/bin"
+
+$NINJA_EXE = if ($IsWindows) { "ninja.exe" } else { "ninja" }
+function Get-NdkHostTag {
+    $os = if ($IsWindows) {
+        "windows"
+    } elseif ($IsLinux) {
+        "linux"
+    } elseif ($IsMacOS) {
+        "darwin"
+    } else {
+        throw "Unsupported OS for NDK."
+    }
+
+    $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+        "X64"   { "x86_64" }
+        "Arm64" { "aarch64" }
+        default { throw "Unsupported architecture for NDK." }
+    }
+
+    return "$os-$arch"
+}
+$NDK_HOST_TAG = Get-NdkHostTag
 
 # --- VALIDATION ---
 if (-not (Test-Path $NDK_PATH)) { Write-Error "NDK not found at $NDK_PATH"; exit 1 }
-if (-not (Test-Path "$CMAKE_BIN\ninja.exe")) { Write-Error "Ninja not found at $CMAKE_BIN"; exit 1 }
+if (-not (Test-Path "$CMAKE_BIN/$NINJA_EXE")) { Write-Error "Ninja not found at $CMAKE_BIN"; exit 1 }
 
 # --- SETUP ENVIRONMENT ---
 Write-Host "Setting up build environment..." -ForegroundColor Cyan
 
 $env:ANDROID_NDK_HOME = $NDK_PATH
 $env:NDK_HOME = $NDK_PATH
+$env:ANDROID_NDK_ROOT = $NDK_PATH
 
 # --- GENERATE WRAPPER TOOLCHAIN ---
-$WrapperFile = "$PSScriptRoot\android_wrapper.cmake"
-$RealToolchainPath = "$NDK_PATH\build\cmake\android.toolchain.cmake".Replace("\", "/")
+$WrapperFile = "$PSScriptRoot/android_wrapper.cmake"
+$RealToolchainPath = "$NDK_PATH/build/cmake/android.toolchain.cmake"
 
 # CHANGE: Set STL to c++_shared (The standard for Android)
 $WrapperContent = @"
@@ -33,8 +56,8 @@ Set-Content -Path $WrapperFile -Value $WrapperContent
 # --- CONFIGURE CMAKE ---
 $env:CMAKE_TOOLCHAIN_FILE = $WrapperFile
 $env:CMAKE_GENERATOR = "Ninja"
-$env:CMAKE_MAKE_PROGRAM = "$CMAKE_BIN\ninja.exe"
-$env:PATH = "$CMAKE_BIN;" + $env:PATH
+$env:CMAKE_MAKE_PROGRAM = "$CMAKE_BIN/$NINJA_EXE"
+$env:PATH = "$CMAKE_BIN" + [IO.Path]::PathSeparator + $env:PATH
 
 # --- CLEAN & BUILD ---
 Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
@@ -49,8 +72,8 @@ if ($LASTEXITCODE -eq 0) {
 
     # ... (Keep the libc++_shared.so copy logic here) ...
     # Path to libc++ in NDK r21+ (LLVM toolchain)
-    $StlSource = "$NDK_PATH\toolchains\llvm\prebuilt\windows-x86_64\sysroot\usr\lib\aarch64-linux-android\libc++_shared.so"
-    $StlDest = "..\app\src\main\jniLibs\arm64-v8a\libc++_shared.so"
+    $StlSource = "$NDK_PATH/toolchains/llvm/prebuilt/$NDK_HOST_TAG/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+    $StlDest = "../app/src/main/jniLibs/arm64-v8a/libc++_shared.so"
 
     if (Test-Path $StlSource) {
         Copy-Item -Path $StlSource -Destination $StlDest -Force
@@ -58,7 +81,7 @@ if ($LASTEXITCODE -eq 0) {
     } else {
         Write-Error "CRITICAL: Could not find libc++_shared.so at $StlSource"
         # Try fallback path for older NDK layouts just in case
-        $StlSourceOld = "$NDK_PATH\sources\cxx-stl\llvm-libc++\libs\arm64-v8a\libc++_shared.so"
+        $StlSourceOld = "$NDK_PATH/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so"
         if (Test-Path $StlSourceOld) {
              Copy-Item -Path $StlSourceOld -Destination $StlDest -Force
              Write-Host "Copied libc++_shared.so (Legacy Path) to jniLibs." -ForegroundColor Green

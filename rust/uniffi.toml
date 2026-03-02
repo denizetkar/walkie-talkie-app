@@ -1,0 +1,5 @@
+[bindings.kotlin]
+# Disables Java 9's java.lang.ref.Cleaner (API 33).
+# Forces UniFFI to generate bindings using JNA's Cleaner,
+# making the code safely compatible with Android API 28+.
+disable_java_cleaner = true
