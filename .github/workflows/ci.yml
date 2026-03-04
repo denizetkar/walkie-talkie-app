@@ -15,31 +15,49 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v6
 
+      # INJECTION: Read the .env file natively into the GitHub Environment
+      - name: Load Build Environment
+        run: cat build.env >> $GITHUB_ENV
+
       - name: Set up JDK
         uses: actions/setup-java@v5
         with:
-          java-version: '21'
+          java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
 
       - name: Setup Gradle Build Cache
         uses: gradle/actions/setup-gradle@v5
 
+      # UPDATED: Now using actions/cache@v5
+      - name: Cache Android NDK & CMake
+        id: cache-ndk
+        uses: actions/cache@v5
+        with:
+          path: |
+            /usr/local/lib/android/sdk/ndk/${{ env.NDK_VERSION }}
+            /usr/local/lib/android/sdk/cmake/${{ env.CMAKE_VERSION }}
+          key: android-ndk-cmake-${{ env.NDK_VERSION }}-${{ env.CMAKE_VERSION }}
+
       - name: Install Android NDK & CMake
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;29.0.14206865" "cmake;4.1.2"
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;${{ env.NDK_VERSION }}" "cmake;${{ env.CMAKE_VERSION }}"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: ${{ env.RUST_TARGET }}
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ./rust
+          cache-all-crates: true
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
 
       - name: Run Rust Tests
         working-directory: ./rust

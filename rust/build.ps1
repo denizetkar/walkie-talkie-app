@@ -1,6 +1,19 @@
-# --- CONFIGURATION ---
-$NDK_VERSION = "29.0.14206865"
-$CMAKE_VERSION = "4.1.2"
+# --- CONFIGURATION (Zero-Redundancy SSOT) ---
+$EnvFilePath = Join-Path $PSScriptRoot "../build.env"
+
+if (Test-Path $EnvFilePath) {
+    # Read file, ignore comments/empty lines, and inject into $env:
+    Get-Content $EnvFilePath | Where-Object { $_ -match '^\s*[^#]' -and $_ -match '=' } | ForEach-Object {
+        $name, $value = $_.Split('=', 2)
+        Set-Item -Path "env:$($name.Trim())" -Value $value.Trim()
+    }
+} else {
+    Write-Error "CRITICAL: build.env file not found at $EnvFilePath"
+    exit 1
+}
+
+$NDK_VERSION = $env:NDK_VERSION
+$CMAKE_VERSION = $env:CMAKE_VERSION
 
 $ANDROID_SDK_ROOT = $env:ANDROID_HOME ?? (Join-Path $env:LOCALAPPDATA 'Android/Sdk')
 $NDK_PATH = "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
