@@ -14,6 +14,7 @@ if (Test-Path $EnvFilePath) {
 
 $NDK_VERSION = $env:NDK_VERSION
 $CMAKE_VERSION = $env:CMAKE_VERSION
+$RUST_TARGET = $env:RUST_TARGET
 
 $ANDROID_SDK_ROOT = $env:ANDROID_HOME ?? (Join-Path $env:LOCALAPPDATA 'Android/Sdk')
 $NDK_PATH = "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
@@ -83,7 +84,6 @@ cargo ndk -t arm64-v8a --platform 30 -o ../app/src/main/jniLibs build --release
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Rust Build Success!" -ForegroundColor Cyan
 
-    # ... (Keep the libc++_shared.so copy logic here) ...
     # Path to libc++ in NDK r21+ (LLVM toolchain)
     $StlSource = "$NDK_PATH/toolchains/llvm/prebuilt/$NDK_HOST_TAG/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
     $StlDest = "../app/src/main/jniLibs/arm64-v8a/libc++_shared.so"
@@ -101,6 +101,20 @@ if ($LASTEXITCODE -eq 0) {
         } else {
              exit 1
         }
+    }
+
+    # --- AUTOMATIC BINDING GENERATION ---
+    # Dynamically construct the path using the RUST_TARGET from build.env
+    $LibPath = "target/$RUST_TARGET/release/libwalkie_talkie_engine.so"
+
+    Write-Host "Generating Kotlin bindings from $LibPath..." -ForegroundColor Yellow
+    cargo run --bin uniffi-bindgen -- generate --library $LibPath --language kotlin --out-dir ../app/src/main/java
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Bindings generated successfully!" -ForegroundColor Green
+    } else {
+        Write-Error "Binding generation failed!"
+        exit 1
     }
 
     # Cleanup wrapper

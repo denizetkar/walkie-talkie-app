@@ -1,1 +1,0 @@
-cargo run --bin uniffi-bindgen -- generate --library target/aarch64-linux-android/release/libwalkie_talkie_engine.so --language kotlin --out-dir ../app/src/main/java
