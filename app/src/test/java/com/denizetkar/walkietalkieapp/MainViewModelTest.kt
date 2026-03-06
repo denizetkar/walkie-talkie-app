@@ -212,6 +212,77 @@ class MainViewModelTest {
 
         verify { binder.dispatchAction(Action.LeaveGroup()) }
     }
+
+    @Test
+    fun `Actions - Scanning actions dispatch correctly`() = runTest {
+        connectService()
+
+        viewModel.startScanning()
+        verify { binder.dispatchAction(Action.StartScanning) }
+
+        viewModel.stopScanning()
+        verify { binder.dispatchAction(Action.StopScanning) }
+    }
+
+    @Test
+    fun `Actions - Audio toggle actions dispatch correctly`() = runTest {
+        connectService()
+
+        viewModel.startTalking()
+        verify { binder.dispatchAction(Action.SetMic(true)) }
+
+        viewModel.stopTalking()
+        verify { binder.dispatchAction(Action.SetMic(false)) }
+    }
+
+    @Test
+    fun `Actions - Device selection actions dispatch correctly`() = runTest {
+        connectService()
+
+        viewModel.setMicrophone(42)
+        verify { binder.dispatchAction(Action.SetAudioInput(42)) }
+
+        viewModel.setSpeaker(99)
+        verify { binder.dispatchAction(Action.SetAudioOutput(99)) }
+    }
+
+    @Test
+    fun `Actions - Create Group triggers generation of random code and dispatch`() = runTest {
+        connectService()
+
+        viewModel.createGroup("Hiking")
+
+        // We capture the action to verify the random code logic
+        val actionSlot = slot<Action.CreateGroup>()
+        verify { binder.dispatchAction(capture(actionSlot)) }
+
+        assertEquals("Hiking", actionSlot.captured.name)
+        assertTrue("Generated code should be 4 digits", actionSlot.captured.code.matches(Regex("\\d{4}")))
+    }
+
+    @Test
+    fun `Lifecycle - onCleared unbinds the service`() = runTest {
+        connectService() // Connects and marks isServiceBound = true
+
+        // ViewModel.onCleared() is protected. We use reflection to invoke it
+        // just as the Android framework would when the Activity dies.
+        val onClearedMethod = MainViewModel::class.java.getDeclaredMethod("onCleared")
+        onClearedMethod.isAccessible = true
+        onClearedMethod.invoke(viewModel)
+
+        verify { application.unbindService(any()) }
+    }
+
+    @Test
+    fun `Factory - Creates ViewModel with Application injected`() {
+        val extras = androidx.lifecycle.viewmodel.MutableCreationExtras().apply {
+            set(androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY, application)
+        }
+
+        val generatedViewModel = MainViewModel.Factory.create(MainViewModel::class.java, extras)
+
+        org.junit.Assert.assertNotNull("Factory should successfully create the ViewModel", generatedViewModel)
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
