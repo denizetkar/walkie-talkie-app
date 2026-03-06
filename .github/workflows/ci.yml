@@ -15,7 +15,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v6
 
-      # INJECTION: Read the .env file natively into the GitHub Environment
       - name: Load Build Environment
         run: cat build.env >> $GITHUB_ENV
 
@@ -27,16 +26,6 @@ jobs:
 
       - name: Setup Gradle Build Cache
         uses: gradle/actions/setup-gradle@v5
-
-      # UPDATED: Now using actions/cache@v5
-      - name: Cache Android NDK & CMake
-        id: cache-ndk
-        uses: actions/cache@v5
-        with:
-          path: |
-            /usr/local/lib/android/sdk/ndk/${{ env.NDK_VERSION }}
-            /usr/local/lib/android/sdk/cmake/${{ env.CMAKE_VERSION }}
-          key: android-ndk-cmake-${{ env.NDK_VERSION }}-${{ env.CMAKE_VERSION }}
 
       - name: Install Android NDK & CMake
         if: steps.cache-ndk.outputs.cache-hit != 'true'
@@ -55,7 +44,7 @@ jobs:
           workspaces: ./rust
           cache-all-crates: true
 
-      - name: Install cargo-ndk
+      - name: Install Rust Tools
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-ndk,cargo-llvm-cov

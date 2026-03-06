@@ -1,5 +1,7 @@
 # 📻 Bluetooth LE Mesh Walkie-Talkie
 
+[![codecov](https://codecov.io/github/denizetkar/walkie-talkie-app/graph/badge.svg?token=5QA2EV971E)](https://codecov.io/github/denizetkar/walkie-talkie-app)
+
 **An offline, peer-to-peer voice communication app for Android, built with Kotlin and Rust.**
 
 This project demonstrates a decentralized mobile mesh network using Bluetooth 5 (BLE). It allows a group of users to communicate via voice in real-time without Internet, Wi-Fi, or cellular data. It is designed for hiking, festivals, or emergency situations where infrastructure is unavailable.
