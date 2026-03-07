@@ -99,12 +99,18 @@ class BleAdvertiserModule(
 
     @SuppressLint("MissingPermission")
     fun stop() {
-        val advertiser = adapter?.bluetoothLeAdvertiser ?: return
-        val cb = advertisingSetCallback ?: return
+        val advertiser = adapter?.bluetoothLeAdvertiser
+        val cb = advertisingSetCallback
+
         try {
-            advertiser.stopAdvertisingSet(cb)
-        } catch (_: Exception) {}
-        advertisingSetCallback = null
-        currentAdvertisingSet = null
+            if (advertiser != null && cb != null) {
+                advertiser.stopAdvertisingSet(cb)
+            }
+        } catch (e: Exception) {
+            Log.w("BleAdvertiser", "Failed to stop advertising set gracefully", e)
+        } finally {
+            advertisingSetCallback = null
+            currentAdvertisingSet = null
+        }
     }
 }
