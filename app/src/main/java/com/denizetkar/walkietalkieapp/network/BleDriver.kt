@@ -324,13 +324,15 @@ class BleDriver(
         }
     }
 
-    private suspend fun cleanupPeer(nodeId: PeerId, connectionId: UUID) = peerMutex.withLock {
-        // Identity Check: Only remove if the registry still points to THIS exact connection attempt
-        val currentSession = _peers.value.sessions[nodeId]
-        if (currentSession?.connectionId == connectionId) {
-            Log.i("BleDriver", "Transport disconnected for Node $nodeId")
-            _peers.update { it.remove(nodeId) }
-            dispatch(Action.PeerDisconnected(nodeId))
+    private suspend fun cleanupPeer(nodeId: PeerId, connectionId: UUID) = withContext(NonCancellable) {
+        peerMutex.withLock {
+            // Identity Check: Only remove if the registry still points to THIS exact connection attempt
+            val currentSession = _peers.value.sessions[nodeId]
+            if (currentSession?.connectionId == connectionId) {
+                Log.i("BleDriver", "Transport disconnected for Node $nodeId")
+                _peers.update { it.remove(nodeId) }
+                dispatch(Action.PeerDisconnected(nodeId))
+            }
         }
     }
 
