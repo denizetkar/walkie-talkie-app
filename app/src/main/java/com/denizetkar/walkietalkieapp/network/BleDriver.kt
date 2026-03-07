@@ -211,9 +211,9 @@ class BleDriver(
             false
         }
 
-        // Logic: Silent Joiners (scanning but not advertising) must keep scanning.
-        // Also, maintenance scanning (Browsing) is handled here.
-        val isScanning = state.isBrowsing || (session != null && !shouldAdvertise)
+        // If we are in a session, we ALWAYS scan to find new peers,
+        // merge islands, and recover lost connections (Continuous/Lazy Scanning).
+        val isScanning = state.isBrowsing || session != null
 
         return DriverConfig(
             isAdvertising = shouldAdvertise,

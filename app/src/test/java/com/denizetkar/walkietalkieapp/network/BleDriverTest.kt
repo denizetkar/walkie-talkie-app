@@ -135,19 +135,31 @@ class BleDriverTest {
     }
 
     @Test
-    fun `Advertising - Defers when joining (Client Mode)`() = testScope.runTest {
-        // 1. Joining, no peers -> Should NOT advertise
+    fun `Scanning & Advertising - Active sessions always scan to allow self-healing`() = testScope.runTest {
+        // NOTE: setup() initialized stateFlow with session = null.
+        // This already caused discovery.stop() to be called exactly 1 time.
+
+        // 1. Joining, no peers -> Should NOT advertise, BUT MUST scan
         val session = SessionContext("Hiking", "1234", isJoinAttempt = true)
         stateFlow.value = AppState(myself = 10u, session = session, connectedPeers = emptySet())
         advanceUntilIdle()
 
-        assertTrue(actions.isEmpty())
+        verify(exactly = 1) { anyConstructed<BleDiscoveryModule>().start() }
+        verify(exactly = 0) { anyConstructed<BleAdvertiserModule>().start(any()) }
 
-        // 2. Connected to a peer -> Should Start Advertising (Relay)
+        // 2. Connected to a peer -> Should Start Advertising, AND KEEP scanning
         stateFlow.value = AppState(myself = 10u, session = session, connectedPeers = setOf(99u))
         advanceUntilIdle()
 
-        assertTrue("Should transition to advertising without error", actions.none { it is Action.JoinGroupFailed })
+        verify(exactly = 1) { anyConstructed<BleAdvertiserModule>().start(any()) }
+
+        // applyDriverConfig is triggered again because isAdvertising changed.
+        // So discovery.start() is called a 2nd time (BleDiscoveryModule handles this idempotently).
+        verify(exactly = 2) { anyConstructed<BleDiscoveryModule>().start() }
+
+        // Assert stop() was only called ONCE overall (during the initial setup configuration)
+        // and NEVER called when transitioning to the advertising state.
+        verify(exactly = 1) { anyConstructed<BleDiscoveryModule>().stop() }
     }
 
     @Test
