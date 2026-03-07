@@ -471,7 +471,7 @@ class MeshControllerTest {
         val groupName = "Hiking"
 
         // 1. New Group Discovered
-        val ad1 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_1", groupName, -80, 100u, simulationTime)
+        val ad1 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_1", groupName, -80, 100u, 101u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad1))
         runCurrent()
         assertEquals("MAC_1", controller.state.value.discoveredGroups.first().id)
@@ -486,14 +486,14 @@ class MeshControllerTest {
         assertEquals(-70, controller.state.value.discoveredGroups.first().rssi)
 
         // 3. Different MAC, Better RSSI (Replaces MAC_1 because name is the same)
-        val ad2 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_2", groupName, -60, 200u, simulationTime)
+        val ad2 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_2", groupName, -60, 200u, 201u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad2))
         runCurrent()
         assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id)
         assertEquals(1, controller.state.value.discoveredGroups.size)
 
         // 4. Different MAC, Worse RSSI (Ignored entirely)
-        val ad3 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_3", groupName, -90, 300u, simulationTime)
+        val ad3 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_3", groupName, -90, 300u, 301u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad3))
         runCurrent()
         assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id) // Unchanged
@@ -502,7 +502,7 @@ class MeshControllerTest {
     @Test
     fun `Discovery Eviction - Stale advertisements are cleared`() = testScope.runTest {
         // 1. Discover a group
-        val ad = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC", "Hiking", -50, 100u, simulationTime)
+        val ad = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC", "Hiking", -50, 100u, 101u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad))
         runCurrent()
         assertEquals(1, controller.state.value.discoveredGroups.size)
@@ -528,7 +528,7 @@ class MeshControllerTest {
         val myId = controller.state.value.myself
 
         // 2. Self-Reject: Ignore own ID
-        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC", "Hiking", -50, myId, simulationTime)))
+        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC", "Hiking", -50, myId, myId, simulationTime)))
         runCurrent()
         assertTrue("Should ignore self", effects.isEmpty())
 
@@ -540,13 +540,13 @@ class MeshControllerTest {
 
         // 4. Ignore Weak Roots when Full
         val weakRootId = if (myId > 0u) myId - 1u else return@runTest
-        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC2", "Hiking", -50, weakRootId, simulationTime)))
+        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC2", "Hiking", -50, weakRootId, weakRootId, simulationTime)))
         runCurrent()
         assertTrue("Should ignore weak root when full", effects.isEmpty())
 
         // 5. Connect to Better Roots EVEN WHEN FULL (Island Merging)
         val betterRootId = myId + 100u
-        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC3", "Hiking", -50, betterRootId, simulationTime)))
+        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC3", "Hiking", -50, betterRootId, betterRootId, simulationTime)))
         runCurrent()
         val connectEffect = effects.filterIsInstance<Effect.ConnectTo>().lastOrNull()
         assertNotNull("Should forcefully connect to a better root to merge islands", connectEffect)

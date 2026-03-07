@@ -84,7 +84,8 @@ class BleDriver(
                         id = node.id,
                         name = node.name,
                         rssi = node.rssi,
-                        netId = node.networkId
+                        netId = node.networkId,
+                        nodeId = node.nodeId
                     )
                 ))
             }

@@ -29,7 +29,7 @@ class ScreensTest {
         var joinedGroup: DiscoveredGroup? = null
         var enteredCode: String? = null
 
-        val mockGroup = DiscoveredGroup("AA:BB", "Hiking", -50, 1u)
+        val mockGroup = DiscoveredGroup("AA:BB", "Hiking", -50, 1u, 2u)
 
         composeTestRule.setContent {
             JoinGroupScreen(

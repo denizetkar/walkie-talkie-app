@@ -409,7 +409,7 @@ class MeshController(
         if (!calculateConnectionStrategy(state, group)) return
 
         Log.d("MeshController", "Strategy: Decided to connect to ${group.id} (NetID: ${group.netId})")
-        emit(Effect.ConnectTo(group.id, group.netId, state.myself))
+        emit(Effect.ConnectTo(group.id, group.nodeId, state.myself))
     }
 
     /**
