@@ -3,6 +3,7 @@ package com.denizetkar.walkietalkieapp
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -136,5 +137,95 @@ class ScreensTest {
 
         // 3. Assert no action was triggered
         assertFalse("Talk should not be permitted with 0 peers", talkAttempted)
+    }
+
+    @Test
+    fun `CreateGroupScreen - Validates input, displays error dialog, and fires callback`() {
+        var createdName = ""
+        var errorAcked = false
+
+        composeTestRule.setContent {
+            CreateGroupScreen(
+                onCreate = { createdName = it },
+                error = "Name taken", // Test error dialog at the same time
+                onErrorAck = { errorAcked = true }
+            )
+        }
+
+        // 1. Error Dialog
+        composeTestRule.onNodeWithText("Name taken").assertIsDisplayed()
+        composeTestRule.onNodeWithText("OK").performClick()
+        assertTrue("Error acknowledgment callback should fire", errorAcked)
+
+        // 2. Input Validation
+        val goLiveBtn = composeTestRule.onNodeWithText("Go Live")
+        goLiveBtn.assertIsNotEnabled()
+
+        composeTestRule.onNodeWithText("Group Name").performTextInput("Hiking")
+        goLiveBtn.assertIsEnabled()
+        goLiveBtn.performClick()
+
+        assertEquals("Hiking", createdName)
+    }
+
+    @Test
+    fun `AudioDeviceSelector - Expands dropdown and selects item`() {
+        var selectedId = -1
+        val devices = listOf(
+            AudioDeviceUi(1, "Wired Headset"),
+            AudioDeviceUi(2, "Bluetooth Speaker")
+        )
+
+        composeTestRule.setContent {
+            AudioDeviceSelector(
+                label = "Mic",
+                devices = devices,
+                selectedId = 1,
+                onSelect = { selectedId = it }
+            )
+        }
+
+        composeTestRule.onNodeWithText("Wired Headset").assertIsDisplayed()
+
+        // OutlinedTextField and the Box overlay both have click actions.
+        // We grab the last one (the Box overlay) to trigger the dropdown.
+        val clickables = composeTestRule.onAllNodes(hasClickAction())
+        clickables[clickables.fetchSemanticsNodes().size - 1].performClick()
+
+        // Assert Dropdown options are visible
+        composeTestRule.onNodeWithText("Default").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Bluetooth Speaker").assertIsDisplayed()
+
+        // Select the other device
+        composeTestRule.onNodeWithText("Bluetooth Speaker").performClick()
+
+        // Assert callback
+        assertEquals(2, selectedId)
+    }
+
+    // Splitting the Utility Screens into isolated tests prevents them from
+    // pushing each other out of the viewport (fillMaxSize)
+    @Test
+    fun `UtilityScreens - ServiceErrorScreen displays and fires callback`() {
+        var retryClicked = false
+        composeTestRule.setContent { ServiceErrorScreen(onRetry = { retryClicked = true }) }
+        composeTestRule.onNodeWithText("Radio Service Failed to Start").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Retry").performClick()
+        assertTrue(retryClicked)
+    }
+
+    @Test
+    fun `UtilityScreens - PermissionRequiredScreen displays and fires callback`() {
+        var grantClicked = false
+        composeTestRule.setContent { PermissionRequiredScreen(onGrantClick = { grantClicked = true }) }
+        composeTestRule.onNodeWithText("Permissions Needed").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Grant Permissions").performClick()
+        assertTrue(grantClicked)
+    }
+
+    @Test
+    fun `UtilityScreens - LoadingScreen displays`() {
+        composeTestRule.setContent { LoadingScreen(message = "Starting Engine") }
+        composeTestRule.onNodeWithText("Starting Engine").assertIsDisplayed()
     }
 }
