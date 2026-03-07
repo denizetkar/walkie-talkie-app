@@ -14,6 +14,7 @@ import app.cash.turbine.test
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.MainApplication
 import com.denizetkar.walkietalkieapp.network.ServerEvent
+import com.denizetkar.walkietalkieapp.network.TransportDataType
 import com.denizetkar.walkietalkieapp.protocol.HandshakeLogic
 import com.denizetkar.walkietalkieapp.protocol.Packet
 import com.denizetkar.walkietalkieapp.protocol.Protocol
@@ -22,6 +23,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -60,6 +62,9 @@ class GattServerHandlerTest {
     private val controlChar = mockk<BluetoothGattCharacteristic> {
         every { uuid } returns Config.CHAR_CONTROL_UUID
     }
+    private val dataChar = mockk<BluetoothGattCharacteristic> {
+        every { uuid } returns Config.CHAR_DATA_UUID
+    }
     private val mockService = mockk<BluetoothGattService>()
 
     @Before
@@ -73,6 +78,7 @@ class GattServerHandlerTest {
         every { bluetoothManager.getConnectionState(any(), any()) } returns BluetoothProfile.STATE_DISCONNECTED
         every { mockGattServer.getService(Config.APP_SERVICE_UUID) } returns mockService
         every { mockService.getCharacteristic(Config.CHAR_CONTROL_UUID) } returns controlChar
+        every { mockService.getCharacteristic(Config.CHAR_DATA_UUID) } returns dataChar
 
         // Inject the test dispatcher here
         serverHandler = GattServerHandler(context, testScope.backgroundScope, testDispatcher) { accessCode }
@@ -143,5 +149,212 @@ class GattServerHandlerTest {
             verify { mockGattServer.cancelConnection(device) }
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun `Message Sending - Sends Indication for Control and Notification for Audio`() = testScope.runTest {
+        // Connect the device first to create its internal operation queue
+        gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+        runCurrent()
+
+        val payload = byteArrayOf(0x99.toByte())
+
+        // 1. Send Audio (Notification -> confirm = false)
+        serverHandler.sendTo(device, payload, TransportDataType.AUDIO)
+        runCurrent()
+        verify(exactly = 1) {
+            mockGattServer.notifyCharacteristicChanged(device, dataChar, false, payload)
+        }
+
+        // 2. Send Control (Indication -> confirm = true)
+        serverHandler.sendTo(device, payload, TransportDataType.CONTROL)
+        runCurrent()
+        verify(exactly = 1) {
+            mockGattServer.notifyCharacteristicChanged(device, controlChar, true, payload)
+        }
+    }
+
+    @Test
+    fun `Audio Reception - Emits MessageReceived for CHAR_DATA_UUID`() = testScope.runTest {
+        serverHandler.serverEvents.test {
+            val audioPayload = byteArrayOf(0x01, 0x02, 0x03)
+
+            // Trigger WriteRequest directly to the Data characteristic
+            gattCallback.onCharacteristicWriteRequest(device, 99, dataChar, false, false, 0, audioPayload)
+
+            val event = awaitItem() as ServerEvent.MessageReceived
+            assertEquals(TransportDataType.AUDIO, event.type)
+            assertEquals(audioPayload.toList(), event.data.toList())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `Ghost Disconnects - Ignored if manager reports connected`() = testScope.runTest {
+        serverHandler.serverEvents.test {
+            // First connect properly
+            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            assertTrue(awaitItem() is ServerEvent.ClientConnected)
+
+            // Simulate the Android race condition: The callback says DISCONNECTED, but the Manager says CONNECTED
+            every { bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) } returns BluetoothProfile.STATE_CONNECTED
+
+            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED)
+
+            // No ClientDisconnected event should be emitted
+            expectNoEvents()
+        }
+    }
+
+    @Test
+    fun `Security - Duplicate Auth Response ignored safely`() = testScope.runTest {
+        serverHandler.serverEvents.test {
+            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            assertTrue(awaitItem() is ServerEvent.ClientConnected)
+
+            // Send an Auth Response WITHOUT a preceding Hello/Challenge (nonce is missing)
+            val fakePayload = HandshakeLogic.generateResponse(accessCode, "fakeNonce", expectedNodeId)
+            val responsePacket = Packet.Control.Raw(Protocol.OP_AUTH_RESPONSE, fakePayload).toBytes()
+
+            gattCallback.onCharacteristicWriteRequest(device, 2, controlChar, false, true, 0, responsePacket)
+            runCurrent()
+
+            // It should be safely ignored and log a warning (no crash, no authenticated event, no result packet sent)
+            verify(exactly = 0) { mockGattServer.notifyCharacteristicChanged(any(), any(), any(), any()) }
+            expectNoEvents()
+        }
+    }
+
+    @Test
+    fun `MTU Failures - Cancels connection if MTU too low`() = testScope.runTest {
+        serverHandler.serverEvents.test {
+            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            assertTrue(awaitItem() is ServerEvent.ClientConnected)
+
+            // Trigger MTU below minimum 300
+            gattCallback.onMtuChanged(device, 23)
+            runCurrent() // Yield so the fail() coroutine can emit the Error and call disconnect()
+
+            val errorEvent = awaitItem() as ServerEvent.Error
+            assertTrue(errorEvent.reason.message.contains("MTU too low"))
+
+            // Verify that the fail() logic triggered a disconnect
+            verify(exactly = 1) { mockGattServer.cancelConnection(device) }
+
+            // Manually simulate the Android Bluetooth stack responding to the cancellation request
+            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED)
+            runCurrent()
+
+            // Drain the resulting disconnect event
+            val disconnectEvent = awaitItem()
+            assertTrue(disconnectEvent is ServerEvent.ClientDisconnected)
+        }
+    }
+
+    @Test
+    fun `Lifecycle Cleanup - Clears maps and queues on stopServer`() {
+        // Just calling startServer (in setup) and stopServer (in teardown) handles the lifecycle tests.
+        // We'll verify that close() was called on the underlying hardware object.
+        serverHandler.stopServer()
+        verify(exactly = 1) { mockGattServer.close() }
+
+        // Ensure subsequent calls are safe
+        serverHandler.stopServer()
+    }
+
+    // --- ADDITIONAL COVERAGE TESTS ---
+
+    @Test
+    fun `startServer - Handles null GattServer gracefully`() {
+        // Simulate a scenario where Bluetooth is turned off, so openGattServer returns null
+        val badBluetoothManager = mockk<BluetoothManager>()
+        every { badBluetoothManager.openGattServer(any(), any()) } returns null
+
+        val badContext = mockk<Context> {
+            every { getSystemService(Context.BLUETOOTH_SERVICE) } returns badBluetoothManager
+        }
+
+        val badServerHandler = GattServerHandler(badContext, testScope.backgroundScope, testDispatcher) { "1234" }
+
+        // Should log an error and return without crashing
+        badServerHandler.startServer()
+    }
+
+    @Test
+    fun `Requests - Replies to Descriptor and Unknown Characteristic Write Requests`() {
+        // Core Bluetooth requirement: If a device writes to us with responseNeeded = true,
+        // we MUST send a response, even if we don't care about the descriptor.
+
+        // 1. Descriptor Write
+        gattCallback.onDescriptorWriteRequest(device, 1, mockk(relaxed = true), false, true, 0, byteArrayOf())
+        verify(exactly = 1) { mockGattServer.sendResponse(device, 1, BluetoothGatt.GATT_SUCCESS, 0, null) }
+
+        // 2. Characteristic Write (unrecognized characteristic)
+        val unknownChar = mockk<BluetoothGattCharacteristic>(relaxed = true)
+        gattCallback.onCharacteristicWriteRequest(device, 2, unknownChar, false, true, 0, byteArrayOf())
+        verify(exactly = 1) { mockGattServer.sendResponse(device, 2, BluetoothGatt.GATT_SUCCESS, 0, null) }
+    }
+
+    @Test
+    fun `sendTo - Handles missing queue gracefully`() {
+        // Try sending to a device that hasn't connected (so no queue exists)
+        val unknownDevice = mockk<BluetoothDevice> { every { address } returns "FF:EE:DD:CC:BB:AA" }
+        serverHandler.sendTo(unknownDevice, byteArrayOf(0x01), TransportDataType.CONTROL)
+
+        // Verify we didn't crash and didn't attempt to notify the non-existent device
+        verify(exactly = 0) { mockGattServer.notifyCharacteristicChanged(unknownDevice, any(), any(), any()) }
+    }
+
+    @Test
+    fun `sendTo - Fails synchronously (Stack Busy) exhausts retries and emits Error`() = testScope.runTest {
+        serverHandler.serverEvents.test {
+            // 1. Connect to establish the internal operation queue
+            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            assertTrue(awaitItem() is ServerEvent.ClientConnected)
+
+            // 2. Mock the stack busy response (returns ERROR_UNKNOWN instead of SUCCESS)
+            every { mockGattServer.notifyCharacteristicChanged(device, controlChar, true, any()) } returns BluetoothStatusCodes.ERROR_UNKNOWN
+
+            // 3. Send Control Packet
+            serverHandler.sendTo(device, byteArrayOf(0x01), TransportDataType.CONTROL)
+
+            // 4. Advance time past the internal retry backoff
+            advanceTimeBy(Config.GATT_RETRY_COOLDOWN * Config.GATT_RETRY_ATTEMPTS + 1000L)
+            runCurrent()
+
+            val errorEvent = awaitItem() as ServerEvent.Error
+            assertTrue(errorEvent.reason.message.contains("Notify Failed"))
+
+            // Verify the fail logic also automatically triggered a disconnect
+            verify(exactly = 1) { mockGattServer.cancelConnection(device) }
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `Disconnect - Handles system callback Timeout gracefully`() = testScope.runTest {
+        // Connect device to set up the session
+        gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+        runCurrent()
+
+        // Launch the suspending disconnect method
+        val job = testScope.backgroundScope.launch {
+            serverHandler.disconnect(device)
+        }
+
+        // Advance time past the Config.PEER_DISCONNECT_TIMEOUT.
+        // We purposefully do NOT fire `gattCallback.onConnectionStateChange(STATE_DISCONNECTED)`,
+        // simulating the Android stack hanging/freezing.
+        advanceTimeBy(Config.PEER_DISCONNECT_TIMEOUT + 500L)
+        runCurrent()
+
+        // Disconnect should complete (time out) without crashing the app
+        assertTrue(job.isCompleted)
+
+        // Verify that cleanupDeviceData STILL happened despite the timeout by trying to send to it
+        serverHandler.sendTo(device, byteArrayOf(0x01), TransportDataType.CONTROL)
+        verify(exactly = 0) { mockGattServer.notifyCharacteristicChanged(any(), any(), any(), any()) }
     }
 }
