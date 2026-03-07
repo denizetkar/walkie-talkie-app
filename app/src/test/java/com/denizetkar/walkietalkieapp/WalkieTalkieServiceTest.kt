@@ -42,8 +42,13 @@ class WalkieTalkieServiceTest {
         mockkStatic("uniffi.walkie_talkie_engine.Walkie_talkie_engineKt")
         every { initLogger() } just Runs
 
+        // Prevent native crash leakage
+        io.mockk.mockkConstructor(com.denizetkar.walkietalkieapp.logic.VoiceManager::class)
+        every { anyConstructed<com.denizetkar.walkietalkieapp.logic.VoiceManager>().bind(any(), any()) } just Runs
+        every { anyConstructed<com.denizetkar.walkietalkieapp.logic.VoiceManager>().renderAudio(any()) } just Runs
+        every { anyConstructed<com.denizetkar.walkietalkieapp.logic.VoiceManager>().close() } just Runs
+
         context = ApplicationProvider.getApplicationContext()
-        // Initialize and start the service
         serviceController = Robolectric.buildService(WalkieTalkieService::class.java)
         service = serviceController.create().get()
     }
@@ -51,6 +56,7 @@ class WalkieTalkieServiceTest {
     @After
     fun tearDown() {
         serviceController.destroy()
+        io.mockk.unmockkAll() // Ensure mockkConstructor is wiped clean
     }
 
     @Test

@@ -11,9 +11,11 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
+import com.denizetkar.walkietalkieapp.logic.VoiceManager
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
+import io.mockk.mockkConstructor
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import org.junit.After
@@ -30,7 +32,6 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33], application = MainApplication::class)
 class MainActivityTest {
 
-    // 1. Use an Empty Rule so the Activity doesn't launch until we are ready
     @get:Rule
     val composeTestRule = createEmptyComposeRule()
 
@@ -40,15 +41,19 @@ class MainActivityTest {
         mockkStatic("uniffi.walkie_talkie_engine.Walkie_talkie_engineKt")
         every { uniffi.walkie_talkie_engine.initLogger() } just Runs
 
-        // 2. Create a real WalkieTalkieService
+        // Prevent the Service from running the real VoiceManager,
+        // which attempts to load the Rust .so/.dll via JNA and crashes the background coroutine.
+        mockkConstructor(VoiceManager::class)
+        every { anyConstructed<VoiceManager>().bind(any(), any()) } just Runs
+        every { anyConstructed<VoiceManager>().renderAudio(any()) } just Runs
+        every { anyConstructed<VoiceManager>().close() } just Runs
+
         val app = ApplicationProvider.getApplicationContext<Application>()
         val serviceIntent = Intent(app, WalkieTalkieService::class.java)
 
-        // Build the service using Robolectric so it has a valid Context and Lifecycle
         val service = Robolectric.buildService(WalkieTalkieService::class.java).create().get()
         val binder = service.onBind(serviceIntent)
 
-        // 3. Tell Robolectric to return this binder when bindService is called
         shadowOf(app).setComponentNameAndServiceForBindService(
             ComponentName(app, WalkieTalkieService::class.java),
             binder
@@ -57,12 +62,11 @@ class MainActivityTest {
 
     @After
     fun tearDown() {
-        unmockkAll()
+        unmockkAll() // This cleans up mockkConstructor to prevent cross-test pollution
     }
 
     @Test
     fun `Permissions Denied - Shows Permission Required Screen`() {
-        // Now we explicitly launch the activity AFTER setup is complete
         ActivityScenario.launch(MainActivity::class.java).use {
             composeTestRule.onNodeWithText("Permissions Needed").assertIsDisplayed()
         }
@@ -80,21 +84,16 @@ class MainActivityTest {
         )
 
         ActivityScenario.launch(MainActivity::class.java).use {
-            // The Activity automatically detects the pre-granted permissions and binds the service.
-            // We just wait for the UI to arrive at the Create screen.
             composeTestRule.waitUntil(timeoutMillis = 5000) {
                 composeTestRule.onAllNodesWithText("Create Group").fetchSemanticsNodes().isNotEmpty()
             }
 
-            // We should be on the Create screen
             composeTestRule.onNodeWithText("Create Group").assertIsDisplayed()
 
-            // Test Bottom Navigation -> Click Join
             composeTestRule.onNodeWithText("Join").performClick()
             composeTestRule.waitForIdle()
             composeTestRule.onNodeWithText("Nearby Groups").assertIsDisplayed()
 
-            // Test Bottom Navigation -> Click Create
             composeTestRule.onNodeWithText("Create").performClick()
             composeTestRule.waitForIdle()
             composeTestRule.onNodeWithText("Create Group").assertIsDisplayed()
