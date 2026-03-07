@@ -350,4 +350,107 @@ class BleDriverTest {
             actions.contains(Action.PeerConnected(50u))
         )
     }
+
+    @Test
+    fun `Connection - Ignores Duplicate Outgoing Connection`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        // 1. Establish first OUTGOING attempt to Node 50u
+        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u))
+        advanceUntilIdle()
+
+        // 2. Emit another ConnectTo for the SAME target and SAME direction
+        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u))
+        advanceUntilIdle()
+
+        // Verify connect() was only called ONCE for this client handler mock
+        verify(exactly = 1) { mockGattClientHandler.connect() }
+    }
+
+    @Test
+    fun `Server Connection - Ignores unknown devices safely`() = testScope.runTest {
+        val unknownDevice = realAdapter.getRemoteDevice("FF:EE:DD:CC:BB:AA")
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        // 1. Message Received from an unknown device
+        mockServerEvents.emit(ServerEvent.MessageReceived(unknownDevice, byteArrayOf(), TransportDataType.CONTROL))
+        advanceUntilIdle()
+
+        // 2. Disconnect from an unknown device
+        mockServerEvents.emit(ServerEvent.ClientDisconnected(unknownDevice))
+        advanceUntilIdle()
+
+        // Assert no dispatch happened
+        assertTrue("Should ignore data from unknown peer", actions.none { it is Action.PacketReceived })
+        assertTrue("Should ignore disconnect from unknown peer", actions.none { it is Action.PeerDisconnected })
+    }
+
+    @Test
+    fun `Client Connection - Handles Non-Auth Error`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        val mockDevice = realAdapter.getRemoteDevice(targetMac)
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        advanceUntilIdle()
+
+        // Emit IO Error instead of AuthRejected
+        mockClientEvents.emit(ClientEvent.Error(mockDevice, ConnectionFailure.Io("Connection lost")))
+        advanceUntilIdle()
+
+        // Should NOT emit JoinGroupFailed (that is strictly reserved for AuthRejected)
+        assertTrue(actions.none { it is Action.JoinGroupFailed })
+    }
+
+    @Test
+    fun `Client Connection - Polite Disconnect Exception caught safely`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        val mockDevice = realAdapter.getRemoteDevice(targetMac)
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        advanceUntilIdle()
+
+        mockClientEvents.emit(ClientEvent.Authenticated(mockDevice))
+        advanceUntilIdle()
+
+        // Mock disconnect to throw an exception
+        every { mockGattClientHandler.disconnect() } throws RuntimeException("Stack crash")
+
+        // Leave group to trigger the polite teardown
+        stateFlow.value = AppState(myself = 10u, session = null)
+        advanceUntilIdle()
+
+        // Assert it handled the exception and still called close()
+        verify(exactly = 1) { mockGattClientHandler.close() }
+    }
+
+    @Test
+    fun `Config Changes - Stops Scanning and Advertising when session ends`() = testScope.runTest {
+        // Start a session
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+        verify { anyConstructed<BleAdvertiserModule>().start(any()) }
+
+        // Turn on browsing
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false), isBrowsing = true)
+        advanceUntilIdle()
+        verify { anyConstructed<BleDiscoveryModule>().start() }
+
+        // End session and browsing
+        stateFlow.value = AppState(myself = 10u, session = null, isBrowsing = false)
+        advanceUntilIdle()
+
+        // Verify the modules are told to spin down
+        verify { anyConstructed<BleAdvertiserModule>().stop() }
+        verify { anyConstructed<BleDiscoveryModule>().stop() }
+    }
 }
