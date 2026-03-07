@@ -428,4 +428,165 @@ class MeshControllerTest {
         assertNull("Session should be dropped on critical hardware failure", controller.state.value.session)
         assertTrue("Join error should contain hardware failure reason", controller.state.value.joinError?.contains("Hardware Reset") == true)
     }
+
+    @Test
+    fun `Hardware & UI State - Updates available devices and selection`() = testScope.runTest {
+        // 1. Available Devices List
+        val inputs = listOf(com.denizetkar.walkietalkieapp.AudioDeviceUi(1, "Mic1"))
+        val outputs = listOf(com.denizetkar.walkietalkieapp.AudioDeviceUi(2, "Speaker1"))
+
+        controller.dispatch(Action.AudioDevicesUpdated(inputs, outputs))
+        runCurrent()
+
+        assertEquals(inputs, controller.state.value.availableMics)
+        assertEquals(outputs, controller.state.value.availableSpeakers)
+
+        // 2. Device Selection
+        controller.dispatch(Action.SetAudioInput(1))
+        controller.dispatch(Action.SetAudioOutput(2))
+        runCurrent()
+
+        assertEquals(1, controller.state.value.selectedInputId)
+        assertEquals(2, controller.state.value.selectedOutputId)
+    }
+
+    @Test
+    fun `Error Handling - JoinGroupFailed clears session and sets error`() = testScope.runTest {
+        // Setup: Active Join Attempt
+        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        runCurrent()
+        assertNotNull(controller.state.value.session)
+
+        // Action: Driver reports auth failure
+        controller.dispatch(Action.JoinGroupFailed("Access Code Rejected"))
+        runCurrent()
+
+        // Assert: Session cleared, Error populated
+        assertNull("Session should be null after failure", controller.state.value.session)
+        assertEquals("Access Code Rejected", controller.state.value.joinError)
+    }
+
+    @Test
+    fun `Discovery - Advertisement lists update based on RSSI and MAC`() = testScope.runTest {
+        val groupName = "Hiking"
+
+        // 1. New Group Discovered
+        val ad1 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_1", groupName, -80, 100u, simulationTime)
+        controller.dispatch(Action.AdvertisementSeen(ad1))
+        runCurrent()
+        assertEquals("MAC_1", controller.state.value.discoveredGroups.first().id)
+        assertEquals(-80, controller.state.value.discoveredGroups.first().rssi)
+
+        // 2. Same MAC, Better RSSI (Updates existing)
+        val ad1Better = ad1.copy(rssi = -70)
+        controller.dispatch(Action.AdvertisementSeen(ad1Better))
+        runCurrent()
+        assertEquals("MAC_1", controller.state.value.discoveredGroups.first().id)
+        assertEquals(1, controller.state.value.discoveredGroups.size)
+        assertEquals(-70, controller.state.value.discoveredGroups.first().rssi)
+
+        // 3. Different MAC, Better RSSI (Replaces MAC_1 because name is the same)
+        val ad2 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_2", groupName, -60, 200u, simulationTime)
+        controller.dispatch(Action.AdvertisementSeen(ad2))
+        runCurrent()
+        assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id)
+        assertEquals(1, controller.state.value.discoveredGroups.size)
+
+        // 4. Different MAC, Worse RSSI (Ignored entirely)
+        val ad3 = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC_3", groupName, -90, 300u, simulationTime)
+        controller.dispatch(Action.AdvertisementSeen(ad3))
+        runCurrent()
+        assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id) // Unchanged
+    }
+
+    @Test
+    fun `Discovery Eviction - Stale advertisements are cleared`() = testScope.runTest {
+        // 1. Discover a group
+        val ad = com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC", "Hiking", -50, 100u, simulationTime)
+        controller.dispatch(Action.AdvertisementSeen(ad))
+        runCurrent()
+        assertEquals(1, controller.state.value.discoveredGroups.size)
+
+        // 2. Advance time strictly past the timeout (6000ms)
+        tick(Config.GROUP_ADVERTISEMENT_TIMEOUT + 100L)
+
+        // 3. Assert it was evicted
+        assertEquals("Stale group should be removed", 0, controller.state.value.discoveredGroups.size)
+    }
+
+    @Test
+    fun `Auto-Connect - Respects Topology Rules and Target Peers constraint`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
+        // 1. Setup Session
+        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        runCurrent()
+        effects.clear()
+        val myId = controller.state.value.myself
+
+        // 2. Self-Reject: Ignore own ID
+        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC", "Hiking", -50, myId, simulationTime)))
+        runCurrent()
+        assertTrue("Should ignore self", effects.isEmpty())
+
+        // 3. Simulate FULL capacity (3 peers)
+        controller.dispatch(Action.PeerConnected(1u))
+        controller.dispatch(Action.PeerConnected(2u))
+        controller.dispatch(Action.PeerConnected(3u))
+        runCurrent()
+
+        // 4. Ignore Weak Roots when Full
+        val weakRootId = if (myId > 0u) myId - 1u else return@runTest
+        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC2", "Hiking", -50, weakRootId, simulationTime)))
+        runCurrent()
+        assertTrue("Should ignore weak root when full", effects.isEmpty())
+
+        // 5. Connect to Better Roots EVEN WHEN FULL (Island Merging)
+        val betterRootId = myId + 100u
+        controller.dispatch(Action.AdvertisementSeen(com.denizetkar.walkietalkieapp.domain.DiscoveredGroup("MAC3", "Hiking", -50, betterRootId, simulationTime)))
+        runCurrent()
+        val connectEffect = effects.filterIsInstance<Effect.ConnectTo>().lastOrNull()
+        assertNotNull("Should forcefully connect to a better root to merge islands", connectEffect)
+        assertEquals(betterRootId, connectEffect?.targetNodeId)
+    }
+
+    @Test
+    fun `Heartbeat - Updates Sequence Number of existing Root`() = testScope.runTest {
+        val effects = mutableListOf<Effect>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            controller.effects.toList(effects)
+        }
+
+        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        runCurrent()
+        effects.clear()
+
+        // Ensure the incoming rootId is strictly greater than our random ID
+        val myId = controller.state.value.myself
+        val rootId = myId + 500u
+
+        // 1. Initial Heartbeat establishes the Mesh Root
+        val hb1 = Packet.Control.Heartbeat(rootId, 10, 0).toBytes()
+        controller.dispatch(Action.PacketReceived(hb1, source = 10u, isControl = true))
+        tick(100)
+
+        assertTrue(controller.state.value.network is NetworkTopology.Mesh)
+        assertEquals(10, (controller.state.value.network as NetworkTopology.Mesh).rootSeq)
+        effects.clear() // Clear the relay effect
+
+        // 2. Newer Heartbeat from the SAME Root
+        val hb2 = Packet.Control.Heartbeat(rootId, 11, 0).toBytes()
+        controller.dispatch(Action.PacketReceived(hb2, source = 10u, isControl = true))
+        tick(100)
+
+        // Assert: Sequence updated
+        assertEquals(11, (controller.state.value.network as NetworkTopology.Mesh).rootSeq)
+
+        // Assert: Heartbeat relayed
+        val relayEffect = effects.filterIsInstance<Effect.Transmit>().lastOrNull()
+        assertNotNull("Should relay updated heartbeat", relayEffect)
+    }
 }
