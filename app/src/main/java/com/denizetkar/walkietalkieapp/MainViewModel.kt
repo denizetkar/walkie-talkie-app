@@ -194,7 +194,7 @@ class MainViewModel(
     }
 
     fun ackJoinError() {
-        _appState.update { it.copy(joinError = null) }
+        dispatch(Action.AckJoinError)
     }
 
     fun leaveGroup() {

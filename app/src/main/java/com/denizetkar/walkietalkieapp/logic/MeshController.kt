@@ -155,6 +155,10 @@ class MeshController(
                         }
                     }
 
+                    is Action.AckJoinError -> {
+                        _state.update { it.copy(joinError = null) }
+                    }
+
                     is Action.ScanFailed -> {
                         Log.e("MeshController", "Scan Failed: ${action.reason}")
                         _state.update { it.copy(isBrowsing = false) }

@@ -141,6 +141,7 @@ sealed class Action {
     data class PeerConnected(val peerId: PeerId) : Action()
     data class PeerDisconnected(val peerId: PeerId) : Action()
     data class JoinGroupFailed(val reason: String) : Action()
+    data object AckJoinError : Action()
     data class ScanFailed(val reason: String) : Action()
 
     /**
