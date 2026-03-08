@@ -36,6 +36,7 @@ class ScreensTest {
                 discoveredGroups = listOf(mockGroup),
                 isJoining = false,
                 joinError = null,
+                isBluetoothEnabled = true,
                 onJoin = { group, code ->
                     joinedGroup = group
                     enteredCode = code
@@ -65,6 +66,22 @@ class ScreensTest {
         // 5. Assert callback was fired correctly
         assertEquals("Hiking", joinedGroup?.name)
         assertEquals("1234", enteredCode)
+    }
+
+    @Test
+    fun `JoinGroupScreen - Displays Bluetooth disabled warning`() {
+        composeTestRule.setContent {
+            JoinGroupScreen(
+                discoveredGroups = emptyList(),
+                isJoining = false,
+                joinError = null,
+                isBluetoothEnabled = false,
+                onJoin = { _, _ -> },
+                onJoinErrorAck = {}
+            )
+        }
+
+        composeTestRule.onNodeWithText("Bluetooth is disabled").assertIsDisplayed()
     }
 
     @Test

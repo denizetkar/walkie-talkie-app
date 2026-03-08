@@ -65,16 +65,23 @@ class BleDriver(
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
-                if (state == BluetoothAdapter.STATE_OFF) {
-                    Log.w("BleDriver", "Bluetooth Disabled by System")
-                    // Notify Core to leave group
-                    dispatch(Action.LeaveGroup("Bluetooth Disabled"))
+                when (state) {
+                    BluetoothAdapter.STATE_OFF -> {
+                        Log.w("BleDriver", "Bluetooth Disabled by System")
+                        dispatch(Action.BluetoothStateChanged(false))
+                    }
+                    BluetoothAdapter.STATE_ON -> {
+                        Log.i("BleDriver", "Bluetooth Enabled by System")
+                        dispatch(Action.BluetoothStateChanged(true))
+                    }
                 }
             }
         }
     }
 
     init {
+        dispatch(Action.BluetoothStateChanged(adapter?.isEnabled == true))
+
         context.registerReceiver(btReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
 
         scope.launch {
@@ -216,6 +223,7 @@ class BleDriver(
         val isScanning = state.isBrowsing || session != null
 
         return DriverConfig(
+            isBluetoothEnabled = state.isBluetoothEnabled,
             isAdvertising = shouldAdvertise,
             isScanning = isScanning,
             groupName = session?.groupName ?: "",
@@ -227,7 +235,13 @@ class BleDriver(
     }
 
     private fun applyDriverConfig(config: DriverConfig) {
-        // 1. Advertising
+        // If Bluetooth is disabled, halt hardware operations but don't wipe internal state
+        if (!config.isBluetoothEnabled) {
+            advertiserModule.stop()
+            discoveryModule.stop()
+            return
+        }
+
         if (config.isAdvertising) {
             val advertisingConfig = AdvertisingConfig(
                 groupName = config.groupName,
@@ -245,7 +259,6 @@ class BleDriver(
             advertiserModule.stop()
         }
 
-        // 2. Scanning
         if (config.isScanning) {
             val success = discoveryModule.start()
             if (!success) {

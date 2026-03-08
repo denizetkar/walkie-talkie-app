@@ -161,29 +161,45 @@ class MeshController(
 
                     is Action.ScanFailed -> {
                         Log.e("MeshController", "Scan Failed: ${action.reason}")
-                        _state.update { it.copy(isBrowsing = false) }
 
                         if (currentState.session != null) {
+                            // Critical failure during an active session -> Boot them out
                             _state.update {
                                 it.copy(
+                                    isBrowsing = false,
                                     session = null, // <--- Triggers UI Navigation to Home
                                     joinError = "Scanning Failed: ${action.reason}"
                                 )
                             }
                         }
                         else {
+                            // Background browsing failed.
+                            // DO NOT set isBrowsing = false. We preserve the user's intent so it auto-resumes!
                             emit(Effect.ShowToast("Warning: Background Scanning Failed (${action.reason})"))
+                        }
+                    }
+
+                    is Action.BluetoothStateChanged -> {
+                        Log.d("MeshController", "Bluetooth State Changed: ${action.enabled}")
+                        _state.update { it.copy(isBluetoothEnabled = action.enabled) }
+
+                        // If Bluetooth just died, and we are in a session, trigger a cleanup
+                        if (!action.enabled && currentState.session != null) {
+                            dispatch(Action.LeaveGroup("Bluetooth Disabled"))
                         }
                     }
 
                     is Action.LeaveGroup -> {
                         Log.i("MeshController", "USER ACTION: Leave Group")
-                        // 1. Reset State completely (Keep same ID for now, it rotates on next join)
+                        // 1. Safely reset ONLY the session/network state.
+                        // PRESERVE hardware states (isBluetoothEnabled) and intents (isBrowsing)
                         _state.update {
                             AppState(
                                 myself = it.myself,
+                                isBrowsing = it.isBrowsing,
                                 availableMics = it.availableMics,
                                 availableSpeakers = it.availableSpeakers,
+                                isBluetoothEnabled = it.isBluetoothEnabled,
                             )
                         }
 

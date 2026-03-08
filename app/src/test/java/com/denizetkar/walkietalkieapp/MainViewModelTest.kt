@@ -149,7 +149,8 @@ class MainViewModelTest {
             controllerState.value = AppState(
                 myself = 1u,
                 session = session,
-                connectedPeers = setOf(2u, 3u)
+                connectedPeers = setOf(2u, 3u),
+                isBluetoothEnabled = false,
             )
 
             // ASSERT: UI updates to match
@@ -157,6 +158,7 @@ class MainViewModelTest {
             assertEquals("Hiking", uiState.groupName)
             assertEquals("9999", uiState.accessCode)
             assertEquals(2, uiState.peerCount)
+            assertEquals(false, uiState.isBluetoothEnabled)
         }
     }
 

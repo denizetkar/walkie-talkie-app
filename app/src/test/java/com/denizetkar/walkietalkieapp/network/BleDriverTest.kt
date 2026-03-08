@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -201,7 +202,7 @@ class BleDriverTest {
     }
 
     @Test
-    fun `System Events - Turning off Bluetooth forces Leave Group`() = testScope.runTest {
+    fun `System Events - Turning off Bluetooth dispatches BluetoothStateChanged`() = testScope.runTest {
         stateFlow.value = AppState(myself = 10u, session = SessionContext("Hiking", "1234", false))
         advanceUntilIdle()
 
@@ -216,9 +217,9 @@ class BleDriverTest {
         // 3. Force Coroutines to process the resulting dispatch
         advanceUntilIdle()
 
-        val leaveAction = actions.filterIsInstance<Action.LeaveGroup>().lastOrNull()
-        assertNotNull("Should dispatch LeaveGroup when Bluetooth dies", leaveAction)
-        assertTrue(leaveAction!!.reason.contains("Disabled"))
+        val stateChangeAction = actions.filterIsInstance<Action.BluetoothStateChanged>().lastOrNull()
+        assertNotNull("Should dispatch BluetoothStateChanged when Bluetooth dies", stateChangeAction)
+        assertFalse(stateChangeAction!!.enabled)
     }
 
     @Test
@@ -443,6 +444,22 @@ class BleDriverTest {
 
         // Assert it handled the exception and still called close()
         verify(exactly = 1) { mockGattClientHandler.close() }
+    }
+
+    @Test
+    fun `Config Changes - Stops Scanning and Advertising when Bluetooth disabled`() = testScope.runTest {
+        // Start a session
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false), isBluetoothEnabled = true)
+        advanceUntilIdle()
+        verify { anyConstructed<BleAdvertiserModule>().start(any()) }
+
+        // Disable Bluetooth
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false), isBluetoothEnabled = false)
+        advanceUntilIdle()
+
+        // Verify the modules are told to spin down
+        verify { anyConstructed<BleAdvertiserModule>().stop() }
+        verify { anyConstructed<BleDiscoveryModule>().stop() }
     }
 
     @Test

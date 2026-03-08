@@ -57,7 +57,10 @@ data class AppUiState(
     val availableMics: List<AudioDeviceUi> = emptyList(),
     val availableSpeakers: List<AudioDeviceUi> = emptyList(),
     val selectedMicId: Int = 0,
-    val selectedSpeakerId: Int = 0
+    val selectedSpeakerId: Int = 0,
+
+    // Hardware State
+    val isBluetoothEnabled: Boolean = true,
 )
 
 class MainViewModel(
@@ -155,7 +158,10 @@ class MainViewModel(
                         availableMics = coreState.availableMics,
                         availableSpeakers = coreState.availableSpeakers,
                         selectedMicId = coreState.selectedInputId,
-                        selectedSpeakerId = coreState.selectedOutputId
+                        selectedSpeakerId = coreState.selectedOutputId,
+
+                        // Map Hardware State
+                        isBluetoothEnabled = coreState.isBluetoothEnabled,
                     )
                 }
             }

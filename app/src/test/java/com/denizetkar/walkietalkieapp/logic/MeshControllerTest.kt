@@ -15,6 +15,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -408,8 +409,8 @@ class MeshControllerTest {
         controller.dispatch(Action.ScanFailed("BLE Crash"))
         runCurrent()
 
-        // Browsing aborted, but we stay on the Home Screen (Toast is emitted)
-        assertTrue("Browsing should stop on failure", !controller.state.value.isBrowsing)
+        // Browsing NOT aborted, we stay on the Home Screen (Toast is emitted)
+        assertTrue("Browsing should not stop on failure", controller.state.value.isBrowsing)
         val toast = effects.filterIsInstance<Effect.ShowToast>().lastOrNull()
         assertTrue("Should emit warning toast", toast?.message?.contains("BLE Crash") == true)
 
@@ -427,6 +428,33 @@ class MeshControllerTest {
         // Assert: Session is aborted, user kicked back to Home Screen with an error dialog
         assertNull("Session should be dropped on critical hardware failure", controller.state.value.session)
         assertTrue("Join error should contain hardware failure reason", controller.state.value.joinError?.contains("Hardware Reset") == true)
+    }
+
+    @Test
+    fun `Bluetooth State - Updates state and leaves group if disabled during session`() = testScope.runTest {
+        // 1. Initial State
+        assertTrue(controller.state.value.isBluetoothEnabled)
+
+        // 2. Disable Bluetooth while idle
+        controller.dispatch(Action.BluetoothStateChanged(false))
+        runCurrent()
+        assertFalse(controller.state.value.isBluetoothEnabled)
+        assertNull(controller.state.value.session)
+
+        // 3. Enable Bluetooth, Join Group
+        controller.dispatch(Action.BluetoothStateChanged(true))
+        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        runCurrent()
+        assertTrue(controller.state.value.isBluetoothEnabled)
+        assertNotNull(controller.state.value.session)
+
+        // 4. Disable Bluetooth while in session
+        controller.dispatch(Action.BluetoothStateChanged(false))
+        runCurrent()
+
+        // Assert: State updated and session cleared (via LeaveGroup)
+        assertFalse(controller.state.value.isBluetoothEnabled)
+        assertNull(controller.state.value.session)
     }
 
     @Test

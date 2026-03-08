@@ -39,6 +39,7 @@ value class TransportAddress(val address: String) {
 
 // --- Driver Configuration (Derived from AppState) ---
 data class DriverConfig(
+    val isBluetoothEnabled: Boolean,
     val isAdvertising: Boolean,
     val isScanning: Boolean,
     val groupName: String,

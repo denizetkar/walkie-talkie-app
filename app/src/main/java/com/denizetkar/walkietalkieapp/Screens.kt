@@ -113,6 +113,7 @@ fun JoinGroupScreen(
     discoveredGroups: List<DiscoveredGroup>,
     isJoining: Boolean,
     joinError: String?,
+    isBluetoothEnabled: Boolean,
     onJoin: (DiscoveredGroup, String) -> Unit,
     onJoinErrorAck: () -> Unit
 ) {
@@ -182,7 +183,15 @@ fun JoinGroupScreen(
         Text("Nearby Groups", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (discoveredGroups.isEmpty()) {
+        if (!isBluetoothEnabled) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.BluetoothDisabled, contentDescription = null, modifier = Modifier.size(48.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Bluetooth is disabled")
+                }
+            }
+        } else if (discoveredGroups.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Scanning...") }
         } else {
             LazyColumn {

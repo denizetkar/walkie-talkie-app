@@ -70,6 +70,9 @@ data class AppState(
     // Currently selected hardware IDs (0 = Default)
     val selectedInputId: Int = 0,
     val selectedOutputId: Int = 0,
+
+    // --- Hardware State ---
+    val isBluetoothEnabled: Boolean = true,
 )
 
 data class SessionContext(
@@ -144,6 +147,7 @@ sealed class Action {
     data class JoinGroupFailed(val reason: String) : Action()
     data object AckJoinError : Action()
     data class ScanFailed(val reason: String) : Action()
+    data class BluetoothStateChanged(val enabled: Boolean) : Action()
 
     /**
      * A raw packet received from the wire.
