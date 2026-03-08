@@ -23,6 +23,8 @@ class BleAdvertiserModule(
 
     @SuppressLint("MissingPermission")
     fun start(config: AdvertisingConfig): Boolean {
+        Log.d("BleAdvertiser", "Starting advertising with config: $config")
+
         if (adapter == null) {
             Log.e("BleAdvertiser", "Bluetooth Adapter is NULL")
             return false
@@ -79,12 +81,16 @@ class BleAdvertiserModule(
         advertisingSetCallback = object : AdvertisingSetCallback() {
             override fun onAdvertisingSetStarted(advertisingSet: AdvertisingSet?, txPower: Int, status: Int) {
                 if (status == ADVERTISE_SUCCESS) {
-                    Log.i("BleAdvertiser", "Advertising started successfully.")
+                    Log.i("BleAdvertiser", "Advertising set started.")
                     currentAdvertisingSet = advertisingSet
                 } else {
                     Log.e("BleAdvertiser", "Advertising failed to start. Status: $status")
                     // Note: We can't return 'false' from here (async), but the initial start call below catches immediate errors.
                 }
+            }
+
+            override fun onAdvertisingSetStopped(advertisingSet: AdvertisingSet?) {
+                Log.i("BleAdvertiser", "Advertising set stopped.")
             }
         }
 
@@ -99,6 +105,8 @@ class BleAdvertiserModule(
 
     @SuppressLint("MissingPermission")
     fun stop() {
+        Log.d("BleAdvertiser", "Stopping advertising")
+
         val advertiser = adapter?.bluetoothLeAdvertiser
         val cb = advertisingSetCallback
 

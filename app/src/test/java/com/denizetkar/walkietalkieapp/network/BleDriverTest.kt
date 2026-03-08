@@ -172,7 +172,7 @@ class BleDriverTest {
         stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
         advanceUntilIdle()
 
-        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
         advanceUntilIdle()
 
         // Verify we called connect() on the injected mock
@@ -188,7 +188,7 @@ class BleDriverTest {
         advanceUntilIdle()
 
         // 1. Order Connection
-        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "9999"))
         advanceUntilIdle()
 
         // 2. Simulate Error from the Mock Handler
@@ -231,7 +231,7 @@ class BleDriverTest {
         advanceUntilIdle()
 
         // 1. Connect & Auth
-        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
         advanceUntilIdle()
 
         mockClientEvents.emit(ClientEvent.Authenticated(mockDevice))
@@ -261,7 +261,7 @@ class BleDriverTest {
         stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
         advanceUntilIdle()
 
-        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
         advanceUntilIdle()
 
         mockClientEvents.emit(ClientEvent.Error(mockDevice, ConnectionFailure.AuthRejected("Wrong Code")))
@@ -307,7 +307,7 @@ class BleDriverTest {
 
         // 1. Setup Client Connection (Node 20u)
         val clientDevice = realAdapter.getRemoteDevice("11:22:33:44:55:66")
-        effectFlow.emit(Effect.ConnectTo(clientDevice.address, 20u, 10u))
+        effectFlow.emit(Effect.ConnectTo(clientDevice.address, 20u, 10u, "1234"))
         advanceUntilIdle()
         mockClientEvents.emit(ClientEvent.Authenticated(clientDevice))
         advanceUntilIdle()
@@ -338,7 +338,7 @@ class BleDriverTest {
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
         // 1. Establish OUTGOING attempt to Node 50u
-        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u, "1234"))
         advanceUntilIdle()
         mockClientEvents.emit(ClientEvent.Authenticated(mockDevice))
         advanceUntilIdle()
@@ -371,11 +371,11 @@ class BleDriverTest {
         advanceUntilIdle()
 
         // 1. Establish first OUTGOING attempt to Node 50u
-        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u, "1234"))
         advanceUntilIdle()
 
         // 2. Emit another ConnectTo for the SAME target and SAME direction
-        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u, "1234"))
         advanceUntilIdle()
 
         // Verify connect() was only called ONCE for this client handler mock
@@ -410,7 +410,7 @@ class BleDriverTest {
         stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
         advanceUntilIdle()
 
-        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
         advanceUntilIdle()
 
         // Emit IO Error instead of AuthRejected
@@ -429,7 +429,7 @@ class BleDriverTest {
         stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
         advanceUntilIdle()
 
-        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u))
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
         advanceUntilIdle()
 
         mockClientEvents.emit(ClientEvent.Authenticated(mockDevice))
@@ -460,6 +460,7 @@ class BleDriverTest {
         // Verify the modules are told to spin down
         verify { anyConstructed<BleAdvertiserModule>().stop() }
         verify { anyConstructed<BleDiscoveryModule>().stop() }
+        verify { anyConstructed<GattServerHandler>().stopServer() }
     }
 
     @Test

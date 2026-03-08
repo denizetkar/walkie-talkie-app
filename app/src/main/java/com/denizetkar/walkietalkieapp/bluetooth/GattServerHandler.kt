@@ -213,7 +213,7 @@ class GattServerHandler(
             Log.w("GattServer", "Auth Failed. Sending NACK.")
             val failPacket = Packet.Control.Raw(Protocol.OP_AUTH_RESULT, byteArrayOf(0x00))
             sendTo(device, failPacket.toBytes(), TransportDataType.CONTROL)
-            fail(device, ConnectionFailure.AuthRejected("Wrong Access Code"))
+            fail(device, ConnectionFailure.AuthRejected("Access code does not match $code"))
         }
     }
 

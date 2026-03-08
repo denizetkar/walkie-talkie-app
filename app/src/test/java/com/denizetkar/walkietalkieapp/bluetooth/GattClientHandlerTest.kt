@@ -166,7 +166,7 @@ class GattClientHandlerTest {
             gattCallback.onCharacteristicChanged(mockGatt, controlChar, failPacket)
 
             val errorEvent = awaitItem() as ClientEvent.Error
-            assertTrue(errorEvent.reason.message.contains("Wrong Access Code"))
+            assertTrue(errorEvent.reason.message.contains("Access code rejected"))
 
             cancelAndIgnoreRemainingEvents()
         }

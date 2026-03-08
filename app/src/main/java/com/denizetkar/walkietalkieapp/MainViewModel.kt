@@ -188,14 +188,12 @@ class MainViewModel(
     }
 
     fun createGroup(name: String) {
-        viewModelScope.launch(backgroundDispatcher) {
-            val code = Random.nextInt(1000, 9999).toString()
-            dispatch(Action.CreateGroup(name, code))
-        }
+        val code = Random.nextInt(1000, 9999).toString()
+        dispatch(Action.CreateGroup(name, code))
     }
 
     fun joinGroup(name: String, code: String) {
-        _appState.update { it.copy(isJoining = true, joinError = null) }
+        _appState.update { it.copy(isJoining = true) }
         dispatch(Action.JoinGroup(name, code))
     }
 
@@ -205,7 +203,6 @@ class MainViewModel(
 
     fun leaveGroup() {
         dispatch(Action.LeaveGroup())
-        _appState.update { it.copy(isJoining = false, groupName = null) }
     }
 
     fun startTalking() = dispatch(Action.SetMic(true))

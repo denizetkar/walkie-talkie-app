@@ -192,11 +192,10 @@ class MeshController(
                     is Action.LeaveGroup -> {
                         Log.i("MeshController", "USER ACTION: Leave Group")
                         // 1. Safely reset ONLY the session/network state.
-                        // PRESERVE hardware states (isBluetoothEnabled) and intents (isBrowsing)
+                        // PRESERVE hardware states (isBluetoothEnabled)
                         _state.update {
                             AppState(
                                 myself = it.myself,
-                                isBrowsing = it.isBrowsing,
                                 availableMics = it.availableMics,
                                 availableSpeakers = it.availableSpeakers,
                                 isBluetoothEnabled = it.isBluetoothEnabled,
@@ -425,7 +424,7 @@ class MeshController(
         if (!calculateConnectionStrategy(state, group)) return
 
         Log.d("MeshController", "Strategy: Decided to connect to ${group.id} (NetID: ${group.netId})")
-        emit(Effect.ConnectTo(group.id, group.nodeId, state.myself))
+        emit(Effect.ConnectTo(group.id, group.nodeId, state.myself, session.accessCode))
     }
 
     /**

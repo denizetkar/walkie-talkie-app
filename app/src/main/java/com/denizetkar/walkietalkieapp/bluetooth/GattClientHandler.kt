@@ -328,7 +328,7 @@ class GattClientHandler(
                     } else {
                         // EXPLICIT FAILURE
                         Log.e("GattClient", "Received AUTH_FAILED (NACK)")
-                        fail(ConnectionFailure.AuthRejected("Wrong Access Code"))
+                        fail(ConnectionFailure.AuthRejected("Access code rejected: $accessCode"))
                     }
                 }
                 else -> {

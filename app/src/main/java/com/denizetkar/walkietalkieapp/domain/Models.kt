@@ -225,7 +225,8 @@ sealed class Effect {
     data class ConnectTo(
         val targetId: String,
         val targetNodeId: PeerId,
-        val originNodeId: PeerId
+        val originNodeId: PeerId,
+        val accessCode: String,
     ) : Effect()
 
     data class Disconnect(val peerId: PeerId) : Effect()

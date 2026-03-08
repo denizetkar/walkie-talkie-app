@@ -148,39 +148,34 @@ class BleDriver(
      * Connects the Core logic to this Driver.
      */
     fun bind(state: StateFlow<AppState>, effects: Flow<Effect>) {
-        // 1. Reactive Node ID (Fix for Identity Crisis)
         scope.launch {
-            state.map { it.myself }
-                .distinctUntilChanged()
-                .collect { id -> currentNodeId.set(id.toInt()) }
-        }
+            var lastConfig: DriverConfig? = null
+            var wasSessionNull = true
 
-        // 2. Reactive Credentials
-        scope.launch {
-            state.map { it.session?.accessCode }
-                .distinctUntilChanged()
-                .collect { code -> currentAccessCode.set(code) }
-        }
+            state.collect { appState ->
+                // Synchronous updates
+                currentNodeId.set(appState.myself.toInt())
+                currentAccessCode.set(appState.session?.accessCode)
 
-        // 3. Reactive Hardware Configuration
-        scope.launch {
-            state.map { deriveDriverConfig(it) }
-                .distinctUntilChanged()
-                .collect { config -> applyDriverConfig(config) }
-        }
+                val isSessionNull = appState.session == null
+                if (isSessionNull && !wasSessionNull) {
+                    closeAllConnections()
+                }
+                wasSessionNull = isSessionNull
 
-        // 4. Session Cleanup (Disconnect when leaving group)
-        scope.launch {
-            state.map { it.session == null }
-                .distinctUntilChanged()
-                .collect { isSessionNull -> if (isSessionNull) closeAllConnections() }
+                val newConfig = deriveDriverConfig(appState)
+                if (newConfig != lastConfig) {
+                    applyDriverConfig(newConfig)
+                    lastConfig = newConfig
+                }
+            }
         }
 
         // 5. Effect Consumer
         scope.launch {
             effects.collect { effect ->
                 when (effect) {
-                    is Effect.ConnectTo -> handleConnectRequest(effect.targetId, effect.targetNodeId, effect.originNodeId)
+                    is Effect.ConnectTo -> handleConnectRequest(effect.targetId, effect.targetNodeId, effect.originNodeId, effect.accessCode)
                     is Effect.Disconnect -> handleDisconnectRequest(effect.peerId)
                     is Effect.Transmit -> handleTransmit(effect.data, effect.isControl, effect.excludedSource)
                     else -> {} // Other effects (like Toast) are handled by UI layer
@@ -239,6 +234,7 @@ class BleDriver(
         if (!config.isBluetoothEnabled) {
             advertiserModule.stop()
             discoveryModule.stop()
+            serverHandler.stopServer() // Ensure GATT server is reset on hardware toggle
             return
         }
 
@@ -272,11 +268,11 @@ class BleDriver(
 
     // --- Connection Lifecycle (The "Job is the Peer" Logic) ---
 
-    private suspend fun handleConnectRequest(rawAddress: String, targetNodeId: PeerId, originNodeId: PeerId) {
+    private suspend fun handleConnectRequest(rawAddress: String, targetNodeId: PeerId, originNodeId: PeerId, accessCode: String) {
         val address = TransportAddress.from(rawAddress)
         Log.d("BleDriver", "CMD: Connect to $address (Node $targetNodeId) as $originNodeId")
         launchPeerJob(targetNodeId, originNodeId, TransportType.OUTGOING, address) { channel ->
-            runClientConnection(rawAddress, targetNodeId, originNodeId, channel)
+            runClientConnection(rawAddress, targetNodeId, originNodeId, accessCode, channel)
         }
     }
 
@@ -355,10 +351,10 @@ class BleDriver(
         address: String,
         targetNodeId: PeerId,
         myNodeId: PeerId,
-        outgoing: ReceiveChannel<OutgoingPacket>
+        accessCode: String,
+        outgoing: ReceiveChannel<OutgoingPacket>,
     ) {
         val device = adapter.getRemoteDevice(address)
-        val code = currentAccessCode.get() ?: throw Exception("No Access Code")
 
         // 1. DETACHED SCOPE SETUP
         // We create a scope that is a child of the Driver (scope), but NOT a child of this PeerJob.
@@ -366,7 +362,7 @@ class BleDriver(
         // long enough to process the Disconnected event for the "Polite Disconnect".
         // SupervisorJob ensures a crash in the client doesn't crash the Driver.
         val clientScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-        val client = clientHandlerFactory(context, clientScope, device, myNodeId, code, ioDispatcher)
+        val client = clientHandlerFactory(context, clientScope, device, myNodeId, accessCode, ioDispatcher)
 
         // 2. DISCONNECT SIGNAL
         // A latch that opens when the stack confirms disconnection.
