@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
+import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.bluetooth.BleAdvertiserModule
 import com.denizetkar.walkietalkieapp.bluetooth.BleDiscoveryModule
 import com.denizetkar.walkietalkieapp.bluetooth.GattClientHandler
@@ -15,6 +16,7 @@ import com.denizetkar.walkietalkieapp.domain.Effect
 import com.denizetkar.walkietalkieapp.domain.SessionContext
 import com.denizetkar.walkietalkieapp.domain.TransmissionStrategy
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -28,7 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertFalse
@@ -482,5 +486,49 @@ class BleDriverTest {
         // Verify the modules are told to spin down
         verify { anyConstructed<BleAdvertiserModule>().stop() }
         verify { anyConstructed<BleDiscoveryModule>().stop() }
+    }
+
+    @Test
+    fun `Server Connection - Zombie Connection Fuse Disconnects Unauthenticated Client`() = testScope.runTest {
+        val targetMac = "AA:BB:CC:DD:EE:FF"
+        val mockDevice = realAdapter.getRemoteDevice(targetMac)
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        // 1. Unauthenticated Client Connects
+        mockServerEvents.emit(ServerEvent.ClientConnected(mockDevice))
+        advanceUntilIdle()
+
+        // 2. Fast forward past the timeout limit
+        advanceTimeBy(Config.BLE_CONNECT_TIMEOUT + 500L)
+        runCurrent()
+
+        // 3. Verify BleDriver asked the ServerHandler to disconnect the zombie
+        coVerify(exactly = 1) { anyConstructed<GattServerHandler>().disconnect(mockDevice) }
+    }
+
+    @Test
+    fun `Server Connection - Outgoing Connection ignores Security Fuse`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        val mockDevice = realAdapter.getRemoteDevice(targetMac)
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        // 1. Initiate Outgoing Connection (Driver adds it to managed peers)
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
+        advanceUntilIdle()
+
+        // 2. Android Quirk: Server ALSO fires ClientConnected for the outgoing MAC
+        mockServerEvents.emit(ServerEvent.ClientConnected(mockDevice))
+        advanceUntilIdle()
+
+        // 3. Fast forward past the timeout limit
+        advanceTimeBy(Config.BLE_CONNECT_TIMEOUT + 500L)
+        runCurrent()
+
+        // 4. Verify the driver recognized it was managed and DID NOT disconnect it
+        coVerify(exactly = 0) { anyConstructed<GattServerHandler>().disconnect(mockDevice) }
     }
 }

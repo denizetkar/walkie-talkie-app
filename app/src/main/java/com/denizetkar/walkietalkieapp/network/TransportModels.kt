@@ -5,6 +5,7 @@ import com.denizetkar.walkietalkieapp.domain.PeerId
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.SendChannel
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 // --- Low Level DTOs (Bluetooth Layer) ---
 
@@ -58,7 +59,8 @@ data class PeerSession(
     val channel: SendChannel<OutgoingPacket>,
     val type: TransportType,
     val address: TransportAddress,
-    val connectionId: UUID
+    val connectionId: UUID,
+    val isCollisionHandoff: AtomicBoolean = AtomicBoolean(false)
 )
 
 /**

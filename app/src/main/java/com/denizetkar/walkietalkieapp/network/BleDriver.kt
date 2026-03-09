@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -101,13 +102,31 @@ class BleDriver(
         scope.launch {
             serverHandler.serverEvents.collect { event ->
                 when (event) {
+                    is ServerEvent.ClientConnected -> {
+                        val address = TransportAddress.from(event.device.address)
+                        // If the address is already in our registry, it's an Outgoing connection
+                        // (or a collision handoff). The OS is just mirroring the link state to the Server.
+                        if (_peers.value.addressIndex.containsKey(address)) {
+                            Log.d("BleDriver", "Server: Ignored ClientConnected for $address (Already managed)")
+                            return@collect
+                        }
+
+                        Log.d("BleDriver", "Server: Unmanaged connection from $address. Starting security fuse.")
+                        scope.launch {
+                            delay(Config.BLE_CONNECT_TIMEOUT)
+                            if (!_peers.value.addressIndex.containsKey(address)) {
+                                Log.w("BleDriver", "Fuse Blown: Disconnecting unauthenticated zombie $address")
+                                serverHandler.disconnect(event.device)
+                            }
+                        }
+                    }
                     is ServerEvent.ClientAuthenticated -> {
                         val address = TransportAddress.from(event.device.address)
                         Log.i("BleDriver", "Server: Peer Authenticated ${event.nodeId} ($address)")
                         // INCOMING: Use our current eventually-consistent ID
                         val myNodeId = currentNodeId.get().toUInt()
-                        launchPeerJob(event.nodeId, myNodeId, TransportType.INCOMING, address) { channel ->
-                            runServerConnection(event, channel)
+                        launchPeerJob(event.nodeId, myNodeId, TransportType.INCOMING, address) { channel, isCollisionHandoff ->
+                            runServerConnection(event, channel, isCollisionHandoff)
                         }
                     }
                     is ServerEvent.MessageReceived -> {
@@ -137,7 +156,6 @@ class BleDriver(
                         val address = TransportAddress.from(event.device.address)
                         Log.e("BleDriver", "Server Error from $address: ${event.reason}")
                     }
-                    else -> {} // Connect/Disconnect handled by the Job's lifecycle
                 }
             }
         }
@@ -277,8 +295,8 @@ class BleDriver(
 
         val address = TransportAddress.from(rawAddress)
         Log.d("BleDriver", "CMD: Connect to $address (Node $targetNodeId) as $originNodeId")
-        launchPeerJob(targetNodeId, originNodeId, TransportType.OUTGOING, address) { channel ->
-            runClientConnection(rawAddress, targetNodeId, originNodeId, accessCode, channel)
+        launchPeerJob(targetNodeId, originNodeId, TransportType.OUTGOING, address) { channel, isCollisionHandoff ->
+            runClientConnection(rawAddress, targetNodeId, originNodeId, accessCode, channel, isCollisionHandoff)
         }
     }
 
@@ -287,7 +305,7 @@ class BleDriver(
         myNodeId: PeerId,
         type: TransportType,
         address: TransportAddress,
-        block: suspend (ReceiveChannel<OutgoingPacket>) -> Unit
+        block: suspend (ReceiveChannel<OutgoingPacket>, AtomicBoolean) -> Unit,
     ) {
         peerMutex.withLock {
             val existing = _peers.value.sessions[targetNodeId]
@@ -306,6 +324,7 @@ class BleDriver(
 
                 if (keepNew) {
                     Log.i("BleDriver", "Collision $targetNodeId: Replacing OLD ${existing.type} with NEW $type")
+                    existing.isCollisionHandoff.set(true)
                     existing.job.cancel() // Cancel old job. Its finally block will run asynchronously.
                 } else {
                     Log.i("BleDriver", "Collision $targetNodeId: Rejecting NEW $type, keeping OLD ${existing.type}")
@@ -316,12 +335,13 @@ class BleDriver(
             // We use a unique ID for this connection attempt to prevent "Innocent Kill" bugs
             val connectionId = UUID.randomUUID()
             val channel = Channel<OutgoingPacket>(Channel.UNLIMITED)
+            val isCollisionHandoff = AtomicBoolean(false)
             // To prevent "Dead-on-Arrival" races
             val readySignal = CompletableDeferred<Unit>()
             val job = scope.launch(ioDispatcher) {
                 readySignal.await() // Wait for registry insertion to finish safely
                 try {
-                    block(channel)
+                    block(channel, isCollisionHandoff)
                 } catch (_: CancellationException) {
                     Log.d("BleDriver", "Peer Job $targetNodeId cancelled")
                 } catch (e: Exception) {
@@ -333,7 +353,7 @@ class BleDriver(
                 }
             }
             // ATOMIC UPDATE: Session and Address Index update together
-            val session = PeerSession(job, channel, type, address, connectionId)
+            val session = PeerSession(job, channel, type, address, connectionId, isCollisionHandoff)
             _peers.update { it.put(targetNodeId, session) }
             readySignal.complete(Unit) // Unleash the job
         }
@@ -359,6 +379,7 @@ class BleDriver(
         myNodeId: PeerId,
         accessCode: String,
         outgoing: ReceiveChannel<OutgoingPacket>,
+        isCollisionHandoff: AtomicBoolean,
     ) {
         val device = adapter.getRemoteDevice(address)
 
@@ -440,7 +461,8 @@ class BleDriver(
                 // YES if:
                 // 1. The Driver is still alive (System didn't kill us and adapter is enabled).
                 // 2. The Peer didn't disconnect from us (Signal is NOT completed).
-                val shouldWait = scope.isActive && adapter?.isEnabled == true && !disconnectSignal.isCompleted
+                // 3. This is not a collision handoff
+                val shouldWait = scope.isActive && adapter?.isEnabled == true && !disconnectSignal.isCompleted && !isCollisionHandoff.get()
 
                 if (shouldWait) {
                     try {
@@ -453,6 +475,8 @@ class BleDriver(
                     } catch (e: Exception) {
                         Log.w("BleDriver", "Polite disconnect failed or timed out: ${e.message}")
                     }
+                } else if (isCollisionHandoff.get()) {
+                    Log.d("BleDriver", "Skipping Polite Disconnect for $address due to Collision Handoff")
                 }
 
                 // Always Hard Close to release resources.
@@ -465,7 +489,8 @@ class BleDriver(
 
     private suspend fun runServerConnection(
         event: ServerEvent.ClientAuthenticated,
-        outgoing: ReceiveChannel<OutgoingPacket>
+        outgoing: ReceiveChannel<OutgoingPacket>,
+        isCollisionHandoff: AtomicBoolean,
     ) {
         val device = event.device
         try {
@@ -476,11 +501,15 @@ class BleDriver(
                 serverHandler.sendTo(device, packet.data, type)
             }
         } finally {
-            // Ensure disconnect command is sent even if Job is cancelled
+            // Ensure disconnect command can be sent even if Job is cancelled
             withContext(NonCancellable) {
-                val address = TransportAddress.from(device.address)
-                Log.d("BleDriver", "ServerStrategy: Disconnecting $address")
-                serverHandler.disconnect(device)
+                if (!isCollisionHandoff.get()) {
+                    val address = TransportAddress.from(device.address)
+                    Log.d("BleDriver", "ServerStrategy: Disconnecting $address")
+                    serverHandler.disconnect(device)
+                } else {
+                    Log.d("BleDriver", "ServerStrategy: Skipping disconnect for ${device.address} due to Collision Handoff")
+                }
             }
         }
     }

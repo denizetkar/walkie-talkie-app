@@ -142,20 +142,6 @@ class GattServerHandlerTest {
     }
 
     @Test
-    fun `Security - Zombie Connection Fuse Disconnects Unauthenticated Client`() = testScope.runTest {
-        serverHandler.serverEvents.test {
-            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
-            assertTrue(awaitItem() is ServerEvent.ClientConnected)
-
-            advanceTimeBy(Config.BLE_CONNECT_TIMEOUT + 500L)
-            runCurrent()
-
-            verify { mockGattServer.cancelConnection(device) }
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
     fun `Message Sending - Sends Indication for Control and Notification for Audio`() = testScope.runTest {
         // Connect the device first to create its internal operation queue
         gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)

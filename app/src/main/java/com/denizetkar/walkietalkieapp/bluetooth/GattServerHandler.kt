@@ -44,8 +44,6 @@ class GattServerHandler(
     private val pendingChallenges = ConcurrentHashMap<TransportAddress, String>()
     // Bridge: Maps Device Address -> The Continuation waiting for 'onNotificationSent'
     private val pendingNotifications = ConcurrentHashMap<TransportAddress, CancellableContinuation<Unit>>()
-    // Tracks pending unauthenticated connections. If they time out, we kill them.
-    private val connectionFuses = ConcurrentHashMap<TransportAddress, Job>()
 
     private val _serverEvents = MutableSharedFlow<ServerEvent>(
         extraBufferCapacity = 256,
@@ -68,15 +66,6 @@ class GattServerHandler(
                 // We STRICTLY overwrite any existing queue. If a zombie queue existed, it is now
                 // unreachable and will be GC'd (or timed out). We want the fresh state.
                 clientQueues[address] = BleOperationQueue(scope, ioDispatcher)
-
-                // LIFECYCLE: Light the Fuse
-                // If auth doesn't happen within timeout, disconnect.
-                val fuse = scope.launch {
-                    delay(Config.BLE_CONNECT_TIMEOUT)
-                    Log.w("GattServer", "Fuse Blown: Disconnecting zombie $address")
-                    disconnect(device)
-                }
-                connectionFuses[address] = fuse
 
                 scope.launch { _serverEvents.emit(ServerEvent.ClientConnected(device)) }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -202,10 +191,6 @@ class GattServerHandler(
         val clientNodeId = HandshakeLogic.verifyResponse(payload, code, nonce)
         if (clientNodeId != null) {
             Log.i("GattServer", "Authenticated Node: $clientNodeId")
-
-            // DEFUSE THE FUSE
-            connectionFuses.remove(address)?.cancel()
-
             val successPacket = Packet.Control.Raw(Protocol.OP_AUTH_RESULT, byteArrayOf(0x01))
             sendTo(device, successPacket.toBytes(), TransportDataType.CONTROL)
             scope.launch { _serverEvents.emit(ServerEvent.ClientAuthenticated(device, clientNodeId)) }
@@ -380,13 +365,11 @@ class GattServerHandler(
             clientQueues.remove(address)?.shutdown()
             pendingChallenges.remove(address)
             pendingNotifications.remove(address)?.cancel()
-            connectionFuses.remove(address)?.cancel()
             disconnectSignals.remove(address)
         } else {
             clientQueues.clear()
             pendingChallenges.clear()
             pendingNotifications.clear()
-            connectionFuses.clear()
             disconnectSignals.clear()
         }
     }
