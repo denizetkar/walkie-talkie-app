@@ -431,7 +431,7 @@ class MeshControllerTest {
     }
 
     @Test
-    fun `Bluetooth State - Updates state and leaves group if disabled during session`() = testScope.runTest {
+    fun `Bluetooth State - Updates state but retains session if disabled during session`() = testScope.runTest {
         // 1. Initial State
         assertTrue(controller.state.value.isBluetoothEnabled)
 
@@ -452,9 +452,9 @@ class MeshControllerTest {
         controller.dispatch(Action.BluetoothStateChanged(false))
         runCurrent()
 
-        // Assert: State updated and session cleared (via LeaveGroup)
+        // Assert: State updated but session is retained for background recovery!
         assertFalse(controller.state.value.isBluetoothEnabled)
-        assertNull(controller.state.value.session)
+        assertNotNull("Session should be retained for recovery", controller.state.value.session)
     }
 
     @Test

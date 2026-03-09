@@ -218,6 +218,7 @@ fun RadioScreen(
     groupName: String?,
     accessCode: String?,
     peerCount: Int,
+    isBluetoothEnabled: Boolean,
     availableMics: List<AudioDeviceUi>,
     availableSpeakers: List<AudioDeviceUi>,
     selectedMicId: Int,
@@ -230,7 +231,7 @@ fun RadioScreen(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
-    val isNetworkReady = peerCount > 0
+    val isNetworkReady = peerCount > 0 && isBluetoothEnabled
 
     LaunchedEffect(isPressed) {
         if (isPressed) onTalkStart() else onTalkStop()
@@ -278,6 +279,7 @@ fun RadioScreen(
                 .clip(CircleShape)
                 .background(
                     when {
+                        !isBluetoothEnabled -> Color.DarkGray
                         !isNetworkReady -> Color.Gray
                         isPressed -> Color.Red
                         else -> MaterialTheme.colorScheme.primary
@@ -299,6 +301,7 @@ fun RadioScreen(
                 )
                 Text(
                     text = when {
+                        !isBluetoothEnabled -> "BLUETOOTH OFF"
                         !isNetworkReady -> "SEARCHING..."
                         isPressed -> "TALKING"
                         else -> "HOLD TO TALK"

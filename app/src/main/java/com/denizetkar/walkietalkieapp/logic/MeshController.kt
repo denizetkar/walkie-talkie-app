@@ -182,11 +182,6 @@ class MeshController(
                     is Action.BluetoothStateChanged -> {
                         Log.d("MeshController", "Bluetooth State Changed: ${action.enabled}")
                         _state.update { it.copy(isBluetoothEnabled = action.enabled) }
-
-                        // If Bluetooth just died, and we are in a session, trigger a cleanup
-                        if (!action.enabled && currentState.session != null) {
-                            dispatch(Action.LeaveGroup("Bluetooth Disabled"))
-                        }
                     }
 
                     is Action.LeaveGroup -> {

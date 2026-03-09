@@ -147,8 +147,7 @@ class MainViewModel(
                         accessCode = coreState.session?.accessCode,
                         peerCount = coreState.connectedPeers.size,
                         discoveredGroups = coreState.discoveredGroups,
-                        // We are joining if there is a session but no peers yet
-                        isJoining = (coreState.session != null && coreState.connectedPeers.isEmpty()),
+                        isJoining = (coreState.session?.isJoinAttempt == true),
                         // We are scanning if NO session is active
                         isScanning = (coreState.session == null),
                         // Map Error from Core

@@ -93,6 +93,7 @@ class ScreensTest {
                 groupName = "Hiking",
                 accessCode = "1234",
                 peerCount = 1, // Network is ready
+                isBluetoothEnabled = true,
                 availableMics = emptyList(),
                 availableSpeakers = emptyList(),
                 selectedMicId = 0,
@@ -133,6 +134,7 @@ class ScreensTest {
                 groupName = "Hiking",
                 accessCode = "1234",
                 peerCount = 0, // Network is disconnected / lonely
+                isBluetoothEnabled = true,
                 availableMics = emptyList(),
                 availableSpeakers = emptyList(),
                 selectedMicId = 0,
@@ -244,5 +246,34 @@ class ScreensTest {
     fun `UtilityScreens - LoadingScreen displays`() {
         composeTestRule.setContent { LoadingScreen(message = "Starting Engine") }
         composeTestRule.onNodeWithText("Starting Engine").assertIsDisplayed()
+    }
+
+    @Test
+    fun `RadioScreen - PTT shows BLUETOOTH OFF when disabled`() {
+        var talkAttempted = false
+
+        composeTestRule.setContent {
+            RadioScreen(
+                groupName = "Hiking",
+                accessCode = "1234",
+                peerCount = 1,
+                isBluetoothEnabled = false, // Simulate disabled Bluetooth
+                availableMics = emptyList(),
+                availableSpeakers = emptyList(),
+                selectedMicId = 0,
+                selectedSpeakerId = 0,
+                onMicSelect = {},
+                onSpeakerSelect = {},
+                onLeave = {},
+                onTalkStart = { talkAttempted = true },
+                onTalkStop = {}
+            )
+        }
+
+        val btn = composeTestRule.onNodeWithText("BLUETOOTH OFF")
+        btn.assertIsDisplayed()
+        btn.performClick()
+
+        assertFalse("Talk should not be permitted when BT is off", talkAttempted)
     }
 }

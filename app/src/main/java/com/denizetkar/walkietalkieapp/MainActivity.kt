@@ -160,8 +160,8 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
             }
 
             composable("join") {
-                LaunchedEffect(state.groupName) {
-                    if (state.groupName != null) navController.navigate("radio")
+                LaunchedEffect(state.groupName, state.isJoining) {
+                    if (state.groupName != null && !state.isJoining) navController.navigate("radio")
                 }
 
                 DisposableEffect(Unit) {
@@ -190,6 +190,7 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
                     groupName = state.groupName,
                     accessCode = state.accessCode,
                     peerCount = state.peerCount,
+                    isBluetoothEnabled = state.isBluetoothEnabled,
                     availableMics = state.availableMics,
                     availableSpeakers = state.availableSpeakers,
                     selectedMicId = state.selectedMicId,

@@ -235,6 +235,7 @@ class BleDriver(
             advertiserModule.stop()
             discoveryModule.stop()
             serverHandler.stopServer() // Ensure GATT server is reset on hardware toggle
+            closeAllConnections()
             return
         }
 
