@@ -270,6 +270,11 @@ class BleDriver(
     // --- Connection Lifecycle (The "Job is the Peer" Logic) ---
 
     private suspend fun handleConnectRequest(rawAddress: String, targetNodeId: PeerId, originNodeId: PeerId, accessCode: String) {
+        if (adapter?.isEnabled != true) {
+            Log.w("BleDriver", "Skipping ConnectTo: Bluetooth is disabled")
+            return
+        }
+
         val address = TransportAddress.from(rawAddress)
         Log.d("BleDriver", "CMD: Connect to $address (Node $targetNodeId) as $originNodeId")
         launchPeerJob(targetNodeId, originNodeId, TransportType.OUTGOING, address) { channel ->
@@ -433,9 +438,9 @@ class BleDriver(
             withContext(NonCancellable) {
                 // DECISION: Do we wait for a polite disconnect?
                 // YES if:
-                // 1. The Driver is still alive (System didn't kill us).
+                // 1. The Driver is still alive (System didn't kill us and adapter is enabled).
                 // 2. The Peer didn't disconnect from us (Signal is NOT completed).
-                val shouldWait = scope.isActive && !disconnectSignal.isCompleted
+                val shouldWait = scope.isActive && adapter?.isEnabled == true && !disconnectSignal.isCompleted
 
                 if (shouldWait) {
                     try {

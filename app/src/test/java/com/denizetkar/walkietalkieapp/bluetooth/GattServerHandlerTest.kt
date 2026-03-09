@@ -1,5 +1,6 @@
 package com.denizetkar.walkietalkieapp.bluetooth
 
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
@@ -48,6 +49,7 @@ class GattServerHandlerTest {
 
     private val context = mockk<Context>(relaxed = true)
     private val bluetoothManager = mockk<BluetoothManager>(relaxed = true)
+    private val mockAdapter = mockk<BluetoothAdapter>(relaxed = true)
     private val mockGattServer = mockk<BluetoothGattServer>(relaxed = true)
 
     private lateinit var serverHandler: GattServerHandler
@@ -70,6 +72,8 @@ class GattServerHandlerTest {
     @Before
     fun setup() {
         every { context.getSystemService(Context.BLUETOOTH_SERVICE) } returns bluetoothManager
+        every { mockAdapter.isEnabled } returns true
+        every { bluetoothManager.adapter } returns mockAdapter
 
         val callbackSlot = slot<BluetoothGattServerCallback>()
         every { bluetoothManager.openGattServer(any(), capture(callbackSlot)) } returns mockGattServer

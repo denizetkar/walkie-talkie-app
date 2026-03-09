@@ -349,6 +349,11 @@ class GattServerHandler(
 
         try {
             gattServer?.cancelConnection(device)
+            if (bluetoothManager.adapter?.isEnabled != true) {
+                Log.d("GattServer", "Skipping polite disconnect wait: Bluetooth is off")
+                return
+            }
+
             withTimeout(Config.PEER_DISCONNECT_TIMEOUT) {
                 signal.await()
             }

@@ -181,7 +181,10 @@ class MeshController(
 
                     is Action.BluetoothStateChanged -> {
                         Log.d("MeshController", "Bluetooth State Changed: ${action.enabled}")
-                        _state.update { it.copy(isBluetoothEnabled = action.enabled) }
+                        _state.update { it.copy(
+                            isBluetoothEnabled = action.enabled,
+                            discoveredGroups = if (action.enabled) it.discoveredGroups else emptyList(),
+                        ) }
                     }
 
                     is Action.LeaveGroup -> {
