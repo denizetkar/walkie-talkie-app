@@ -431,10 +431,10 @@ class MeshController(
      */
     private fun calculateConnectionStrategy(state: AppState, target: DiscoveredGroup): Boolean {
         // Don't connect to myself (shouldn't happen with NodeID check, but safety first)
-        if (target.netId == state.myself) return false
+        if (target.nodeId == state.myself) return false
 
         // Don't connect if already connected
-        if (state.connectedPeers.contains(target.netId)) return false
+        if (state.connectedPeers.contains(target.nodeId)) return false
 
         // PRIORITY 1: Convergence (Island Merging)
         // If they have a higher Network ID, they are a "Better Root".
