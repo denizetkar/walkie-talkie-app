@@ -76,10 +76,17 @@ data class PeerRegistry(
     val addressIndex: Map<TransportAddress, PeerId> = emptyMap()
 ) {
     fun put(id: PeerId, session: PeerSession): PeerRegistry {
-        return PeerRegistry(
-            sessions + (id to session),
+        val oldSession = sessions[id]
+
+        // FIX: Ensure the old MAC address is purged from the index if the session is
+        // overwritten (e.g., during collision handoff) so we don't hold onto a stale address.
+        val newAddressIndex = if (oldSession != null && oldSession.address != session.address) {
+            (addressIndex - oldSession.address) + (session.address to id)
+        } else {
             addressIndex + (session.address to id)
-        )
+        }
+
+        return PeerRegistry(sessions + (id to session), newAddressIndex)
     }
 
     fun remove(id: PeerId): PeerRegistry {

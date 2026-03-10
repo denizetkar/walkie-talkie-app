@@ -332,39 +332,83 @@ class BleDriverTest {
     }
 
     @Test
-    fun `Collision Resolution - INCOMING vs OUTGOING Tie-Breaker keeps higher ID`() = testScope.runTest {
+    fun `Collision Resolution - Innocent Kill Prevention (New Incoming survives Old Outgoing death)`() = testScope.runTest {
         // My ID is 10. Target ID is 50. Target > MyID, so Target wins the right to dictate connection.
         // Therefore, if Target connects to us (INCOMING), we accept it and kill our OUTGOING attempt.
         stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
         advanceUntilIdle()
 
-        val targetMac = "11:22:33:44:55:66"
-        val mockDevice = realAdapter.getRemoteDevice(targetMac)
+        val oldMac = "11:22:33:44:55:66"
+        val oldDevice = realAdapter.getRemoteDevice(oldMac)
 
-        // 1. Establish OUTGOING attempt to Node 50u
-        effectFlow.emit(Effect.ConnectTo(targetMac, 50u, 10u, "1234"))
+        val newMac = "AA:BB:CC:DD:EE:FF"
+        val newDevice = realAdapter.getRemoteDevice(newMac)
+
+        // 1. Establish OUTGOING attempt to Node 50u (MAC: 11:22:...)
+        effectFlow.emit(Effect.ConnectTo(oldMac, 50u, 10u, "1234"))
         advanceUntilIdle()
-        mockClientEvents.emit(ClientEvent.Authenticated(mockDevice))
+        mockClientEvents.emit(ClientEvent.Authenticated(oldDevice))
         advanceUntilIdle()
 
         assertTrue(actions.contains(Action.PeerConnected(50u)))
         actions.clear() // Clear history
 
-        // 2. Simulate INCOMING connection from Node 50u (Collision!)
-        mockServerEvents.emit(ServerEvent.ClientAuthenticated(mockDevice, 50u))
+        // 2. Simulate INCOMING connection from Node 50u (MAC: AA:BB:...) (Collision!)
+        mockServerEvents.emit(ServerEvent.ClientAuthenticated(newDevice, 50u))
         advanceUntilIdle()
 
-        // Assert:
-        // 1. The old outgoing job was cancelled, executing its `finally` block.
-        // 2. However, because the new job overwrote the UUID in the registry, the `cleanupPeer` block
-        //    aborts gracefully without emitting a PeerDisconnected action.
-        assertTrue(
-            "Should NOT emit PeerDisconnected during a graceful collision handoff",
-            actions.none { it is Action.PeerDisconnected }
-        )
         assertTrue(
             "Should emit PeerConnected for the new incoming session",
             actions.contains(Action.PeerConnected(50u))
+        )
+        actions.clear()
+
+        // 3. CRITICAL CONTRACT: Simulate OS dropping the OLD connection
+        mockClientEvents.emit(ClientEvent.Disconnected(oldDevice))
+        advanceUntilIdle()
+
+        // 4. Assert NO disconnect is routed to the Core
+        assertTrue(
+            "Should NOT emit PeerDisconnected when the old zombie connection drops",
+            actions.none { it is Action.PeerDisconnected }
+        )
+    }
+
+    @Test
+    fun `Collision Resolution - Zombie Prevention (Rejects INCOMING and disconnects if OUTGOING wins)`() = testScope.runTest {
+        // My ID is 50. Target ID is 10. MyID > Target, so I win the right to dictate connection.
+        // Therefore, if Target connects to us (INCOMING), we reject it and keep our OUTGOING attempt.
+        stateFlow.value = AppState(myself = 50u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        val outgoingMac = "11:22:33:44:55:66"
+        val outgoingDevice = realAdapter.getRemoteDevice(outgoingMac)
+
+        val incomingMac = "AA:BB:CC:DD:EE:FF"
+        val incomingDevice = realAdapter.getRemoteDevice(incomingMac)
+
+        // 1. Establish OUTGOING attempt to Node 10u
+        effectFlow.emit(Effect.ConnectTo(outgoingMac, 10u, 50u, "1234"))
+        advanceUntilIdle()
+        mockClientEvents.emit(ClientEvent.Authenticated(outgoingDevice))
+        advanceUntilIdle()
+
+        assertTrue(actions.contains(Action.PeerConnected(10u)))
+        actions.clear()
+
+        // 2. Simulate INCOMING connection from Node 10u (Collision!)
+        mockServerEvents.emit(ServerEvent.ClientAuthenticated(incomingDevice, 10u))
+        advanceUntilIdle()
+
+        // 3. CRITICAL CONTRACT: The Driver MUST ask the Server to disconnect the rejected incoming connection
+        coVerify(exactly = 1) {
+            anyConstructed<GattServerHandler>().disconnect(incomingDevice)
+        }
+
+        // 4. Assert NO state changes are routed to the Core
+        assertTrue(
+            "Should ignore the incoming connection entirely at the Core level",
+            actions.none { it is Action.PeerConnected || it is Action.PeerDisconnected }
         )
     }
 

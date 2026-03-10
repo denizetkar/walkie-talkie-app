@@ -132,8 +132,16 @@ class BleDriver(
                         Log.i("BleDriver", "Server: Peer Authenticated ${event.nodeId} ($address)")
                         // INCOMING: Use our current eventually-consistent ID
                         val myNodeId = currentNodeId.get().toUInt()
-                        launchPeerJob(event.nodeId, myNodeId, TransportType.INCOMING, address) { channel, isCollisionHandoff ->
-                            runServerConnection(event, channel, isCollisionHandoff)
+                        // Launch in scope to avoid stalling the SharedFlow event collector
+                        // if we need to call the suspending `serverHandler.disconnect()`
+                        scope.launch {
+                            val accepted = launchPeerJob(event.nodeId, myNodeId, TransportType.INCOMING, address) { channel, isCollisionHandoff ->
+                                runServerConnection(event, channel, isCollisionHandoff)
+                            }
+                            if (!accepted) {
+                                Log.w("BleDriver", "Server: Rejected incoming connection from $address due to collision. Disconnecting.")
+                                serverHandler.disconnect(event.device)
+                            }
                         }
                     }
                     is ServerEvent.MessageReceived -> {
@@ -313,7 +321,7 @@ class BleDriver(
         type: TransportType,
         address: TransportAddress,
         block: suspend (ReceiveChannel<OutgoingPacket>, AtomicBoolean) -> Unit,
-    ) {
+    ): Boolean {
         peerMutex.withLock {
             val existing = _peers.value.sessions[targetNodeId]
             if (existing != null) {
@@ -322,7 +330,7 @@ class BleDriver(
                 // The current job is likely still performing the handshake.
                 if (existing.type == TransportType.OUTGOING && type == TransportType.OUTGOING) {
                     Log.d("BleDriver", "Ignored duplicate connection request for Node $targetNodeId")
-                    return
+                    return false
                 }
 
                 // COLLISION: Two connections to same Node ID.
@@ -335,7 +343,7 @@ class BleDriver(
                     existing.job.cancel() // Cancel old job. Its finally block will run asynchronously.
                 } else {
                     Log.i("BleDriver", "Collision $targetNodeId: Rejecting NEW $type, keeping OLD ${existing.type}")
-                    return // Abort new connection
+                    return false // Abort new connection
                 }
             }
 
@@ -363,6 +371,7 @@ class BleDriver(
             val session = PeerSession(job, channel, type, address, connectionId, isCollisionHandoff)
             _peers.update { it.put(targetNodeId, session) }
             readySignal.complete(Unit) // Unleash the job
+            return true
         }
     }
 
