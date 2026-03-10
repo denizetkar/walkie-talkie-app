@@ -163,7 +163,7 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `Join Logic - Join Action updates UI to Joining State`() = runTest {
+    fun `Join Logic - Join Action dispatches to Core and updates UI on Core response`() = runTest {
         connectService()
 
         viewModel.appState.test {
@@ -172,12 +172,19 @@ class MainViewModelTest {
             // ACTION: User taps join
             viewModel.joinGroup("Camp", "1234")
 
-            // ASSERT: Optimistic UI update
+            // ASSERT: Action was dispatched to the Core
+            verify { binder.dispatchAction(Action.JoinGroup("Camp", "1234")) }
+
+            // SIMULATE CORE REACTION: The Core creates a Join session
+            controllerState.value = AppState(
+                myself = 1u,
+                session = SessionContext("Camp", "1234", isJoinAttempt = true)
+            )
+
+            // ASSERT: UI reacts to the Core's state change
             val joiningState = awaitItem()
             assertTrue(joiningState.isJoining)
             assertNull(joiningState.joinError)
-
-            verify { binder.dispatchAction(Action.JoinGroup("Camp", "1234")) }
         }
     }
 

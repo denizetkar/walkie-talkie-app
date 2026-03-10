@@ -192,7 +192,6 @@ class MainViewModel(
     }
 
     fun joinGroup(name: String, code: String) {
-        _appState.update { it.copy(isJoining = true) }
         dispatch(Action.JoinGroup(name, code))
     }
 

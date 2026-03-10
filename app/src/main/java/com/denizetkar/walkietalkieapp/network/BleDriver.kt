@@ -86,16 +86,23 @@ class BleDriver(
         context.registerReceiver(btReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
 
         scope.launch {
-            discoveryModule.events.collect { node ->
-                dispatch(Action.AdvertisementSeen(
-                    DiscoveredGroup(
-                        id = node.id,
-                        name = node.name,
-                        rssi = node.rssi,
-                        netId = node.networkId,
-                        nodeId = node.nodeId
-                    )
-                ))
+            discoveryModule.events.collect { event ->
+                when (event) {
+                    is DiscoveryEvent.NodeFound -> {
+                        dispatch(Action.AdvertisementSeen(
+                            DiscoveredGroup(
+                                id = event.node.id,
+                                name = event.node.name,
+                                rssi = event.node.rssi,
+                                netId = event.node.networkId,
+                                nodeId = event.node.nodeId
+                            )
+                        ))
+                    }
+                    is DiscoveryEvent.ScanFailed -> {
+                        dispatch(Action.ScanFailed("Async scan failure: ${event.errorCode}"))
+                    }
+                }
             }
         }
 

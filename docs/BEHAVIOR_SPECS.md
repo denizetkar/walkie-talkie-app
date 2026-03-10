@@ -136,9 +136,8 @@ This document defines the expected behavior of the app from the user's perspecti
 ### 🔴 Negative Case: Bluetooth Kill
 *   **Given** I am connected to peers
 *   **When** I swipe down system settings and turn Bluetooth OFF
-*   **Then** The app leaves the group
-*   **And** I'm back to the join screen
+*   **Then** The Talk button turns Dark Gray and says "BLUETOOTH OFF"
+*   **And** My connection drops (0 Peers) but I stay in the
 *   **When** I turn Bluetooth back ON
-*   **Then** Groups start appearing
-*   **And** I can join any group
-*   **And** Talking/listening works
+*   **Then** The app re-advertises and reconnects automatically
+*   **And** I can talk again

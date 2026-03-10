@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanSettings
 import android.os.ParcelUuid
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
+import com.denizetkar.walkietalkieapp.network.DiscoveryEvent
 import com.denizetkar.walkietalkieapp.network.TransportNode
 import com.denizetkar.walkietalkieapp.utils.ScanRateLimiter
 import com.denizetkar.walkietalkieapp.utils.retryWithBackoffNullable
@@ -26,11 +27,11 @@ class BleDiscoveryModule(
     private val adapter: BluetoothAdapter?,
     private val scope: CoroutineScope
 ) {
-    private val _events = MutableSharedFlow<TransportNode>(
+    private val _events = MutableSharedFlow<DiscoveryEvent>(
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
-    val events: SharedFlow<TransportNode> = _events.asSharedFlow()
+    val events: SharedFlow<DiscoveryEvent> = _events.asSharedFlow()
 
     private val activeSession = AtomicReference<ScanSession?>(null)
     private val rateLimiter = ScanRateLimiter()
@@ -91,6 +92,7 @@ class BleDiscoveryModule(
             override fun onScanFailed(errorCode: Int) {
                 Log.e("BleDiscovery", "Scan Failed inside callback. Error: $errorCode")
                 activeSession.compareAndSet(this@ScanSession, null)
+                _events.tryEmit(DiscoveryEvent.ScanFailed(errorCode))
             }
         }
 
@@ -107,6 +109,7 @@ class BleDiscoveryModule(
                 .build()
 
             return try {
+                Log.d("BleDiscovery", "Starting BLE discovery...")
                 scanner.startScan(filters, settings, callback)
                 true
             } catch (e: Exception) {
@@ -118,6 +121,7 @@ class BleDiscoveryModule(
         @SuppressLint("MissingPermission")
         fun stop() {
             try {
+                Log.d("BleDiscovery", "Stopping BLE discovery...")
                 scanner?.stopScan(callback)
             } catch (_: Exception) {}
         }
@@ -146,6 +150,6 @@ class BleDiscoveryModule(
             hopsToRoot = hops,
             isAvailable = isAvailable
         )
-        _events.tryEmit(node)
+        _events.tryEmit(DiscoveryEvent.NodeFound(node))
     }
 }

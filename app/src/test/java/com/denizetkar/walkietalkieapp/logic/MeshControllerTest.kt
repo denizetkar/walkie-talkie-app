@@ -617,4 +617,24 @@ class MeshControllerTest {
         val relayEffect = effects.filterIsInstance<Effect.Transmit>().lastOrNull()
         assertNotNull("Should relay updated heartbeat", relayEffect)
     }
+
+    @Test
+    fun `Intent Preservation - Create and Join do not override isBrowsing state`() = testScope.runTest {
+        // 1. User is browsing (on Join screen)
+        controller.dispatch(Action.StartScanning)
+        runCurrent()
+        assertTrue("Should be browsing initially", controller.state.value.isBrowsing)
+
+        // 2. User tries to join a group
+        controller.dispatch(Action.JoinGroup("Group", "1234"))
+        runCurrent()
+
+        // 3. Assert isBrowsing remains true!
+        assertTrue("isBrowsing MUST NOT be overridden by JoinGroup", controller.state.value.isBrowsing)
+
+        // 4. Same for CreateGroup
+        controller.dispatch(Action.CreateGroup("Group2", "4321"))
+        runCurrent()
+        assertTrue("isBrowsing MUST NOT be overridden by CreateGroup", controller.state.value.isBrowsing)
+    }
 }

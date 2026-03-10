@@ -19,6 +19,11 @@ data class TransportNode(
     val isAvailable: Boolean
 )
 
+sealed interface DiscoveryEvent {
+    data class NodeFound(val node: TransportNode) : DiscoveryEvent
+    data class ScanFailed(val errorCode: Int) : DiscoveryEvent
+}
+
 data class AdvertisingConfig(
     val groupName: String,
     val ownNodeId: UInt,

@@ -9,12 +9,12 @@ import android.bluetooth.le.ScanResult
 import android.os.ParcelUuid
 import app.cash.turbine.test
 import com.denizetkar.walkietalkieapp.Config
+import com.denizetkar.walkietalkieapp.network.DiscoveryEvent
 import com.denizetkar.walkietalkieapp.utils.retryWithBackoffNullable
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -106,7 +106,8 @@ class BleDiscoveryModuleTest {
             cbSlot.captured.onScanResult(1, mockResult)
 
             // Assert the emitted TransportNode
-            val node = awaitItem()
+            val event = awaitItem() as DiscoveryEvent.NodeFound
+            val node = event.node
 
             assertEquals("AA:BB:CC:DD:EE:FF", node.id)
             assertEquals("TestGroup", node.name)
@@ -191,25 +192,30 @@ class BleDiscoveryModuleTest {
             // Trigger batch callback
             cbSlot.captured.onBatchScanResults(mutableListOf(mockResult1, mockResult2))
 
-            val node1 = awaitItem()
-            val node2 = awaitItem()
+            val event1 = awaitItem() as DiscoveryEvent.NodeFound
+            val event2 = awaitItem() as DiscoveryEvent.NodeFound
 
-            assertEquals("11:11:11:11:11:11", node1.id)
-            assertEquals("22:22:22:22:22:22", node2.id)
+            assertEquals("11:11:11:11:11:11", event1.node.id)
+            assertEquals("22:22:22:22:22:22", event2.node.id)
         }
     }
 
     @Test
-    fun `Scan Failed - Clears active session so it can restart`() = testScope.runTest {
+    fun `Scan Failed - Emits ScanFailed event and clears active session so it can restart`() = testScope.runTest {
         val cbSlot = slot<ScanCallback>()
         every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), capture(cbSlot)) } just runs
 
         // 1. Start successfully
         assertTrue(discoveryModule.start())
 
-        // 2. Trigger failure callback
-        cbSlot.captured.onScanFailed(ScanCallback.SCAN_FAILED_INTERNAL_ERROR)
-        runCurrent()
+        discoveryModule.events.test {
+            // 2. Trigger failure callback
+            cbSlot.captured.onScanFailed(ScanCallback.SCAN_FAILED_INTERNAL_ERROR)
+
+            val failEvent = awaitItem()
+            assertTrue("Should emit ScanFailed event", failEvent is DiscoveryEvent.ScanFailed)
+            assertEquals(ScanCallback.SCAN_FAILED_INTERNAL_ERROR, (failEvent as DiscoveryEvent.ScanFailed).errorCode)
+        }
 
         // 3. Since the session was cleared, calling start() again should succeed
         // (If it wasn't cleared, the Idempotency check would return true without calling startScan again)

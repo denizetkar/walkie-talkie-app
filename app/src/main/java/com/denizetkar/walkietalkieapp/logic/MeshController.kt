@@ -119,8 +119,6 @@ class MeshController(
                                 session = session,
                                 // When creating, I am the Root of a new mesh.
                                 network = NetworkTopology.Standalone(newNodeId),
-                                // Implicitly stop browsing when live
-                                isBrowsing = false
                             )
                         }
                         resetInternalTimers()
@@ -138,8 +136,7 @@ class MeshController(
                                 session = session,
                                 // When joining, I assume Standalone until I hear a Heartbeat from the group.
                                 network = NetworkTopology.Standalone(newNodeId),
-                                isBrowsing = false,
-                                joinError = null // Clear previous errors
+                                joinError = null, // Clear previous errors
                             )
                         }
                         resetInternalTimers()
