@@ -35,6 +35,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -574,5 +575,157 @@ class BleDriverTest {
 
         // 4. Verify the driver recognized it was managed and DID NOT disconnect it
         coVerify(exactly = 0) { anyConstructed<GattServerHandler>().disconnect(mockDevice) }
+    }
+
+    @Test
+    fun `Hardware Start Failures - Dispatches JoinGroupFailed and ScanFailed`() = testScope.runTest {
+        // 1. Override the mocks to simulate Android rejecting the hardware start requests
+        every { anyConstructed<BleAdvertiserModule>().start(any()) } returns false
+        every { anyConstructed<BleDiscoveryModule>().start() } returns false
+
+        // 2. Trigger configuration update (Hosting a session + Browsing)
+        val session = SessionContext("FailGroup", "1234", isJoinAttempt = false)
+        stateFlow.value = AppState(myself = 10u, session = session, isBrowsing = true)
+        advanceUntilIdle()
+
+        // 3. Assert the driver notified the Core of the failures
+        assertTrue(
+            "Should dispatch JoinGroupFailed when advertising fails",
+            actions.contains(Action.JoinGroupFailed("Bluetooth Radio Unavailable or Error"))
+        )
+        val scanFailAction = actions.filterIsInstance<Action.ScanFailed>().lastOrNull()
+        assertNotNull("Should dispatch ScanFailed", scanFailAction)
+        assertTrue(scanFailAction!!.reason.contains("Bluetooth Scanner Unavailable"))
+    }
+
+    @Test
+    fun `Discovery Event Bridge - Maps events to Core Actions`() = testScope.runTest {
+        // To accurately capture and emit to the specific Flow instance used by the driver,
+        // we override the mock and instantiate a local driver specifically for this test.
+        val localEventsFlow = MutableSharedFlow<DiscoveryEvent>()
+        every { anyConstructed<BleDiscoveryModule>().events } returns localEventsFlow
+
+        val localDriver = BleDriver(
+            context,
+            testScope.backgroundScope,
+            testDispatcher,
+            clientHandlerFactory = { _, _, _, _, _, _ -> mockGattClientHandler },
+            dispatch = { actions.add(it) }
+        )
+
+        // 1. Test NodeFound bridging
+        val node = TransportNode("AA:BB:CC:DD:EE:FF", "Test", -50, 1u, 2u, 3, true)
+        localEventsFlow.emit(DiscoveryEvent.NodeFound(node))
+        advanceUntilIdle()
+
+        val adAction = actions.filterIsInstance<Action.AdvertisementSeen>().lastOrNull()
+        assertNotNull("Should bridge NodeFound to AdvertisementSeen", adAction)
+        assertEquals("AA:BB:CC:DD:EE:FF", adAction?.group?.id)
+
+        // 2. Test ScanFailed bridging
+        localEventsFlow.emit(DiscoveryEvent.ScanFailed(6)) // Error code 6 (Too Frequent)
+        advanceUntilIdle()
+
+        val scanAction = actions.filterIsInstance<Action.ScanFailed>().lastOrNull()
+        assertNotNull("Should bridge ScanFailed event", scanAction)
+        assertTrue(scanAction!!.reason.contains("6"))
+
+        localDriver.close()
+    }
+
+    @Test
+    fun `Connection Guard - Ignores ConnectTo if Bluetooth is off`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        realAdapter.getRemoteDevice(targetMac)
+
+        // Force Bluetooth to OFF via Robolectric Shadow
+        Shadows.shadowOf(realAdapter).setEnabled(false)
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        // Attempt connection
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
+        advanceUntilIdle()
+
+        // Assert early exit prevented the connection attempt
+        verify(exactly = 0) { mockGattClientHandler.connect() }
+    }
+
+    @Test
+    fun `Polite Disconnect - Times out gracefully if stack hangs`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        val mockDevice = realAdapter.getRemoteDevice(targetMac)
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        // 1. Establish the connection so the peer job is running
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
+        advanceUntilIdle()
+        mockClientEvents.emit(ClientEvent.Authenticated(mockDevice))
+        advanceUntilIdle()
+
+        // 2. Trigger the teardown sequence (Leaving the group)
+        stateFlow.value = AppState(myself = 10u, session = null)
+        advanceUntilIdle()
+
+        // 3. We intentionally DO NOT emit ClientEvent.Disconnected here.
+        // This simulates the Android BLE stack completely hanging and never firing the callback.
+
+        // Fast-forward time past the driver's internal polite timeout
+        advanceTimeBy(Config.PEER_DISCONNECT_TIMEOUT + 500L)
+        runCurrent()
+
+        // 4. Assert that the driver still safely closed the connection
+        verify(exactly = 1) { mockGattClientHandler.close() }
+    }
+
+    @Test
+    fun `System Events - Turning ON Bluetooth dispatches BluetoothStateChanged`() = testScope.runTest {
+        // Clear history from the initialization block
+        actions.clear()
+
+        // 1. Simulate the Android system turning Bluetooth ON
+        val intent = Intent(BluetoothAdapter.ACTION_STATE_CHANGED).apply {
+            putExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.STATE_ON)
+        }
+        context.sendBroadcast(intent)
+
+        // 2. Process the broadcast queue and coroutines
+        ShadowLooper.shadowMainLooper().idle()
+        advanceUntilIdle()
+
+        // 3. Assert the driver passed the state ON up to the Core
+        val stateChangeAction = actions.filterIsInstance<Action.BluetoothStateChanged>().lastOrNull()
+        assertNotNull("Should dispatch BluetoothStateChanged", stateChangeAction)
+        assertTrue("Enabled flag should be true", stateChangeAction!!.enabled)
+    }
+
+    @Test
+    fun `Peer Job - Catastrophic Exception cleans up safely`() = testScope.runTest {
+        val targetMac = "11:22:33:44:55:66"
+        realAdapter.getRemoteDevice(targetMac)
+
+        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        advanceUntilIdle()
+
+        // 1. Mock the client handler to throw an unexpected RuntimeException
+        every { mockGattClientHandler.connect() } throws RuntimeException("Simulated catastrophic failure")
+
+        // 2. Try to connect
+        effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
+
+        // 3. Fast-forward virtual time past the polite disconnect timeout
+        // and force the NonCancellable context switch to execute.
+        advanceTimeBy(Config.PEER_DISCONNECT_TIMEOUT + 1000L)
+        runCurrent()
+        advanceUntilIdle()
+
+        // 4. Assert the generic try-catch-finally caught it and dispatched PeerDisconnected
+        assertTrue(
+            "Driver should emit PeerDisconnected to clean up the zombie peer",
+            actions.contains(Action.PeerDisconnected(20u))
+        )
     }
 }
