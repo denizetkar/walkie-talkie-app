@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 
 @Composable
@@ -130,17 +131,21 @@ fun JoinGroupScreen(
     }
 
     if (isJoining) {
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("Connecting...") },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Dialog(onDismissRequest = {}) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                tonalElevation = AlertDialogDefaults.TonalElevation
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Connecting…", style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(16.dp))
                     CircularProgressIndicator()
-                    Text("Joining...")
                 }
-            },
-            confirmButton = {}
-        )
+            }
+        }
     }
 
     if (selectedGroup != null) {
