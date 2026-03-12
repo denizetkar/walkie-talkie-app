@@ -460,22 +460,17 @@ class MeshControllerTest {
     @Test
     fun `Hardware & UI State - Updates available devices and selection`() = testScope.runTest {
         // 1. Available Devices List
-        val inputs = listOf(com.denizetkar.walkietalkieapp.AudioDeviceUi(1, "Mic1"))
-        val outputs = listOf(com.denizetkar.walkietalkieapp.AudioDeviceUi(2, "Speaker1"))
-
-        controller.dispatch(Action.AudioDevicesUpdated(inputs, outputs))
+        val devices = listOf(com.denizetkar.walkietalkieapp.AudioDeviceUi(1, "Headset"))
+        controller.dispatch(Action.AudioDevicesUpdated(devices))
         runCurrent()
 
-        assertEquals(inputs, controller.state.value.availableMics)
-        assertEquals(outputs, controller.state.value.availableSpeakers)
+        assertEquals(devices, controller.state.value.availableAudioDevices)
 
         // 2. Device Selection
-        controller.dispatch(Action.SetAudioInput(1))
-        controller.dispatch(Action.SetAudioOutput(2))
+        controller.dispatch(Action.SetAudioDevice(1))
         runCurrent()
 
-        assertEquals(1, controller.state.value.selectedInputId)
-        assertEquals(2, controller.state.value.selectedOutputId)
+        assertEquals(1, controller.state.value.selectedAudioDevice)
     }
 
     @Test

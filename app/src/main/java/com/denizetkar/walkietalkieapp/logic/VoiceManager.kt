@@ -6,6 +6,7 @@ import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -54,8 +55,7 @@ class VoiceManager(
     private val activeEngine = AtomicReference<AudioEngine?>(null)
 
     // Tracks current selection for ghost-device validation
-    private val currentInputId = AtomicInteger(0)
-    private val currentOutputId = AtomicInteger(0)
+    private val currentDeviceId = AtomicInteger(0)
 
     // Serializes hardware access to prevent starting a new stream while old one is closing
     private val hardwareMutex = Mutex()
@@ -151,7 +151,7 @@ class VoiceManager(
      * @param micGate Flow<Boolean>: True = Unmute (PTT Pressed), False = Mute.
      * @param configFlow Flow<Triple<Int, Int, UInt>?>: (InputId, OutputId, NodeId). NULL stops the engine.
      */
-    fun bind(micGate: Flow<Boolean>, configFlow: Flow<Triple<Int, Int, UInt>?>) {
+    fun bind(micGate: Flow<Boolean>, configFlow: Flow<Pair<Int, UInt>?>) {
         // 1. Lifecycle & Configuration
         // Whenever the device selection changes OR the Node ID rotates, restart engine.
         scope.launch(ioDispatcher) {
@@ -160,10 +160,9 @@ class VoiceManager(
                 // to finish its 'finally' block (cleanup) before starting the new one.
                 hardwareMutex.withLock {
                     if (config != null) {
-                        val (inputId, outputId, nodeId) = config
-                        currentInputId.set(inputId)
-                        currentOutputId.set(outputId)
-                        manageEngineLifecycle(inputId, outputId, nodeId)
+                        val (deviceId, nodeId) = config
+                        currentDeviceId.set(deviceId)
+                        manageEngineLifecycle(deviceId, nodeId)
                     } else {
                         stopEngine()
                     }
@@ -195,64 +194,107 @@ class VoiceManager(
      * Tries to start the engine, and keeps retrying if it fails.
      * Only exits if the coroutine is cancelled (Config Change or App Exit).
      */
-    private suspend fun manageEngineLifecycle(inputId: Int, outputId: Int, ownNodeId: UInt) {
-        Log.i("VoiceManager", "Lifecycle: Requesting Engine Start (In=$inputId, Out=$outputId, Node=$ownNodeId)")
+    private suspend fun manageEngineLifecycle(deviceId: Int, ownNodeId: UInt) {
+        Log.i("VoiceManager", "Lifecycle: Requesting Engine Start (Route=$deviceId, Node=$ownNodeId)")
 
-        // Retry Loop (Restored Feature from Legacy Code)
-        while (currentCoroutineContext().isActive) {
-            var localEngine: AudioEngine? = null
-            try {
-                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-                if (!requestAudioFocus()) {
-                    Log.w("VoiceManager", "Failed to obtain Audio Focus. Waiting...")
+        try {
+            // 1. Establish the Communication Route ONCE for the entire lifecycle
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            applyAudioRouting(deviceId)
+
+            // 2. The Stream Retry Loop
+            while (currentCoroutineContext().isActive) {
+                var localEngine: AudioEngine? = null
+                try {
+                    if (!requestAudioFocus()) {
+                        Log.w("VoiceManager", "Failed to obtain Audio Focus. Waiting...")
+                        delay(Config.AUDIO_SESSION_START_DELAY)
+                        continue
+                    }
+
+                    val config = AudioConfig(
+                        sampleRate = Config.AUDIO_SAMPLE_RATE,
+                        frameSizeMs = Config.AUDIO_FRAME_SIZE_MS,
+                        jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS,
+                        inputDeviceId = 0, // OS automatically matches the Communication Device
+                        outputDeviceId = deviceId
+                    )
+                    // Use the factory (Real by default, Mock in tests)
+                    localEngine = engineFactory(config, packetTransport, errorCallback, ownNodeId)
+                    // This call interacts with Oboe/AAudio.
+                    // CRITICAL: This throws SecurityException if the Service is not yet promoted
+                    // to Foreground (Android 14+ Microphone privacy restrictions).
+                    localEngine.startSession()
+                    // Apply cached mic state immediately (Fixes PTT race condition)
+                    localEngine.setMicEnabled(isMicEnabled.get())
+
+                    // Publish Success
+                    // Only set the atomic reference AFTER successful start to avoid race conditions
+                    activeEngine.set(localEngine)
+                    Log.i("VoiceManager", "Audio Engine Started Successfully")
+
+                    // 3. Keep alive until cancelled externally OR an internal crash occurs
+                    engineCrashSignal.tryReceive() // Clear any stale signals from previous runs
+                    engineCrashSignal.receive()    // Suspend here.
+                    throw Exception("Rust Engine internal crash")
+                } catch (e: Exception) {
+                    // If the coroutine was cancelled (e.g. user selected different mic),
+                    // we must rethrow to exit the loop and allow collectLatest to start the new block.
+                    if (e is CancellationException) throw e
+                    // Abnormal Error (SecurityException, Hardware Busy, etc.)
+                    Log.w("VoiceManager", "Engine Start Failed/Crashed: ${e.message}. Retrying in ${Config.AUDIO_SESSION_START_DELAY}ms...", e)
                     delay(Config.AUDIO_SESSION_START_DELAY)
-                    continue
+                } finally {
+                    // Tear down ONLY the stream, NOT the routing
+                    cleanupEngine(localEngine)
+                    abandonAudioFocus()
                 }
-
-                val config = AudioConfig(
-                    sampleRate = Config.AUDIO_SAMPLE_RATE,
-                    frameSizeMs = Config.AUDIO_FRAME_SIZE_MS,
-                    jitterBufferMs = Config.AUDIO_JITTER_BUFFER_MS,
-                    inputDeviceId = inputId,
-                    outputDeviceId = outputId
-                )
-                // Use the factory (Real by default, Mock in tests)
-                localEngine = engineFactory(config, packetTransport, errorCallback, ownNodeId)
-
-                // This call interacts with Oboe/AAudio.
-                // CRITICAL: This throws SecurityException if the Service is not yet promoted
-                // to Foreground (Android 14+ Microphone privacy restrictions).
-                localEngine.startSession()
-
-                // Apply cached mic state immediately (Fixes PTT race condition)
-                localEngine.setMicEnabled(isMicEnabled.get())
-
-                // Publish Success
-                // Only set the atomic reference AFTER successful start to avoid race conditions
-                activeEngine.set(localEngine)
-                Log.i("VoiceManager", "Audio Engine Started Successfully")
-
-                // 3. Keep alive until cancelled externally OR an internal crash occurs
-                engineCrashSignal.tryReceive() // Clear any stale signals from previous runs
-                engineCrashSignal.receive()    // Suspend here.
-                throw Exception("Rust Engine internal crash")
-            } catch (e: Exception) {
-                // If the coroutine was cancelled (e.g. user selected different mic),
-                // we must rethrow to exit the loop and allow collectLatest to start the new block.
-                if (e is CancellationException) {
-                    throw e
-                }
-
-                // Abnormal Error (SecurityException, Hardware Busy, etc.)
-                Log.w("VoiceManager", "Engine Start Failed/Crashed: ${e.message}. Retrying in ${Config.AUDIO_SESSION_START_DELAY}ms...", e)
-                delay(Config.AUDIO_SESSION_START_DELAY)
-            } finally {
-                // Ensure we always clean up when leaving this scope (just in case)
-                cleanupEngine(localEngine)
-                abandonAudioFocus()
+            }
+        } finally {
+            // 4. Tear down the routing ONLY when the coroutine is cancelled (e.g. user selected a new device or left the group)
+            withContext(NonCancellable) {
+                clearAudioRouting()
                 audioManager.mode = AudioManager.MODE_NORMAL
             }
         }
+    }
+
+    private fun applyAudioRouting(deviceId: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (deviceId != 0) {
+                // setCommunicationDevice strictly requires an Output/Sink device
+                val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                val targetDevice = devices.find { it.id == deviceId }
+                if (targetDevice != null) {
+                    audioManager.setCommunicationDevice(targetDevice)
+                }
+            } else {
+                audioManager.clearCommunicationDevice()
+            }
+        } else @Suppress("DEPRECATION") {
+            if (isBluetoothScoDevice(deviceId)) {
+                audioManager.startBluetoothSco()
+                audioManager.isBluetoothScoOn = true
+            } else {
+                audioManager.isBluetoothScoOn = false
+                audioManager.stopBluetoothSco()
+            }
+        }
+    }
+
+    private fun clearAudioRouting() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        } else @Suppress("DEPRECATION") {
+            audioManager.isBluetoothScoOn = false
+            audioManager.stopBluetoothSco()
+        }
+    }
+
+    private fun isBluetoothScoDevice(id: Int): Boolean {
+        if (id == 0) return false
+        val device = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).find { it.id == id }
+        return device?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
     }
 
     private fun requestAudioFocus(): Boolean {
@@ -287,29 +329,21 @@ class VoiceManager(
 
     private fun updateDeviceLists() {
         // Warning: getDevices is blocking. The Actor in init {} ensures this runs on IO thread.
-        val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).map {
-            AudioDeviceUi(it.id, it.toFriendlyName(isInput = true))
-        }
+        // We only scan OUTPUTS because setCommunicationDevice requires a sink.
         val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map {
             AudioDeviceUi(it.id, it.toFriendlyName(isInput = false))
         }
 
         // VALIDATION: Ghost Device Check
         // If the currently selected device is NOT in the new list, revert to default.
-        val curIn = currentInputId.get()
-        if (curIn != 0 && inputs.none { it.id == curIn }) {
-            Log.w("VoiceManager", "Device removed (ID $curIn). Reverting Input to Default.")
-            dispatch(Action.SetAudioInput(0))
-        }
-
-        val curOut = currentOutputId.get()
-        if (curOut != 0 && outputs.none { it.id == curOut }) {
-            Log.w("VoiceManager", "Device removed (ID $curOut). Reverting Output to Default.")
-            dispatch(Action.SetAudioOutput(0))
+        val curDev = currentDeviceId.get()
+        if (curDev != 0 && outputs.none { it.id == curDev }) {
+            Log.w("VoiceManager", "Device removed (ID $curDev). Reverting to Default.")
+            dispatch(Action.SetAudioDevice(0))
         }
 
         // Update UI
-        dispatch(Action.AudioDevicesUpdated(inputs, outputs))
+        dispatch(Action.AudioDevicesUpdated(outputs))
     }
 
     private fun AudioDeviceInfo.toFriendlyName(isInput: Boolean): String {

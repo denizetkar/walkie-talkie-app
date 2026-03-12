@@ -191,8 +191,7 @@ class MeshController(
                         _state.update {
                             AppState(
                                 myself = it.myself,
-                                availableMics = it.availableMics,
-                                availableSpeakers = it.availableSpeakers,
+                                availableAudioDevices = it.availableAudioDevices,
                                 isBluetoothEnabled = it.isBluetoothEnabled,
                             )
                         }
@@ -217,20 +216,15 @@ class MeshController(
                         }
                     }
 
-                    is Action.SetAudioInput -> {
-                        Log.i("MeshController", "Audio Input Selected: ${action.id}")
-                        _state.update { it.copy(selectedInputId = action.id) }
-                    }
-
-                    is Action.SetAudioOutput -> {
-                        Log.i("MeshController", "Audio Output Selected: ${action.id}")
-                        _state.update { it.copy(selectedOutputId = action.id) }
+                    is Action.SetAudioDevice -> {
+                        Log.i("MeshController", "Audio Route Selected: ${action.id}")
+                        _state.update { it.copy(selectedAudioDevice = action.id) }
                     }
 
                     is Action.AudioDevicesUpdated -> {
-                        Log.d("MeshController", "Audio Devices Updated: ${action.inputs.size} Mics, ${action.outputs.size} Speakers")
+                        Log.d("MeshController", "Audio Devices Updated: ${action.devices.size} routes")
                         _state.update {
-                            it.copy(availableMics = action.inputs, availableSpeakers = action.outputs)
+                            it.copy(availableAudioDevices = action.devices)
                         }
                     }
 

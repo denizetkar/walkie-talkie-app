@@ -219,15 +219,12 @@ fun RadioScreen(
     accessCode: String?,
     peerCount: Int,
     isBluetoothEnabled: Boolean,
-    availableMics: List<AudioDeviceUi>,
-    availableSpeakers: List<AudioDeviceUi>,
-    selectedMicId: Int,
-    selectedSpeakerId: Int,
-    onMicSelect: (Int) -> Unit,
-    onSpeakerSelect: (Int) -> Unit,
+    availableAudioDevices: List<AudioDeviceUi>,
+    selectedAudioDevice: Int,
+    onDeviceSelect: (Int) -> Unit,
     onLeave: () -> Unit,
     onTalkStart: () -> Unit,
-    onTalkStop: () -> Unit
+    onTalkStop: () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -259,13 +256,13 @@ fun RadioScreen(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        AudioDeviceSelector("Microphone", availableMics, selectedMicId, onMicSelect)
-                    }
-                    Box(modifier = Modifier.weight(1f)) {
-                        AudioDeviceSelector("Speaker", availableSpeakers, selectedSpeakerId, onSpeakerSelect)
-                    }
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    AudioDeviceSelector(
+                        label = "Audio Route",
+                        devices = availableAudioDevices,
+                        selectedId = selectedAudioDevice,
+                        onSelect = onDeviceSelect
+                    )
                 }
             }
         }

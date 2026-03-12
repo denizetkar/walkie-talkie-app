@@ -143,12 +143,9 @@ class GattClientHandler(
 
             val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(char, data, writeType) == BluetoothStatusCodes.SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
+            } else @Suppress("DEPRECATION") {
                 char.writeType = writeType
-                @Suppress("DEPRECATION")
                 char.value = data
-                @Suppress("DEPRECATION")
                 gatt.writeCharacteristic(char)
             }
 
@@ -208,10 +205,8 @@ class GattClientHandler(
             pendingAction.set(cont)
             val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
+            } else @Suppress("DEPRECATION") {
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                @Suppress("DEPRECATION")
                 gatt.writeDescriptor(descriptor)
             }
             if (!success) {
@@ -265,8 +260,8 @@ class GattClientHandler(
         }
 
         @Deprecated("Deprecated in Java")
+        @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            @Suppress("DEPRECATION")
             handleIncomingData(characteristic.uuid, characteristic.value)
         }
 

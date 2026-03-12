@@ -191,15 +191,12 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
                     accessCode = state.accessCode,
                     peerCount = state.peerCount,
                     isBluetoothEnabled = state.isBluetoothEnabled,
-                    availableMics = state.availableMics,
-                    availableSpeakers = state.availableSpeakers,
-                    selectedMicId = state.selectedMicId,
-                    selectedSpeakerId = state.selectedSpeakerId,
-                    onMicSelect = { viewModel.setMicrophone(it) },
-                    onSpeakerSelect = { viewModel.setSpeaker(it) },
+                    availableAudioDevices = state.availableAudioDevices,
+                    selectedAudioDevice = state.selectedAudioDevice,
+                    onDeviceSelect = { viewModel.setAudioDevice(it) },
                     onLeave = { viewModel.leaveGroup() },
                     onTalkStart = { viewModel.startTalking() },
-                    onTalkStop = { viewModel.stopTalking() }
+                    onTalkStop = { viewModel.stopTalking() },
                 )
             }
         }

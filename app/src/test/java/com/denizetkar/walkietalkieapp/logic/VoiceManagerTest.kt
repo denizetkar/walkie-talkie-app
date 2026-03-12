@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.domain.Action
@@ -55,6 +56,14 @@ class VoiceManagerTest {
         val callbackSlot = slot<AudioDeviceCallback>()
         every { spyAudioManager.registerAudioDeviceCallback(capture(callbackSlot), any()) } just runs
         every { spyAudioManager.unregisterAudioDeviceCallback(any()) } just runs
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            every { spyAudioManager.setCommunicationDevice(any()) } returns true
+            every { spyAudioManager.clearCommunicationDevice() } just runs
+        } else @Suppress("DEPRECATION") {
+            every { spyAudioManager.startBluetoothSco() } just runs
+            every { spyAudioManager.stopBluetoothSco() } just runs
+        }
     }
 
     @After
@@ -64,7 +73,7 @@ class VoiceManagerTest {
 
     private fun createVoiceManager(
         micGateFlow: MutableStateFlow<Boolean>,
-        configFlow: MutableStateFlow<Triple<Int, Int, UInt>?>,
+        configFlow: MutableStateFlow<Pair<Int, UInt>?>,
         enginesList: MutableList<AudioEngine>? = null
     ): VoiceManager {
         // Use a Spy with recordPrivateCalls to bypass the Android Stub exception safely.
@@ -96,7 +105,7 @@ class VoiceManagerTest {
     @Test
     fun `Audio Focus - Mutes Mic when focus lost`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(null)
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(null)
         val manager = createVoiceManager(micGateFlow, configFlow)
 
         // Directly trigger the internal focus listener
@@ -110,7 +119,7 @@ class VoiceManagerTest {
     @Test
     fun `Hardware Update - Adding a device updates UI lists`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(null)
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(null)
         val manager = createVoiceManager(micGateFlow, configFlow)
         actions.clear()
 
@@ -121,16 +130,16 @@ class VoiceManagerTest {
             every { productName } returns "Test Headset"
         }
 
-        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_INPUTS) } returns arrayOf(fakeHeadset)
+        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } returns arrayOf(fakeHeadset)
 
         capturedDeviceCallback.onAudioDevicesAdded(arrayOf(fakeHeadset))
         advanceUntilIdle()
 
         val updateAction = actions.filterIsInstance<Action.AudioDevicesUpdated>().lastOrNull()
         assertTrue("Should dispatch AudioDevicesUpdated", updateAction != null)
-        assertEquals("Should contain 1 input device", 1, updateAction!!.inputs.size)
+        assertEquals("Should contain 1 input device", 1, updateAction!!.devices.size)
 
-        val firstInput = updateAction.inputs.first()
+        val firstInput = updateAction.devices.first()
         assertEquals("Should map device ID correctly", 42, firstInput.id)
         assertEquals("Should map friendly name correctly", "Wired Headset", firstInput.displayName)
 
@@ -140,19 +149,19 @@ class VoiceManagerTest {
     @Test
     fun `Ghost Validation - Unplugging active mic reverts to default`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(Triple(99, 0, 1u))
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(99, 1u))
         val manager = createVoiceManager(micGateFlow, configFlow)
 
         advanceUntilIdle()
         actions.clear()
 
-        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_INPUTS) } returns emptyArray()
+        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } returns emptyArray()
 
         val fakeRemovedDevice = mockk<AudioDeviceInfo> { every { id } returns 99 }
         capturedDeviceCallback.onAudioDevicesRemoved(arrayOf(fakeRemovedDevice))
         advanceUntilIdle()
 
-        val fallbackAction = actions.filterIsInstance<Action.SetAudioInput>().lastOrNull()
+        val fallbackAction = actions.filterIsInstance<Action.SetAudioDevice>().lastOrNull()
         assertTrue("Should dispatch SetAudioInput when ghost device detected", fallbackAction != null)
         assertEquals("Should revert to Default Mic (ID 0)", 0, fallbackAction!!.id)
 
@@ -163,20 +172,20 @@ class VoiceManagerTest {
     fun `Lifecycle - Changing Hardware Config safely restarts Engine`() = testScope.runTest {
         val engines = mutableListOf<AudioEngine>()
         val localMicGateFlow = MutableStateFlow(false)
-        val localConfigFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(null)
+        val localConfigFlow = MutableStateFlow<Pair<Int, UInt>?>(null)
 
         val testVoiceManager = createVoiceManager(localMicGateFlow, localConfigFlow, engines)
 
-        // 1. Initial State: Start with Default Mic
-        localConfigFlow.value = Triple(0, 0, 1u)
+        // 1. Initial State: Start with Default Device
+        localConfigFlow.value = Pair(0, 1u)
         advanceUntilIdle()
 
         assertEquals("First engine created", 1, engines.size)
         val engine1 = engines.first()
         verify(exactly = 1) { engine1.startSession() }
 
-        // 2. Change Config: User selects Bluetooth Mic (ID 5)
-        localConfigFlow.value = Triple(5, 0, 1u)
+        // 2. Change Config: User selects Bluetooth Device (ID 5)
+        localConfigFlow.value = Pair(5, 1u)
         advanceUntilIdle()
 
         // 3. Assert
@@ -193,7 +202,7 @@ class VoiceManagerTest {
     fun `Error Recovery - Rust Engine crash triggers automatic restart`() = testScope.runTest {
         val engines = mutableListOf<AudioEngine>()
         val localMicGateFlow = MutableStateFlow(false)
-        val localConfigFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(Triple(0, 0, 1u))
+        val localConfigFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
 
         var capturedErrorCallback: AudioErrorCallback? = null
 
@@ -239,7 +248,7 @@ class VoiceManagerTest {
     @Test
     fun `Engine Factory - PacketTransport dispatches AudioDataCaptured`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(Triple(0, 0, 1u))
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
 
         var capturedTransport: uniffi.walkie_talkie_engine.PacketTransport? = null
 
@@ -275,7 +284,7 @@ class VoiceManagerTest {
     @Test
     fun `Lifecycle - Stop Session Exception is caught and ignored`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(Triple(0, 0, 1u))
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
 
         val engine = mockk<AudioEngine>(relaxed = true)
         // Simulate a native crash when trying to close the Oboe stream
@@ -308,7 +317,7 @@ class VoiceManagerTest {
     fun `Lifecycle - Audio Focus Denied Retries Until Granted`() = testScope.runTest {
         val engines = mutableListOf<AudioEngine>()
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(Triple(0, 0, 1u))
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
 
         val manager = spyk(VoiceManager(
             context = mockContext,
@@ -348,12 +357,12 @@ class VoiceManagerTest {
     @Test
     fun `Hardware Update - Device Types Map to Friendly Names`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Triple<Int, Int, UInt>?>(null)
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(null)
         val manager = createVoiceManager(micGateFlow, configFlow)
         actions.clear()
 
         // Create mock devices hitting various logic branches in `toFriendlyName`
-        val mockEar = mockk<AudioDeviceInfo> {
+        val mockEarPiece = mockk<AudioDeviceInfo> {
             every { id } returns 1
             every { type } returns AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
             every { address } returns ""
@@ -371,15 +380,15 @@ class VoiceManagerTest {
             every { address } returns ""
             every { productName } returns "USB DAC"
         }
-        val mockMic = mockk<AudioDeviceInfo> {
+        val mockSpeaker = mockk<AudioDeviceInfo> {
             every { id } returns 4
-            every { type } returns AudioDeviceInfo.TYPE_BUILTIN_MIC
+            every { type } returns AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
             every { address } returns ""
             every { productName } returns ""
         }
 
-        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_INPUTS) } returns arrayOf(mockEar, mockSco, mockUsb, mockMic)
-        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } returns arrayOf()
+        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_INPUTS) } returns arrayOf()
+        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } returns arrayOf(mockEarPiece, mockSco, mockUsb, mockSpeaker)
 
         capturedDeviceCallback.onAudioDevicesAdded(null)
         advanceUntilIdle()
@@ -387,11 +396,11 @@ class VoiceManagerTest {
         val updateAction = actions.filterIsInstance<Action.AudioDevicesUpdated>().lastOrNull()
         org.junit.Assert.assertNotNull(updateAction)
 
-        val inputs = updateAction!!.inputs
-        assertEquals("Phone Earpiece", inputs.find { it.id == 1 }?.displayName)
-        assertEquals("Bluetooth Headset (AA:BB)", inputs.find { it.id == 2 }?.displayName)
-        assertEquals("USB Device (USB DAC)", inputs.find { it.id == 3 }?.displayName)
-        assertEquals("Phone Microphone", inputs.find { it.id == 4 }?.displayName)
+        val devices = updateAction!!.devices
+        assertEquals("Phone Earpiece", devices.find { it.id == 1 }?.displayName)
+        assertEquals("Bluetooth Headset (AA:BB)", devices.find { it.id == 2 }?.displayName)
+        assertEquals("USB Device (USB DAC)", devices.find { it.id == 3 }?.displayName)
+        assertEquals("Loudspeaker", devices.find { it.id == 4 }?.displayName)
 
         manager.close()
     }

@@ -54,10 +54,8 @@ data class AppUiState(
     val discoveredGroups: List<DiscoveredGroup> = emptyList(),
 
     // Audio State
-    val availableMics: List<AudioDeviceUi> = emptyList(),
-    val availableSpeakers: List<AudioDeviceUi> = emptyList(),
-    val selectedMicId: Int = 0,
-    val selectedSpeakerId: Int = 0,
+    val availableAudioDevices: List<AudioDeviceUi> = emptyList(),
+    val selectedAudioDevice: Int = 0,
 
     // Hardware State
     val isBluetoothEnabled: Boolean = true,
@@ -154,10 +152,8 @@ class MainViewModel(
                         joinError = coreState.joinError,
 
                         // Map Audio State
-                        availableMics = coreState.availableMics,
-                        availableSpeakers = coreState.availableSpeakers,
-                        selectedMicId = coreState.selectedInputId,
-                        selectedSpeakerId = coreState.selectedOutputId,
+                        availableAudioDevices = coreState.availableAudioDevices,
+                        selectedAudioDevice = coreState.selectedAudioDevice,
 
                         // Map Hardware State
                         isBluetoothEnabled = coreState.isBluetoothEnabled,
@@ -205,8 +201,7 @@ class MainViewModel(
 
     fun startTalking() = dispatch(Action.SetMic(true))
     fun stopTalking() = dispatch(Action.SetMic(false))
-    fun setMicrophone(id: Int) = dispatch(Action.SetAudioInput(id))
-    fun setSpeaker(id: Int) = dispatch(Action.SetAudioOutput(id))
+    fun setAudioDevice(id: Int) = dispatch(Action.SetAudioDevice(id))
 
     override fun onCleared() {
         super.onCleared()

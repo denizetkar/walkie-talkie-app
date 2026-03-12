@@ -63,13 +63,11 @@ data class AppState(
      */
     val isMicEnabled: Boolean = false,
 
-    // Hardware lists provided by AudioManager
-    val availableMics: List<AudioDeviceUi> = emptyList(),
-    val availableSpeakers: List<AudioDeviceUi> = emptyList(),
+    // Hardware list (Outputs only, since OS auto-matches the Input)
+    val availableAudioDevices: List<AudioDeviceUi> = emptyList(),
 
-    // Currently selected hardware IDs (0 = Default)
-    val selectedInputId: Int = 0,
-    val selectedOutputId: Int = 0,
+    // Currently selected route (0 = Default)
+    val selectedAudioDevice: Int = 0,
 
     // --- Hardware State ---
     val isBluetoothEnabled: Boolean = true,
@@ -138,8 +136,7 @@ sealed class Action {
 
     // --- Audio Control ---
     data class SetMic(val enabled: Boolean) : Action()
-    data class SetAudioInput(val id: Int) : Action()
-    data class SetAudioOutput(val id: Int) : Action()
+    data class SetAudioDevice(val id: Int) : Action()
 
     // --- Network Events (Driver -> Core) ---
     data class PeerConnected(val peerId: PeerId) : Action()
@@ -183,7 +180,7 @@ sealed class Action {
     }
 
     /** The VoiceManager reports a change in available hardware. */
-    data class AudioDevicesUpdated(val inputs: List<AudioDeviceUi>, val outputs: List<AudioDeviceUi>) : Action()
+    data class AudioDevicesUpdated(val devices: List<AudioDeviceUi>) : Action()
 }
 
 // ===========================================================================

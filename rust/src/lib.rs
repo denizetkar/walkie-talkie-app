@@ -49,7 +49,8 @@ mod real_impl {
     use oboe::{
         AudioInputCallback, AudioOutputCallback, AudioStreamBuilder, AudioStreamAsync,
         PerformanceMode, SharingMode, Mono, DataCallbackResult, InputPreset, Usage,
-        Input, Output, AudioInputStreamSafe, AudioOutputStreamSafe, AudioStream
+        Input, Output, AudioInputStreamSafe, AudioOutputStreamSafe, AudioStream,
+        SampleRateConversionQuality,
     };
     use opus_codec::{Encoder, Application, Channels, SampleRate};
 
@@ -201,6 +202,7 @@ mod real_impl {
                 .set_format::<i16>()
                 .set_channel_count::<Mono>()
                 .set_sample_rate(self.config.sample_rate)
+                .set_sample_rate_conversion_quality(SampleRateConversionQuality::Medium)
                 .set_input_preset(InputPreset::VoiceCommunication);
 
             if self.config.input_device_id != 0 {
@@ -244,6 +246,7 @@ mod real_impl {
                 .set_format::<i16>()
                 .set_channel_count::<Mono>()
                 .set_sample_rate(self.config.sample_rate)
+                .set_sample_rate_conversion_quality(SampleRateConversionQuality::Medium)
                 .set_usage(Usage::VoiceCommunication);
 
             if self.config.output_device_id != 0 {

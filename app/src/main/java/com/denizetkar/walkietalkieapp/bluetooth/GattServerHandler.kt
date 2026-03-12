@@ -289,10 +289,8 @@ class GattServerHandler(
     ): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             server.notifyCharacteristicChanged(device, char, confirm, data) == BluetoothStatusCodes.SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
+        } else @Suppress("DEPRECATION") {
             char.value = data
-            @Suppress("DEPRECATION")
             server.notifyCharacteristicChanged(device, char, confirm)
         }
     }

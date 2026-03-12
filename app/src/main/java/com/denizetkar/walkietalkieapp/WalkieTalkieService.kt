@@ -133,11 +133,10 @@ class WalkieTalkieService : Service() {
         // Combine inputs: Device selection AND Node ID (Rotation) AND Session Existence
         val audioConfigFlow = combine(
             controller.state.map { it.session != null }.distinctUntilChanged(),
-            controller.state.map { it.selectedInputId }.distinctUntilChanged(),
-            controller.state.map { it.selectedOutputId }.distinctUntilChanged(),
+            controller.state.map { it.selectedAudioDevice }.distinctUntilChanged(),
             controller.state.map { it.myself }.distinctUntilChanged()
-        ) { hasSession, inId, outId, nodeId ->
-            if (hasSession) Triple(inId, outId, nodeId) else null
+        ) { hasSession, deviceId, nodeId ->
+            if (hasSession) Pair(deviceId, nodeId) else null
         }
 
         voiceManagerInstance.bind(gateFlow, audioConfigFlow)

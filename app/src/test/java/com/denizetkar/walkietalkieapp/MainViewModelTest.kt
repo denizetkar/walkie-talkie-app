@@ -248,11 +248,8 @@ class MainViewModelTest {
     fun `Actions - Device selection actions dispatch correctly`() = runTest {
         connectService()
 
-        viewModel.setMicrophone(42)
-        verify { binder.dispatchAction(Action.SetAudioInput(42)) }
-
-        viewModel.setSpeaker(99)
-        verify { binder.dispatchAction(Action.SetAudioOutput(99)) }
+        viewModel.setAudioDevice(42)
+        verify { binder.dispatchAction(Action.SetAudioDevice(42)) }
     }
 
     @Test

@@ -94,12 +94,9 @@ class ScreensTest {
                 accessCode = "1234",
                 peerCount = 1, // Network is ready
                 isBluetoothEnabled = true,
-                availableMics = emptyList(),
-                availableSpeakers = emptyList(),
-                selectedMicId = 0,
-                selectedSpeakerId = 0,
-                onMicSelect = {},
-                onSpeakerSelect = {},
+                availableAudioDevices = emptyList(),
+                selectedAudioDevice = 0,
+                onDeviceSelect = {},
                 onLeave = {},
                 onTalkStart = { isTalking = true },
                 onTalkStop = { isTalking = false }
@@ -135,12 +132,9 @@ class ScreensTest {
                 accessCode = "1234",
                 peerCount = 0, // Network is disconnected / lonely
                 isBluetoothEnabled = true,
-                availableMics = emptyList(),
-                availableSpeakers = emptyList(),
-                selectedMicId = 0,
-                selectedSpeakerId = 0,
-                onMicSelect = {},
-                onSpeakerSelect = {},
+                availableAudioDevices = emptyList(),
+                selectedAudioDevice = 0,
+                onDeviceSelect = {},
                 onLeave = {},
                 onTalkStart = { talkAttempted = true },
                 onTalkStop = {}
@@ -197,7 +191,7 @@ class ScreensTest {
 
         composeTestRule.setContent {
             AudioDeviceSelector(
-                label = "Mic",
+                label = "Audio Route",
                 devices = devices,
                 selectedId = 1,
                 onSelect = { selectedId = it }
@@ -258,12 +252,9 @@ class ScreensTest {
                 accessCode = "1234",
                 peerCount = 1,
                 isBluetoothEnabled = false, // Simulate disabled Bluetooth
-                availableMics = emptyList(),
-                availableSpeakers = emptyList(),
-                selectedMicId = 0,
-                selectedSpeakerId = 0,
-                onMicSelect = {},
-                onSpeakerSelect = {},
+                availableAudioDevices = emptyList(),
+                selectedAudioDevice = 0,
+                onDeviceSelect = {},
                 onLeave = {},
                 onTalkStart = { talkAttempted = true },
                 onTalkStop = {}
