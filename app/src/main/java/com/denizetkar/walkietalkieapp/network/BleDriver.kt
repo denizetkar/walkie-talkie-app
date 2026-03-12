@@ -447,7 +447,7 @@ class BleDriver(
                             // Kill the main loop immediately
                             peerJob.cancel(CancellationException("Client Error: ${event.reason}"))
                             if (event.reason is ConnectionFailure.AuthRejected) {
-                                dispatch(Action.JoinGroupFailed("Access Code Rejected"))
+                                dispatch(Action.JoinGroupFailed("Access Code Rejected", isFatal = false))
                             }
                         }
                         else -> {}

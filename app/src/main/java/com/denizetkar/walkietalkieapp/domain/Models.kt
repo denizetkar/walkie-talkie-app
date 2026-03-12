@@ -141,7 +141,7 @@ sealed class Action {
     // --- Network Events (Driver -> Core) ---
     data class PeerConnected(val peerId: PeerId) : Action()
     data class PeerDisconnected(val peerId: PeerId) : Action()
-    data class JoinGroupFailed(val reason: String) : Action()
+    data class JoinGroupFailed(val reason: String, val isFatal: Boolean = true) : Action()
     data object AckJoinError : Action()
     data class ScanFailed(val reason: String) : Action()
     data class BluetoothStateChanged(val enabled: Boolean) : Action()

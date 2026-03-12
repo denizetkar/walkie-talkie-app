@@ -490,6 +490,22 @@ class MeshControllerTest {
     }
 
     @Test
+    fun `Error Handling - Non-fatal JoinGroupFailed is ignored in established session`() = testScope.runTest {
+        // Setup: Active established session
+        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        runCurrent()
+        assertNotNull(controller.state.value.session)
+
+        // Action: Driver reports non-fatal auth failure (e.g. background reconnect to bad peer)
+        controller.dispatch(Action.JoinGroupFailed("Access Code Rejected", isFatal = false))
+        runCurrent()
+
+        // Assert: Session remains intact
+        assertNotNull("Session should be retained after non-fatal auth failure", controller.state.value.session)
+        assertNull("JoinError should not be populated", controller.state.value.joinError)
+    }
+
+    @Test
     fun `Discovery - Advertisement lists update based on RSSI and MAC`() = testScope.runTest {
         val groupName = "Hiking"
 

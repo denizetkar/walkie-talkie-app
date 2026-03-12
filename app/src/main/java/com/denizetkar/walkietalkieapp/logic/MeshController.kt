@@ -144,11 +144,15 @@ class MeshController(
 
                     is Action.JoinGroupFailed -> {
                         Log.e("MeshController", "Join Failed: ${action.reason}")
-                        _state.update {
-                            it.copy(
-                                session = null,
-                                joinError = action.reason
-                            )
+                        if (action.isFatal || currentState.session?.isJoinAttempt == true) {
+                            _state.update {
+                                it.copy(
+                                    session = null,
+                                    joinError = action.reason
+                                )
+                            }
+                        } else {
+                            Log.w("MeshController", "Ignoring non-fatal JoinGroupFailed because session is established.")
                         }
                     }
 
