@@ -253,10 +253,10 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `Actions - Create Group triggers generation of random code and dispatch`() = runTest {
+    fun `Actions - Create Group triggers generation of random code if not provided`() = runTest {
         connectService()
 
-        viewModel.createGroup("Hiking")
+        viewModel.createGroup("Hiking", "")
 
         // We capture the action to verify the random code logic
         val actionSlot = slot<Action.CreateGroup>()
@@ -264,6 +264,19 @@ class MainViewModelTest {
 
         assertEquals("Hiking", actionSlot.captured.name)
         assertTrue("Generated code should be 4 digits", actionSlot.captured.code.matches(Regex("\\d{4}")))
+    }
+
+    @Test
+    fun `Actions - Create Group uses provided code`() = runTest {
+        connectService()
+
+        viewModel.createGroup("Hiking", "5678")
+
+        val actionSlot = slot<Action.CreateGroup>()
+        verify { binder.dispatchAction(capture(actionSlot)) }
+
+        assertEquals("Hiking", actionSlot.captured.name)
+        assertEquals("5678", actionSlot.captured.code)
     }
 
     @Test

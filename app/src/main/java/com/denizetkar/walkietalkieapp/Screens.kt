@@ -7,6 +7,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -68,11 +70,12 @@ fun LoadingScreen(message: String) {
 
 @Composable
 fun CreateGroupScreen(
-    onCreate: (String) -> Unit,
+    onCreate: (String, String) -> Unit,
     error: String?,
     onErrorAck: () -> Unit
 ) {
     var text by remember { mutableStateOf("") }
+    var codeInput by remember { mutableStateOf("") }
 
     if (error != null) {
         AlertDialog(
@@ -98,10 +101,18 @@ fun CreateGroupScreen(
             label = { Text("Group Name") },
             singleLine = true
         )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = codeInput,
+            onValueChange = { if (it.length <= 4 && it.all { char -> char.isDigit() }) codeInput = it },
+            label = { Text("4-Digit Code (Optional)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
         Spacer(modifier = Modifier.height(16.dp))
         Button(
-            onClick = { onCreate(text) },
-            enabled = text.isNotBlank(),
+            onClick = { onCreate(text, codeInput) },
+            enabled = text.isNotBlank() && (codeInput.isEmpty() || codeInput.length == 4),
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Go Live")
@@ -158,9 +169,10 @@ fun JoinGroupScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = codeInput,
-                        onValueChange = { if (it.length <= 4) codeInput = it },
+                        onValueChange = { if (it.length <= 4 && it.all { char -> char.isDigit() }) codeInput = it },
                         singleLine = true,
-                        label = { Text("Code") }
+                        label = { Text("Code") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
                 }
             },

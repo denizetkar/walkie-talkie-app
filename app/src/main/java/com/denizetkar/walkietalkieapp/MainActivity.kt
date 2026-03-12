@@ -153,7 +153,7 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
                     if (state.groupName != null) navController.navigate("radio")
                 }
                 CreateGroupScreen(
-                    onCreate = { name -> viewModel.createGroup(name) },
+                    onCreate = { name, code -> viewModel.createGroup(name, code) },
                     error = state.joinError,
                     onErrorAck = { viewModel.ackJoinError() }
                 )

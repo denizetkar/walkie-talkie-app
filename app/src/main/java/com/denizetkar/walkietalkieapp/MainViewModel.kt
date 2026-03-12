@@ -182,8 +182,12 @@ class MainViewModel(
         dispatch(Action.StopScanning)
     }
 
-    fun createGroup(name: String) {
-        val code = Random.nextInt(1000, 9999).toString()
+    fun createGroup(name: String, providedCode: String = "") {
+        val code = if (providedCode.isNotBlank() && providedCode.length == 4) {
+            providedCode
+        } else {
+            Random.nextInt(1000, 10000).toString()
+        }
         dispatch(Action.CreateGroup(name, code))
     }
 

@@ -155,11 +155,15 @@ class ScreensTest {
     @Test
     fun `CreateGroupScreen - Validates input, displays error dialog, and fires callback`() {
         var createdName = ""
+        var createdCode = ""
         var errorAcked = false
 
         composeTestRule.setContent {
             CreateGroupScreen(
-                onCreate = { createdName = it },
+                onCreate = { name, code ->
+                    createdName = name
+                    createdCode = code
+                },
                 error = "Name taken", // Test error dialog at the same time
                 onErrorAck = { errorAcked = true }
             )
@@ -175,10 +179,23 @@ class ScreensTest {
         goLiveBtn.assertIsNotEnabled()
 
         composeTestRule.onNodeWithText("Group Name").performTextInput("Hiking")
+
+        // Button is enabled because the code field is empty (valid)
         goLiveBtn.assertIsEnabled()
+
+        // 3. Test Code Input Validation
+        composeTestRule.onNodeWithText("4-Digit Code (Optional)").performTextInput("123")
+        // Button should be disabled because code is incomplete (3 digits)
+        goLiveBtn.assertIsNotEnabled()
+
+        composeTestRule.onNodeWithText("4-Digit Code (Optional)").performTextInput("4")
+        // Button should be enabled because code is complete (4 digits)
+        goLiveBtn.assertIsEnabled()
+
         goLiveBtn.performClick()
 
         assertEquals("Hiking", createdName)
+        assertEquals("1234", createdCode)
     }
 
     @Test
