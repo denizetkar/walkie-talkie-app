@@ -208,6 +208,8 @@ class MeshController(
                         emit(Effect.ShowToast(action.reason))
                     }
 
+                    is Action.SetLanguage -> _state.update { it.copy(language = action.language) }
+
                     // =================================================================
                     // AUDIO CONTROLS (UI/Mic -> Core)
                     // =================================================================
@@ -294,6 +296,11 @@ class MeshController(
                         internalClockMs = action.timeMs // Sync internal clock
                         handleCleanup()
                     }
+
+                    // =================================================================
+                    // SYSTEM EVENTS (Shell -> Core)
+                    // =================================================================
+                    is Action.SyncLanguage -> _state.update { it.copy(language = action.language) }
                 }
             } catch (e: Exception) {
                 Log.e("MeshController", "Error processing action ${action.javaClass.simpleName}", e)

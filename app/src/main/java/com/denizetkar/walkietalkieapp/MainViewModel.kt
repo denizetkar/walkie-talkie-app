@@ -7,6 +7,8 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import android.util.Log
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -15,6 +17,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.domain.AppLanguage
 import com.denizetkar.walkietalkieapp.domain.AppState
 import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 import com.denizetkar.walkietalkieapp.logic.MeshController
@@ -23,10 +26,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 // Shared Data Class for UI
@@ -40,6 +46,7 @@ data class AppUiState(
     val hasPermissions: Boolean = false,
     val isServiceBound: Boolean = false,
     val serviceStartupFailed: Boolean = false,
+    val currentLanguage: AppLanguage = AppLanguage.SYSTEM,
 
     // Session State
     val groupName: String? = null,
@@ -136,20 +143,28 @@ class MainViewModel(
     }
 
     private fun subscribeToController(controller: MeshController) {
+        // A. Acknowledge Reality (Sync Initial State from OS)
+        val osTags = AppCompatDelegate.getApplicationLocales().toLanguageTags()
+        dispatch(Action.SyncLanguage(AppLanguage.fromTag(osTags)))
+
+        // B. Start State Mapping
         stateCollectionJob?.cancel()
         stateCollectionJob = viewModelScope.launch(backgroundDispatcher) {
             controller.state.collect { coreState ->
                 _appState.update { ui ->
                     ui.copy(
+                        currentLanguage = coreState.language,
+
+                        // Map Session State
                         groupName = coreState.session?.groupName,
                         accessCode = coreState.session?.accessCode,
                         peerCount = coreState.connectedPeers.size,
-                        discoveredGroups = coreState.discoveredGroups,
-                        isJoining = (coreState.session?.isJoinAttempt == true),
-                        // We are scanning if NO session is active
+
+                        // Map UI Logic
                         isScanning = (coreState.session == null),
-                        // Map Error from Core
+                        isJoining = (coreState.session?.isJoinAttempt == true),
                         joinError = coreState.joinError,
+                        discoveredGroups = coreState.discoveredGroups,
 
                         // Map Audio State
                         availableAudioDevices = coreState.availableAudioDevices,
@@ -158,6 +173,31 @@ class MainViewModel(
                         // Map Hardware State
                         isBluetoothEnabled = coreState.isBluetoothEnabled,
                     )
+                }
+            }
+        }
+
+        // C. The Reconciler Loop (Force OS to match Core)
+        viewModelScope.launch(backgroundDispatcher) {
+            controller.state.map { it.language }.distinctUntilChanged().collect { lang ->
+                val currentSystemTag = AppCompatDelegate.getApplicationLocales().toLanguageTags()
+                // Check-Then-Act to prevent infinite Activity recreation loops
+                val needsUpdate = if (lang == AppLanguage.SYSTEM) {
+                    currentSystemTag.isNotEmpty()
+                } else {
+                    !currentSystemTag.startsWith(lang.tag)
+                }
+                if (!needsUpdate) return@collect
+
+                val localeList = if (lang == AppLanguage.SYSTEM) {
+                    LocaleListCompat.getEmptyLocaleList() // Reverts to OS setting natively
+                } else {
+                    LocaleListCompat.forLanguageTags(lang.tag)
+                }
+                // Writing to the delegate must be done on the Main thread
+                // as it manipulates the Activity configuration.
+                withContext(Dispatchers.Main) {
+                    AppCompatDelegate.setApplicationLocales(localeList)
                 }
             }
         }
@@ -173,6 +213,8 @@ class MainViewModel(
     }
 
     // --- User Actions ---
+
+    fun setLanguage(language: AppLanguage) = dispatch(Action.SetLanguage(language))
 
     fun startScanning() {
         dispatch(Action.StartScanning)

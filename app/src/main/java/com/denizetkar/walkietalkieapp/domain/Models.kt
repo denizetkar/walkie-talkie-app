@@ -6,6 +6,21 @@ import com.denizetkar.walkietalkieapp.AudioDeviceUi
 // STATE (The Single Source of Truth)
 // ===========================================================================
 
+enum class AppLanguage(val tag: String, val displayName: String) {
+    SYSTEM("", "System Default"),
+    ENGLISH("en", "English"),
+    GERMAN("de", "Deutsch"),
+    TURKISH("tr", "Türkçe");
+
+    companion object {
+        fun fromTag(tag: String?): AppLanguage {
+            if (tag.isNullOrEmpty()) return SYSTEM
+            val baseTag = tag.substringBefore('-')
+            return entries.find { it.tag == baseTag } ?: SYSTEM
+        }
+    }
+}
+
 /**
  * Represents the complete state of the application at any given point in time.
  * Drivers and UI observe this to know what to do.
@@ -20,6 +35,7 @@ data class AppState(
      * - If SET: The app is either "Joining" or "Active" in a group.
      */
     val session: SessionContext? = null,
+    val language: AppLanguage = AppLanguage.SYSTEM,
 
     // --- Topology & Network ---
     /**
@@ -27,13 +43,11 @@ data class AppState(
      * This acts as the "Roster" for the UI.
      */
     val connectedPeers: Set<PeerId> = emptySet(),
-
     /**
      * The list of groups discovered via BLE Advertising.
      * Used solely for the "Join Group" screen.
      */
     val discoveredGroups: List<DiscoveredGroup> = emptyList(),
-
     /**
      * Our current view of the mesh network hierarchy.
      * This determines our advertising payload (Network ID / Hops).
@@ -48,7 +62,6 @@ data class AppState(
      * 2. User is in a Group (Maintenance Scanning to find neighbors).
      */
     val isBrowsing: Boolean = false,
-
     /**
      * Holds the error message if a Join attempt fails (Timeout/Rejected).
      * The UI observes this to show a dialog.
@@ -62,10 +75,8 @@ data class AppState(
      * False = PTT released (Muted).
      */
     val isMicEnabled: Boolean = false,
-
     // Hardware list (Outputs only, since OS auto-matches the Input)
     val availableAudioDevices: List<AudioDeviceUi> = emptyList(),
-
     // Currently selected route (0 = Default)
     val selectedAudioDevice: Int = 0,
 
@@ -129,6 +140,7 @@ sealed class Action {
     data class CreateGroup(val name: String, val code: String) : Action()
     data class JoinGroup(val name: String, val code: String) : Action()
     data class LeaveGroup(val reason: String = "User Request") : Action()
+    data class SetLanguage(val language: AppLanguage) : Action()  // UI -> Core (User Input)
 
     // Explicit scanning control for the "Join" screen
     data object StartScanning : Action()
@@ -178,9 +190,10 @@ sealed class Action {
 
         override fun hashCode(): Int = data.contentHashCode()
     }
-
     /** The VoiceManager reports a change in available hardware. */
     data class AudioDevicesUpdated(val devices: List<AudioDeviceUi>) : Action()
+
+    data class SyncLanguage(val language: AppLanguage) : Action() // Shell -> Core (Boot)
 }
 
 // ===========================================================================
