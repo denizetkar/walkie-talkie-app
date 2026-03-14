@@ -7,8 +7,6 @@ import android.content.Intent
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ActivityScenario
@@ -107,7 +105,7 @@ class MainActivityTest {
     @Test
     fun `Permissions Denied - Shows Permission Required Screen`() {
         ActivityScenario.launch(MainActivity::class.java).use {
-            composeTestRule.onNodeWithText("Permissions Needed").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.permission_required_title).assertIsDisplayed()
         }
     }
 
@@ -124,18 +122,18 @@ class MainActivityTest {
 
         ActivityScenario.launch(MainActivity::class.java).use {
             composeTestRule.waitUntil(timeoutMillis = 5000) {
-                composeTestRule.onAllNodesWithText("Create Group").fetchSemanticsNodes().isNotEmpty()
+                composeTestRule.onAllNodesWithStringId(R.string.create_group_title).fetchSemanticsNodes().isNotEmpty()
             }
 
-            composeTestRule.onNodeWithText("Create Group").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.create_group_title).assertIsDisplayed()
 
-            composeTestRule.onNodeWithText("Join").performClick()
+            composeTestRule.onNodeWithStringId(R.string.navigation_join).performClick()
             composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithText("Nearby Groups").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.join_group_nearby_groups_title).assertIsDisplayed()
 
-            composeTestRule.onNodeWithText("Create").performClick()
+            composeTestRule.onNodeWithStringId(R.string.navigation_create).performClick()
             composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithText("Create Group").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.create_group_title).assertIsDisplayed()
         }
     }
 
@@ -150,15 +148,15 @@ class MainActivityTest {
 
         launchWithMockViewModel(initialState) { mockViewModel, stateFlow ->
             // Assert Loading screen is shown
-            composeTestRule.onNodeWithText("Starting Audio Engine...").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.starting_audio_engine).assertIsDisplayed()
 
             // Update to "Error" state
             stateFlow.value = initialState.copy(serviceStartupFailed = true)
             composeTestRule.waitForIdle()
 
             // Assert Error screen is shown and retry works
-            composeTestRule.onNodeWithText("Radio Service Failed to Start").assertIsDisplayed()
-            composeTestRule.onNodeWithText("Retry").performClick()
+            composeTestRule.onNodeWithStringId(R.string.service_error_screen_title).assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.service_error_screen_button).performClick()
             composeTestRule.waitForIdle()
 
             io.mockk.verify { mockViewModel.retryConnection() }
@@ -170,22 +168,22 @@ class MainActivityTest {
         val initialState = AppUiState(
             hasPermissions = true,
             isServiceBound = true,
-            groupName = null // Null groupName means we start on the Create/Join tabs
+            groupName = null, // Null groupName means we start on the Create/Join tabs
         )
 
         launchWithMockViewModel(initialState) { mockViewModel, _ ->
             // By default, the NavHost starts on "create".
-            composeTestRule.onNodeWithText("Create Group").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.create_group_title).assertIsDisplayed()
 
             // 1. Navigate to "Join"
-            composeTestRule.onNodeWithText("Join").performClick()
+            composeTestRule.onNodeWithStringId(R.string.navigation_join).performClick()
             composeTestRule.waitForIdle()
 
             // Verify the DisposableEffect triggered startScanning
             io.mockk.verify { mockViewModel.startScanning() }
 
             // 2. Navigate away from "Join" (Back to Create)
-            composeTestRule.onNodeWithText("Create").performClick()
+            composeTestRule.onNodeWithStringId(R.string.navigation_create).performClick()
             composeTestRule.waitForIdle()
 
             // Verify the DisposableEffect's onDispose triggered stopScanning
@@ -202,14 +200,14 @@ class MainActivityTest {
         )
 
         launchWithMockViewModel(initialState) { _, stateFlow ->
-            composeTestRule.onNodeWithText("Create Group").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.create_group_title).assertIsDisplayed()
 
             // Update State (Simulating the user successfully joining/creating a group)
             stateFlow.value = stateFlow.value.copy(groupName = "Hiking", accessCode = "1234")
             composeTestRule.waitForIdle()
 
             // The LaunchedEffect inside the "create" composable should automatically navigate
-            composeTestRule.onNodeWithText("GROUP: Hiking").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.radio_title, "Hiking").assertIsDisplayed()
         }
     }
 
@@ -223,14 +221,14 @@ class MainActivityTest {
         )
 
         launchWithMockViewModel(initialState) { _, stateFlow ->
-            composeTestRule.onNodeWithText("GROUP: Hiking").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.radio_title, "Hiking").assertIsDisplayed()
 
             // Update State (Simulating the user leaving the group or being disconnected)
             stateFlow.value = stateFlow.value.copy(groupName = null, accessCode = null)
             composeTestRule.waitForIdle()
 
             // The LaunchedEffect inside the "radio" composable should pop back to "create"
-            composeTestRule.onNodeWithText("Create Group").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.create_group_title).assertIsDisplayed()
         }
     }
 
@@ -246,12 +244,12 @@ class MainActivityTest {
         )
 
         launchWithMockViewModel(initialState) { mockViewModel, _ ->
-            composeTestRule.onNodeWithText("GROUP: Hiking").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.radio_title, "Hiking").assertIsDisplayed()
 
             // 1. Anchor the touch to text that DOES NOT change during the press.
             // The "1 Peers Online" text is inside the same clickable Box, so this works perfectly
             // and preserves the Compose gesture state!
-            val pttNode = composeTestRule.onNodeWithText("1 Peers Online", substring = true)
+            val pttNode = composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_peers, 1, substring = true)
 
             pttNode.performTouchInput { down(center) }
             composeTestRule.waitForIdle()
@@ -281,12 +279,12 @@ class MainActivityTest {
         launchWithMockViewModel(initialState) { mockViewModel, _ ->
             // Wait for the UI to settle
             composeTestRule.waitForIdle()
-            composeTestRule.onNodeWithText("GROUP: Hiking").assertIsDisplayed()
+            composeTestRule.onNodeWithStringId(R.string.radio_title, "Hiking").assertIsDisplayed()
 
             // 1. The @Config annotation guarantees a large screen so the button center isn't clipped.
             // 2. We use performTouchInput { click() } to simulate a raw hardware tap,
             //    which safely bypasses any NavHost transition interceptors.
-            composeTestRule.onNodeWithText("Leave Group")
+            composeTestRule.onNodeWithStringId(R.string.radio_leave_group)
                 .assertIsDisplayed()
                 .performTouchInput { click() }
 

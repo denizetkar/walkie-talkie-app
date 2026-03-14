@@ -48,7 +48,7 @@ fun SettingsScreen(
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.back)
+                            contentDescription = stringResource(R.string.settings_back)
                         )
                     }
                     Spacer(modifier = Modifier.width(16.dp))
@@ -93,8 +93,8 @@ fun ServiceErrorScreen(onRetry: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Radio Service Failed to Start")
-        Button(onClick = onRetry) { Text("Retry") }
+        Text(stringResource(R.string.service_error_screen_title))
+        Button(onClick = onRetry) { Text(stringResource(R.string.service_error_screen_button)) }
     }
 }
 
@@ -112,9 +112,9 @@ fun PermissionRequiredScreen(onGrantClick: () -> Unit) {
             MaterialTheme.colorScheme.primary
         )
         Spacer(modifier = Modifier.height(16.dp))
-        Text("Permissions Needed", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.permission_required_title), style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
-        Button(onClick = onGrantClick) { Text("Grant Permissions") }
+        Button(onClick = onGrantClick) { Text(stringResource(R.string.permission_required_button)) }
     }
 }
 
@@ -143,10 +143,10 @@ fun CreateGroupScreen(
     if (error != null) {
         AlertDialog(
             onDismissRequest = onErrorAck,
-            title = { Text("Error") },
+            title = { Text(stringResource(R.string.create_group_alert_title)) },
             text = { Text(error) },
             confirmButton = {
-                Button(onClick = onErrorAck) { Text("OK") }
+                Button(onClick = onErrorAck) { Text(stringResource(R.string.create_group_alert_button)) }
             }
         )
     }
@@ -156,19 +156,19 @@ fun CreateGroupScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Create Group", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.create_group_title), style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
-            label = { Text("Group Name") },
+            label = { Text(stringResource(R.string.create_group_group_name)) },
             singleLine = true
         )
         Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
             value = codeInput,
             onValueChange = { if (it.length <= 4 && it.all { char -> char.isDigit() }) codeInput = it },
-            label = { Text("4-Digit Code (Optional)") },
+            label = { Text(stringResource(R.string.create_group_code_placeholder)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
         )
@@ -178,7 +178,7 @@ fun CreateGroupScreen(
             enabled = text.isNotBlank() && (codeInput.isEmpty() || codeInput.length == 4),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Go Live")
+            Text(stringResource(R.string.create_group_go_live))
         }
     }
 }
@@ -198,9 +198,9 @@ fun JoinGroupScreen(
     if (joinError != null) {
         AlertDialog(
             onDismissRequest = onJoinErrorAck,
-            title = { Text("Error") },
+            title = { Text(stringResource(R.string.join_group_alert_title)) },
             text = { Text(joinError) },
-            confirmButton = { Button(onClick = onJoinErrorAck) { Text("OK") } }
+            confirmButton = { Button(onClick = onJoinErrorAck) { Text(stringResource(R.string.join_group_alert_button)) } }
         )
     }
 
@@ -214,7 +214,7 @@ fun JoinGroupScreen(
                     modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("Connecting…", style = MaterialTheme.typography.headlineSmall)
+                    Text(stringResource(R.string.join_group_connecting), style = MaterialTheme.typography.headlineSmall)
                     Spacer(Modifier.height(16.dp))
                     CircularProgressIndicator()
                 }
@@ -225,16 +225,16 @@ fun JoinGroupScreen(
     if (selectedGroup != null) {
         AlertDialog(
             onDismissRequest = { selectedGroup = null },
-            title = { Text("Enter Access Code") },
+            title = { Text(stringResource(R.string.join_group_enter_code_title)) },
             text = {
                 Column {
-                    Text("Enter the access code for ${selectedGroup?.name}:")
+                    Text(stringResource(R.string.join_group_enter_code_body, selectedGroup!!.name))
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = codeInput,
                         onValueChange = { if (it.length <= 4 && it.all { char -> char.isDigit() }) codeInput = it },
                         singleLine = true,
-                        label = { Text("Code") },
+                        label = { Text(stringResource(R.string.join_group_enter_code_label)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
                 }
@@ -248,19 +248,19 @@ fun JoinGroupScreen(
                     },
                     enabled = codeInput.length == 4
                 ) {
-                    Text("Connect")
+                    Text(stringResource(R.string.join_group_enter_code_connect))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { selectedGroup = null }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.join_group_enter_code_cancel))
                 }
             }
         )
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Nearby Groups", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.join_group_nearby_groups_title), style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
         if (!isBluetoothEnabled) {
@@ -268,21 +268,21 @@ fun JoinGroupScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.BluetoothDisabled, contentDescription = null, modifier = Modifier.size(48.dp))
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Bluetooth is disabled")
+                    Text(stringResource(R.string.join_group_nearby_groups_no_bluetooth))
                 }
             }
         } else if (discoveredGroups.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Scanning...") }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(stringResource(R.string.join_group_nearby_groups_scanning)) }
         } else {
             LazyColumn {
                 items(discoveredGroups.size) { i ->
                     val group = discoveredGroups[i]
                     ListItem(
                         headlineContent = { Text(group.name, fontWeight = FontWeight.Bold) },
-                        supportingContent = { Text("Signal: ${group.rssi} dBm") },
+                        supportingContent = { Text(stringResource(R.string.join_group_nearby_groups_signal_level, group.rssi)) },
                         trailingContent = {
                             Button(onClick = { selectedGroup = group }) {
-                                Text("Join")
+                                Text(stringResource(R.string.join_group_nearby_groups_join))
                             }
                         }
                     )
@@ -324,12 +324,12 @@ fun RadioScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    "GROUP: ${groupName ?: "Unknown"}",
+                    stringResource(R.string.radio_title, groupName ?: stringResource(R.string.radio_unknown_group)),
                     style = MaterialTheme.typography.titleLarge
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "CODE: $accessCode",
+                    stringResource(R.string.radio_access_code, accessCode ?: ""),
                     style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -338,7 +338,7 @@ fun RadioScreen(
 
                 Row(modifier = Modifier.fillMaxWidth()) {
                     AudioDeviceSelector(
-                        label = "Audio Route",
+                        label = stringResource(R.string.radio_audio_route),
                         devices = availableAudioDevices,
                         selectedId = selectedAudioDevice,
                         onSelect = onDeviceSelect
@@ -378,10 +378,10 @@ fun RadioScreen(
                 )
                 Text(
                     text = when {
-                        !isBluetoothEnabled -> "BLUETOOTH OFF"
-                        !isNetworkReady -> "SEARCHING..."
-                        isPressed -> "TALKING"
-                        else -> "HOLD TO TALK"
+                        !isBluetoothEnabled -> stringResource(R.string.radio_ptt_ble_off)
+                        !isNetworkReady -> stringResource(R.string.radio_ptt_ble_searching)
+                        isPressed -> stringResource(R.string.radio_ptt_ble_talking)
+                        else -> stringResource(R.string.radio_ptt_ble_hold_to_talk)
                     },
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
@@ -390,7 +390,7 @@ fun RadioScreen(
 
                 if (isNetworkReady) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text("$peerCount Peers Online", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                    Text(stringResource(R.string.radio_ptt_ble_peers, peerCount), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
                 }
             }
         }
@@ -401,7 +401,7 @@ fun RadioScreen(
             onClick = onLeave,
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
         ) {
-            Text("Leave Group")
+            Text(stringResource(R.string.radio_leave_group))
         }
     }
 }
@@ -414,9 +414,10 @@ fun AudioDeviceSelector(
     onSelect: (Int) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val friendlyName = remember(selectedId, devices) {
-        if (selectedId == 0) "Default"
-        else devices.find { it.id == selectedId }?.displayName ?: "Unknown"
+    val friendlyName = if (selectedId == 0) {
+        stringResource(R.string.audio_device_selector_default)
+    } else {
+        devices.find { it.id == selectedId }?.displayName ?: stringResource(R.string.audio_device_selector_unknown)
     }
 
     Box {
@@ -444,7 +445,7 @@ fun AudioDeviceSelector(
         ) {
             // Option 0: Default
             DropdownMenuItem(
-                text = { Text("Default") },
+                text = { Text(stringResource(R.string.audio_device_selector_default)) },
                 onClick = { onSelect(0); expanded = false }
             )
             // Other Devices

@@ -1,6 +1,53 @@
 <resources>
     <string name="app_name">Walkie-Talkie-App</string>
-    <string name="settings_title">Einstellungen</string>
-    <string name="back">Zurück</string>
     <string name="language">Deutsch</string>
+
+    <string name="starting_audio_engine">Audio-Engine wird gestartet…</string>
+
+    <string name="navigation_create">Erstellen</string>
+    <string name="navigation_join">Beitreten</string>
+    <string name="navigation_radio">Funk</string>
+
+    <string name="service_error_screen_title">Radio-Service konnte nicht gestartet werden</string>
+    <string name="service_error_screen_button">Erneut versuchen</string>
+    <string name="permission_required_title">Berechtigungen benötigt</string>
+    <string name="permission_required_button">Grant Permissions</string>
+
+    <string name="create_group_alert_title">Fehler</string>
+    <string name="create_group_alert_button">OK</string>
+    <string name="create_group_title">Gruppe erstellen</string>
+    <string name="create_group_group_name">Gruppenname</string>
+    <string name="create_group_code_placeholder">4-stelliger Code (Optional)</string>
+    <string name="create_group_go_live">Live gehen</string>
+
+    <string name="join_group_alert_title">Fehler</string>
+    <string name="join_group_alert_button">OK</string>
+    <string name="join_group_connecting">Wird verbunden…</string>
+    <string name="join_group_enter_code_title">Zugangscode eingeben</string>
+    <string name="join_group_enter_code_body">Zugangscode für \'%1s\' eingeben:</string>
+    <string name="join_group_enter_code_label">Code</string>
+    <string name="join_group_enter_code_connect">Verbinden</string>
+    <string name="join_group_enter_code_cancel">Abbrechen</string>
+    <string name="join_group_nearby_groups_title">Gruppen in der Nähe</string>
+    <string name="join_group_nearby_groups_no_bluetooth">Bluetooth ausgeschaltet</string>
+    <string name="join_group_nearby_groups_scanning">Wird gescannt…</string>
+    <string name="join_group_nearby_groups_signal_level">Signal: %1d dBm</string>
+    <string name="join_group_nearby_groups_join">Verbinden</string>
+
+    <string name="radio_title">GRUPPE: %1s</string>
+    <string name="radio_unknown_group">Unbekannt</string>
+    <string name="radio_access_code">CODE: %1s</string>
+    <string name="radio_audio_route">Audio Gerät</string>
+    <string name="radio_ptt_ble_off">BLUETOOTH AUS</string>
+    <string name="radio_ptt_ble_searching">GESUCHT…</string>
+    <string name="radio_ptt_ble_talking">SPRECHEN</string>
+    <string name="radio_ptt_ble_hold_to_talk">DRÜCKEN</string>
+    <string name="radio_ptt_ble_peers">%1d Peers verbunden</string>
+    <string name="radio_leave_group">Gruppe verlassen</string>
+
+    <string name="audio_device_selector_default">Standard</string>
+    <string name="audio_device_selector_unknown">Unbekannt</string>
+
+    <string name="settings_title">Einstellungen</string>
+    <string name="settings_back">Zurück</string>
 </resources>

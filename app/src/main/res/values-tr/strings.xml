@@ -1,6 +1,53 @@
 <resources>
     <string name="app_name">Telsiz Uygulaması</string>
-    <string name="settings_title">Ayarlar</string>
-    <string name="back">Geri</string>
     <string name="language">Türkçe</string>
+
+    <string name="starting_audio_engine">Ses motoru başlatılıyor…</string>
+
+    <string name="navigation_create">Kur</string>
+    <string name="navigation_join">Katıl</string>
+    <string name="navigation_radio">Telsiz</string>
+
+    <string name="service_error_screen_title">Telsiz hizmeti başlatılamadı</string>
+    <string name="service_error_screen_button">Tekrar dene</string>
+    <string name="permission_required_title">İzinler gerekli</string>
+    <string name="permission_required_button">İzinleri ver</string>
+
+    <string name="create_group_alert_title">Hata</string>
+    <string name="create_group_alert_button">Tamam</string>
+    <string name="create_group_title">Grup kur</string>
+    <string name="create_group_group_name">Grup ismi</string>
+    <string name="create_group_code_placeholder">4 haneli kod (opsiyonel)</string>
+    <string name="create_group_go_live">Sohbete başla</string>
+
+    <string name="join_group_alert_title">Hata</string>
+    <string name="join_group_alert_button">Tamam</string>
+    <string name="join_group_connecting">Bağlanıyor…</string>
+    <string name="join_group_enter_code_title">Erişim kodunu gir</string>
+    <string name="join_group_enter_code_body">\'%1s\' için erişim kodu gir:</string>
+    <string name="join_group_enter_code_label">Kod</string>
+    <string name="join_group_enter_code_connect">Bağlan</string>
+    <string name="join_group_enter_code_cancel">İptal</string>
+    <string name="join_group_nearby_groups_title">Yakındaki gruplar</string>
+    <string name="join_group_nearby_groups_no_bluetooth">Bluetooth kapalı</string>
+    <string name="join_group_nearby_groups_scanning">Taranıyor…</string>
+    <string name="join_group_nearby_groups_signal_level">Sinyal: %1d dBm</string>
+    <string name="join_group_nearby_groups_join">Bağlan</string>
+
+    <string name="radio_title">GRUP: %1s</string>
+    <string name="radio_unknown_group">Bilinmeyen</string>
+    <string name="radio_access_code">KOD: %1s</string>
+    <string name="radio_audio_route">Ses Cihazı</string>
+    <string name="radio_ptt_ble_off">BLUETOOTH KAPALI</string>
+    <string name="radio_ptt_ble_searching">TARIYOR…</string>
+    <string name="radio_ptt_ble_talking">KONUŞ</string>
+    <string name="radio_ptt_ble_hold_to_talk">BAS KONUŞ</string>
+    <string name="radio_ptt_ble_peers">%1d kullanıcı bağlı</string>
+    <string name="radio_leave_group">Gruptan ayrıl</string>
+
+    <string name="audio_device_selector_default">Varsayılan</string>
+    <string name="audio_device_selector_unknown">Bilinmeyen</string>
+
+    <string name="settings_title">Ayarlar</string>
+    <string name="settings_back">Geri</string>
 </resources>

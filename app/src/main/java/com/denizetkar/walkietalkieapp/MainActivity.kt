@@ -139,7 +139,7 @@ fun WalkieTalkieApp() {
             state.serviceStartupFailed -> {
                 ServiceErrorScreen(onRetry = { viewModel.retryConnection() })
             }
-            !state.isServiceBound -> { LoadingScreen("Starting Audio Engine...") }
+            !state.isServiceBound -> { LoadingScreen(stringResource(R.string.starting_audio_engine)) }
             else -> {
                 WalkieTalkieNavHost(viewModel, state)
             }
@@ -160,20 +160,20 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
                 if (state.groupName == null) {
                     NavigationBarItem(
                         icon = { Icon(Icons.Filled.Add, null) },
-                        label = { Text("Create") },
+                        label = { Text(stringResource(R.string.navigation_create)) },
                         selected = currentRoute == "create",
-                        onClick = { navController.navigate("create") }
+                        onClick = { navController.navigate("create") { popUpTo("create") { inclusive = true } } }
                     )
                     NavigationBarItem(
                         icon = { Icon(Icons.Filled.Group, null) },
-                        label = { Text("Join") },
+                        label = { Text(stringResource(R.string.navigation_join)) },
                         selected = currentRoute == "join",
-                        onClick = { navController.navigate("join") }
+                        onClick = { navController.navigate("join") { popUpTo("join") { inclusive = true } } }
                     )
                 } else {
                     NavigationBarItem(
                         icon = { Icon(Icons.Filled.Radio, null) },
-                        label = { Text("Radio") },
+                        label = { Text(stringResource(R.string.navigation_radio)) },
                         selected = true,
                         onClick = { }
                     )
@@ -183,7 +183,7 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
                     icon = { Icon(Icons.Filled.Settings, null) },
                     label = { Text(stringResource(R.string.settings_title)) },
                     selected = currentRoute == "settings",
-                    onClick = { navController.navigate("settings") }
+                    onClick = { navController.navigate("settings") { popUpTo("settings") { inclusive = true } } }
                 )
             }
         }

@@ -47,19 +47,19 @@ class ScreensTest {
 
         // 1. Verify group is displayed and click join
         composeTestRule.onNodeWithText("Hiking").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Join").performClick()
+        composeTestRule.onNodeWithStringId(R.string.join_group_nearby_groups_join).performClick()
 
         // 2. Verify dialog appears but Connect is disabled initially
-        composeTestRule.onNodeWithText("Enter Access Code").assertIsDisplayed()
-        val connectButton = composeTestRule.onNodeWithText("Connect")
+        composeTestRule.onNodeWithStringId(R.string.join_group_enter_code_title).assertIsDisplayed()
+        val connectButton = composeTestRule.onNodeWithStringId(R.string.join_group_enter_code_connect)
         connectButton.assertIsNotEnabled()
 
         // 3. Enter incomplete code (3 digits)
-        composeTestRule.onNodeWithText("Code").performTextInput("123")
+        composeTestRule.onNodeWithStringId(R.string.join_group_enter_code_label).performTextInput("123")
         connectButton.assertIsNotEnabled()
 
         // 4. Enter valid code (4 digits) and submit
-        composeTestRule.onNodeWithText("Code").performTextInput("4") // Appends "4" to "123"
+        composeTestRule.onNodeWithStringId(R.string.join_group_enter_code_label).performTextInput("4") // Appends "4" to "123"
         connectButton.assertIsEnabled()
         connectButton.performClick()
 
@@ -81,7 +81,7 @@ class ScreensTest {
             )
         }
 
-        composeTestRule.onNodeWithText("Bluetooth is disabled").assertIsDisplayed()
+        composeTestRule.onNodeWithStringId(R.string.join_group_nearby_groups_no_bluetooth).assertIsDisplayed()
     }
 
     @Test
@@ -104,7 +104,7 @@ class ScreensTest {
         }
 
         // 1. Initial State
-        val pttButtonText = composeTestRule.onNodeWithText("HOLD TO TALK")
+        val pttButtonText = composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_hold_to_talk)
         pttButtonText.assertIsDisplayed()
 
         // 2. Press Down (Simulate holding the button)
@@ -115,11 +115,11 @@ class ScreensTest {
         composeTestRule.onNodeWithText("TALKING").assertIsDisplayed()
 
         // 3. Release
-        composeTestRule.onNodeWithText("TALKING").performTouchInput { up() }
+        composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_talking).performTouchInput { up() }
         composeTestRule.waitForIdle() // Allow recomposition
 
         assertFalse("onTalkStop should have fired", isTalking)
-        composeTestRule.onNodeWithText("HOLD TO TALK").assertIsDisplayed()
+        composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_hold_to_talk).assertIsDisplayed()
     }
 
     @Test
@@ -141,8 +141,8 @@ class ScreensTest {
             )
         }
 
-        // 1. Initial State should show "SEARCHING..." instead of "HOLD TO TALK"
-        val searchingText = composeTestRule.onNodeWithText("SEARCHING...")
+        // 1. Initial State should show "SEARCHING…" instead of "HOLD TO TALK"
+        val searchingText = composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_searching)
         searchingText.assertIsDisplayed()
 
         // 2. Try to click it
@@ -171,24 +171,24 @@ class ScreensTest {
 
         // 1. Error Dialog
         composeTestRule.onNodeWithText("Name taken").assertIsDisplayed()
-        composeTestRule.onNodeWithText("OK").performClick()
+        composeTestRule.onNodeWithStringId(R.string.create_group_alert_button).performClick()
         assertTrue("Error acknowledgment callback should fire", errorAcked)
 
         // 2. Input Validation
-        val goLiveBtn = composeTestRule.onNodeWithText("Go Live")
+        val goLiveBtn = composeTestRule.onNodeWithStringId(R.string.create_group_go_live)
         goLiveBtn.assertIsNotEnabled()
 
-        composeTestRule.onNodeWithText("Group Name").performTextInput("Hiking")
+        composeTestRule.onNodeWithStringId(R.string.create_group_group_name).performTextInput("Hiking")
 
         // Button is enabled because the code field is empty (valid)
         goLiveBtn.assertIsEnabled()
 
         // 3. Test Code Input Validation
-        composeTestRule.onNodeWithText("4-Digit Code (Optional)").performTextInput("123")
+        composeTestRule.onNodeWithStringId(R.string.create_group_code_placeholder).performTextInput("123")
         // Button should be disabled because code is incomplete (3 digits)
         goLiveBtn.assertIsNotEnabled()
 
-        composeTestRule.onNodeWithText("4-Digit Code (Optional)").performTextInput("4")
+        composeTestRule.onNodeWithStringId(R.string.create_group_code_placeholder).performTextInput("4")
         // Button should be enabled because code is complete (4 digits)
         goLiveBtn.assertIsEnabled()
 
@@ -223,7 +223,7 @@ class ScreensTest {
         clickables[clickables.fetchSemanticsNodes().size - 1].performClick()
 
         // Assert Dropdown options are visible
-        composeTestRule.onNodeWithText("Default").assertIsDisplayed()
+        composeTestRule.onNodeWithStringId(R.string.audio_device_selector_default).assertIsDisplayed()
         composeTestRule.onNodeWithText("Bluetooth Speaker").assertIsDisplayed()
 
         // Select the other device
@@ -239,8 +239,8 @@ class ScreensTest {
     fun `UtilityScreens - ServiceErrorScreen displays and fires callback`() {
         var retryClicked = false
         composeTestRule.setContent { ServiceErrorScreen(onRetry = { retryClicked = true }) }
-        composeTestRule.onNodeWithText("Radio Service Failed to Start").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Retry").performClick()
+        composeTestRule.onNodeWithStringId(R.string.service_error_screen_title).assertIsDisplayed()
+        composeTestRule.onNodeWithStringId(R.string.service_error_screen_button).performClick()
         assertTrue(retryClicked)
     }
 
@@ -248,8 +248,8 @@ class ScreensTest {
     fun `UtilityScreens - PermissionRequiredScreen displays and fires callback`() {
         var grantClicked = false
         composeTestRule.setContent { PermissionRequiredScreen(onGrantClick = { grantClicked = true }) }
-        composeTestRule.onNodeWithText("Permissions Needed").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Grant Permissions").performClick()
+        composeTestRule.onNodeWithStringId(R.string.permission_required_title).assertIsDisplayed()
+        composeTestRule.onNodeWithStringId(R.string.permission_required_button).performClick()
         assertTrue(grantClicked)
     }
 
@@ -278,7 +278,7 @@ class ScreensTest {
             )
         }
 
-        val btn = composeTestRule.onNodeWithText("BLUETOOTH OFF")
+        val btn = composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_off)
         btn.assertIsDisplayed()
         btn.performClick()
 
