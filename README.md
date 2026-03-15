@@ -1,6 +1,7 @@
 # 📻 Bluetooth LE Mesh Walkie-Talkie
 
 [![codecov](https://codecov.io/github/denizetkar/walkie-talkie-app/graph/badge.svg?token=5QA2EV971E)](https://codecov.io/github/denizetkar/walkie-talkie-app)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/denizetkar/walkie-talkie-app)
 
 **An offline, peer-to-peer voice communication app for Android, built with Kotlin and Rust.**
 
