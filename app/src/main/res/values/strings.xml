@@ -1,6 +1,10 @@
 <resources>
     <string name="app_name">Walkie Talkie App</string>
     <string name="language">English</string>
+    <string name="language_system">System Default</string>
+    <string name="language_english" translatable="false">English</string>
+    <string name="language_german" translatable="false">Deutsch</string>
+    <string name="language_turkish" translatable="false">Türkçe</string>
 
     <string name="starting_audio_engine">Starting Audio Engine…</string>
 
@@ -24,25 +28,25 @@
     <string name="join_group_alert_button">OK</string>
     <string name="join_group_connecting">Connecting…</string>
     <string name="join_group_enter_code_title">Enter Access Code</string>
-    <string name="join_group_enter_code_body">Enter the access code for %1s:</string>
+    <string name="join_group_enter_code_body">Enter the access code for \'%1$s\':</string>
     <string name="join_group_enter_code_label">Code</string>
     <string name="join_group_enter_code_connect">Connect</string>
     <string name="join_group_enter_code_cancel">Cancel</string>
     <string name="join_group_nearby_groups_title">Nearby Groups</string>
     <string name="join_group_nearby_groups_no_bluetooth">Bluetooth is disabled</string>
     <string name="join_group_nearby_groups_scanning">Scanning…</string>
-    <string name="join_group_nearby_groups_signal_level">Signal: %1d dBm</string>
+    <string name="join_group_nearby_groups_signal_level">Signal: %1$d dBm</string>
     <string name="join_group_nearby_groups_join">Join</string>
 
-    <string name="radio_title">GROUP: %1s</string>
+    <string name="radio_title">GROUP: %1$s</string>
     <string name="radio_unknown_group">Unknown</string>
-    <string name="radio_access_code">CODE: %1s</string>
+    <string name="radio_access_code">CODE: %1$s</string>
     <string name="radio_audio_route">Audio Route</string>
     <string name="radio_ptt_ble_off">BLUETOOTH OFF</string>
     <string name="radio_ptt_ble_searching">SEARCHING…</string>
     <string name="radio_ptt_ble_talking">TALKING</string>
     <string name="radio_ptt_ble_hold_to_talk">HOLD TO TALK</string>
-    <string name="radio_ptt_ble_peers">%1d Peers Online</string>
+    <string name="radio_ptt_ble_peers">%1$d Peers Online</string>
     <string name="radio_leave_group">Leave Group</string>
 
     <string name="audio_device_selector_default">Default</string>
@@ -50,4 +54,28 @@
 
     <string name="settings_title">Settings</string>
     <string name="settings_back">Back</string>
+
+    <string name="audio_device_earpiece">Phone Earpiece</string>
+    <string name="audio_device_speaker">Loudspeaker</string>
+    <string name="audio_device_wired_headset">Wired Headset</string>
+    <string name="audio_device_wired_headphones">Wired Headphones</string>
+    <string name="audio_device_bt_sco">Bluetooth Headset (%1$s)</string>
+    <string name="audio_device_bt_a2dp">Bluetooth Headphones (%1$s)</string>
+    <string name="audio_device_usb_device">USB Device (%1$s)</string>
+    <string name="audio_device_usb_headset">USB Headset (%1$s)</string>
+    <string name="audio_device_mic_phone">Phone Microphone</string>
+    <string name="audio_device_mic_generic">Phone Mic</string>
+    <string name="audio_device_unknown">Unknown Device</string>
+
+    <string name="notification_channel_name">Walkie Talkie Service</string>
+    <string name="notification_title">Walkie Talkie Active</string>
+    <string name="notification_content_live">Live: %1$s (%2$d Peers)</string>
+
+    <string name="error_connection_timeout">Connection Timed Out</string>
+    <string name="error_access_code_rejected">Access Code Rejected</string>
+    <string name="error_bt_radio">Bluetooth Radio Unavailable or Error</string>
+    <string name="error_bt_scanner">Bluetooth Scanner Unavailable</string>
+    <string name="error_bt_scanner_failed">Bluetooth Scanner Error: %1$d</string>
+    <string name="error_scan_too_frequent">Scanning too frequently. Please wait.</string>
+    <string name="toast_left_group">Left Group</string>
 </resources>

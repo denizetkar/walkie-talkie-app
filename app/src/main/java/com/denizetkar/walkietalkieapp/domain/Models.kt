@@ -1,16 +1,17 @@
 package com.denizetkar.walkietalkieapp.domain
 
-import com.denizetkar.walkietalkieapp.AudioDeviceUi
+import androidx.annotation.StringRes
+import com.denizetkar.walkietalkieapp.R
 
 // ===========================================================================
 // STATE (The Single Source of Truth)
 // ===========================================================================
 
-enum class AppLanguage(val tag: String, val displayName: String) {
-    SYSTEM("", "System Default"),
-    ENGLISH("en", "English"),
-    GERMAN("de", "Deutsch"),
-    TURKISH("tr", "Türkçe");
+enum class AppLanguage(val tag: String, @param:StringRes val displayNameRes: Int) {
+    SYSTEM("", R.string.language_system),
+    ENGLISH("en", R.string.language_english),
+    GERMAN("de", R.string.language_german),
+    TURKISH("tr", R.string.language_turkish);
 
     companion object {
         fun fromTag(tag: String?): AppLanguage {
@@ -20,6 +21,23 @@ enum class AppLanguage(val tag: String, val displayName: String) {
         }
     }
 }
+
+sealed interface AppError {
+    data object ConnectionTimeout : AppError
+    data object AccessCodeRejected : AppError
+    data object BluetoothRadioUnavailable : AppError
+    data object BluetoothScannerUnavailable : AppError
+    data class BluetoothScannerFailed(val errorCode: Int) : AppError
+    data class Unknown(val message: String) : AppError
+}
+
+// Raw data container for UI layer to resolve dynamically
+data class AudioDeviceUi(
+    val id: Int,
+    val type: Int,
+    val address: String,
+    val productName: String
+)
 
 /**
  * Represents the complete state of the application at any given point in time.
@@ -66,7 +84,7 @@ data class AppState(
      * Holds the error message if a Join attempt fails (Timeout/Rejected).
      * The UI observes this to show a dialog.
      */
-    val joinError: String? = null,
+    val joinError: AppError? = null,
 
     // --- Audio State ---
     /**
@@ -139,7 +157,7 @@ sealed class Action {
     // --- User Intents (UI -> Core) ---
     data class CreateGroup(val name: String, val code: String) : Action()
     data class JoinGroup(val name: String, val code: String) : Action()
-    data class LeaveGroup(val reason: String = "User Request") : Action()
+    data object LeaveGroup : Action()
     data class SetLanguage(val language: AppLanguage) : Action()  // UI -> Core (User Input)
 
     // Explicit scanning control for the "Join" screen
@@ -153,9 +171,9 @@ sealed class Action {
     // --- Network Events (Driver -> Core) ---
     data class PeerConnected(val peerId: PeerId) : Action()
     data class PeerDisconnected(val peerId: PeerId) : Action()
-    data class JoinGroupFailed(val reason: String, val isFatal: Boolean = true) : Action()
+    data class JoinGroupFailed(val error: AppError, val isFatal: Boolean = true) : Action()
     data object AckJoinError : Action()
-    data class ScanFailed(val reason: String) : Action()
+    data class ScanFailed(val error: AppError) : Action()
     data class BluetoothStateChanged(val enabled: Boolean) : Action()
 
     /**
@@ -254,7 +272,7 @@ sealed class Effect {
     }
 
     // --- UI Feedback ---
-    data class ShowToast(val message: String) : Effect()
+    data class ShowToast(@param:StringRes val messageRes: Int, val language: AppLanguage) : Effect()
 }
 
 enum class TransmissionStrategy {

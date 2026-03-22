@@ -2,6 +2,7 @@ package com.denizetkar.walkietalkieapp.logic
 
 import android.util.Log
 import com.denizetkar.walkietalkieapp.Config
+import com.denizetkar.walkietalkieapp.R
 import com.denizetkar.walkietalkieapp.domain.*
 import com.denizetkar.walkietalkieapp.protocol.Packet
 import kotlinx.coroutines.CoroutineDispatcher
@@ -143,13 +144,10 @@ class MeshController(
                     }
 
                     is Action.JoinGroupFailed -> {
-                        Log.e("MeshController", "Join Failed: ${action.reason}")
+                        Log.e("MeshController", "Join Failed: ${action.error}")
                         if (action.isFatal || currentState.session?.isJoinAttempt == true) {
                             _state.update {
-                                it.copy(
-                                    session = null,
-                                    joinError = action.reason
-                                )
+                                it.copy(session = null, joinError = action.error)
                             }
                         } else {
                             Log.w("MeshController", "Ignoring non-fatal JoinGroupFailed because session is established.")
@@ -161,7 +159,7 @@ class MeshController(
                     }
 
                     is Action.ScanFailed -> {
-                        Log.e("MeshController", "Scan Failed: ${action.reason}")
+                        Log.e("MeshController", "Scan Failed: ${action.error}")
 
                         if (currentState.session != null) {
                             // Critical failure during an active session -> Boot them out
@@ -169,14 +167,14 @@ class MeshController(
                                 it.copy(
                                     isBrowsing = false,
                                     session = null, // <--- Triggers UI Navigation to Home
-                                    joinError = "Scanning Failed: ${action.reason}"
+                                    joinError = action.error,
                                 )
                             }
                         }
                         else {
                             // Background browsing failed.
                             // DO NOT set isBrowsing = false. We preserve the user's intent so it auto-resumes!
-                            emit(Effect.ShowToast("Warning: Background Scanning Failed (${action.reason})"))
+                            emit(Effect.ShowToast(R.string.error_bt_scanner, state.value.language))
                         }
                     }
 
@@ -205,7 +203,7 @@ class MeshController(
                         packetCache.clear()
 
                         // 3. UI Feedback
-                        emit(Effect.ShowToast(action.reason))
+                        emit(Effect.ShowToast(R.string.toast_left_group, state.value.language))
                     }
 
                     is Action.SetLanguage -> _state.update { it.copy(language = action.language) }
@@ -464,7 +462,7 @@ class MeshController(
         if (session.isJoinAttempt && state.connectedPeers.isEmpty()) {
             if (now - session.startTime > Config.GROUP_JOIN_TIMEOUT) {
                 Log.w("MeshController", "Join Timeout: Could not find peers in ${Config.GROUP_JOIN_TIMEOUT}ms")
-                _state.update { it.copy(session = null, joinError = "Connection Timed Out") }
+                _state.update { it.copy(session = null, joinError = AppError.ConnectionTimeout) }
                 return
             }
         }

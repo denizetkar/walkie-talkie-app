@@ -10,7 +10,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import com.denizetkar.walkietalkieapp.AudioDeviceUi
+import com.denizetkar.walkietalkieapp.domain.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.domain.Action
 import kotlinx.coroutines.*
@@ -331,7 +331,7 @@ class VoiceManager(
         // Warning: getDevices is blocking. The Actor in init {} ensures this runs on IO thread.
         // We only scan OUTPUTS because setCommunicationDevice requires a sink.
         val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map {
-            AudioDeviceUi(it.id, it.toFriendlyName(isInput = false))
+            AudioDeviceUi(it.id, it.type, it.address, it.productName?.toString() ?: "")
         }
 
         // VALIDATION: Ghost Device Check
@@ -344,26 +344,5 @@ class VoiceManager(
 
         // Update UI
         dispatch(Action.AudioDevicesUpdated(outputs))
-    }
-
-    private fun AudioDeviceInfo.toFriendlyName(isInput: Boolean): String {
-        val name = address.ifBlank { productName.toString() }
-
-        val friendly = when (type) {
-            AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Phone Earpiece"
-            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Loudspeaker"
-            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset"
-            AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Headset ($name)"
-            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth Headphones ($name)"
-            AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Device ($name)"
-            AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset ($name)"
-            AudioDeviceInfo.TYPE_BUILTIN_MIC -> if (isInput) "Phone Microphone" else "Phone Mic"
-            else -> name
-        }
-
-        // Handle cases where name might still be empty or generic
-        val finalName = if (friendly.trim().isEmpty()) "Unknown Device" else friendly
-        return finalName
     }
 }

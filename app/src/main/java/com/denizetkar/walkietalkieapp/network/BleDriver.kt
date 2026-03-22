@@ -100,7 +100,7 @@ class BleDriver(
                         ))
                     }
                     is DiscoveryEvent.ScanFailed -> {
-                        dispatch(Action.ScanFailed("Async scan failure: ${event.errorCode}"))
+                        dispatch(Action.ScanFailed(AppError.BluetoothScannerFailed(event.errorCode)))
                     }
                 }
             }
@@ -263,6 +263,8 @@ class BleDriver(
     }
 
     private fun applyDriverConfig(config: DriverConfig) {
+        Log.d("BleDriver", "Driver Config: $config")
+
         // If Bluetooth is disabled, halt hardware operations but don't wipe internal state
         if (!config.isBluetoothEnabled) {
             advertiserModule.stop()
@@ -278,12 +280,12 @@ class BleDriver(
                 ownNodeId = config.ownNodeId,
                 networkId = config.netId,
                 hopsToRoot = config.hops,
-                isAvailable = !config.isFull
+                isAvailable = !config.isFull,
             )
             val success = advertiserModule.start(advertisingConfig)
             if (!success) {
                 Log.e("BleDriver", "CRITICAL: Advertising Requested but Failed.")
-                dispatch(Action.JoinGroupFailed("Bluetooth Radio Unavailable or Error"))
+                dispatch(Action.JoinGroupFailed(AppError.BluetoothRadioUnavailable))
             }
         } else {
             advertiserModule.stop()
@@ -293,7 +295,7 @@ class BleDriver(
             val success = discoveryModule.start()
             if (!success) {
                 Log.e("BleDriver", "CRITICAL: Scanning Requested but Failed.")
-                dispatch(Action.ScanFailed("Bluetooth Scanner Unavailable"))
+                dispatch(Action.ScanFailed(AppError.BluetoothScannerUnavailable))
             }
         } else {
             discoveryModule.stop()
@@ -447,7 +449,7 @@ class BleDriver(
                             // Kill the main loop immediately
                             peerJob.cancel(CancellationException("Client Error: ${event.reason}"))
                             if (event.reason is ConnectionFailure.AuthRejected) {
-                                dispatch(Action.JoinGroupFailed("Access Code Rejected", isFatal = false))
+                                dispatch(Action.JoinGroupFailed(AppError.AccessCodeRejected, isFatal = false))
                             }
                         }
                         else -> {}

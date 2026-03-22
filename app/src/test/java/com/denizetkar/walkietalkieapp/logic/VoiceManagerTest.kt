@@ -36,8 +36,8 @@ class VoiceManagerTest {
     private val testScope = TestScope(testDispatcher)
 
     private val actions = mutableListOf<Action>()
-    private val mockContext = mockk<Context>(relaxed = true)
 
+    private lateinit var mockContext: Context
     private lateinit var spyAudioManager: AudioManager
     private lateinit var capturedDeviceCallback: AudioDeviceCallback
 
@@ -50,6 +50,7 @@ class VoiceManagerTest {
         val realAudioManager = realContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         spyAudioManager = spyk(realAudioManager)
 
+        mockContext = spyk(realContext)  // Use a real Spy so resources resolve properly!
         every { mockContext.getSystemService(Context.AUDIO_SERVICE) } returns spyAudioManager
         every { spyAudioManager.getDevices(any()) } returns emptyArray()
 
@@ -141,7 +142,8 @@ class VoiceManagerTest {
 
         val firstInput = updateAction.devices.first()
         assertEquals("Should map device ID correctly", 42, firstInput.id)
-        assertEquals("Should map friendly name correctly", "Wired Headset", firstInput.displayName)
+        assertEquals("Should extract type natively", AudioDeviceInfo.TYPE_WIRED_HEADSET, firstInput.type)
+        assertEquals("Should map hardware name correctly", "Test Headset", firstInput.productName)
 
         manager.close()
     }
@@ -397,10 +399,10 @@ class VoiceManagerTest {
         org.junit.Assert.assertNotNull(updateAction)
 
         val devices = updateAction!!.devices
-        assertEquals("Phone Earpiece", devices.find { it.id == 1 }?.displayName)
-        assertEquals("Bluetooth Headset (AA:BB)", devices.find { it.id == 2 }?.displayName)
-        assertEquals("USB Device (USB DAC)", devices.find { it.id == 3 }?.displayName)
-        assertEquals("Loudspeaker", devices.find { it.id == 4 }?.displayName)
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, devices.find { it.id == 1 }?.type)
+        assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, devices.find { it.id == 2 }?.type)
+        assertEquals(AudioDeviceInfo.TYPE_USB_DEVICE, devices.find { it.id == 3 }?.type)
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, devices.find { it.id == 4 }?.type)
 
         manager.close()
     }

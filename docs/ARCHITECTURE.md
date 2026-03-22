@@ -29,6 +29,7 @@ The State is the **Single Source of Truth**. If it isn't in `AppState`, it doesn
 *   **Derived Properties:** We prefer derived data over cached data to prevent de-synchronization.
     *   *Bad:* `val isAdvertising: Boolean`
     *   *Good:* `val isAdvertising: Boolean get() = session != null`
+*   **Strongly Typed Constraints:** Error messaging is never passed as strings from the drivers. Errors are encoded as a `sealed interface AppError`. Translation and interpretation belong entirely in the UI presentation layer.
 
 ### The Reducer
 Logic is implemented as a pure function:
@@ -77,7 +78,7 @@ While State covers *persistent* configurations (Connections, Advertising), we ne
 *   **Definition:** Fire-and-forget commands emitted by the Core.
 *   **Scope:** Strictly limited to things that cannot be modeled as State.
     *   *Valid Effect:* `TransmitPacket(Payload)` (This is an event in time).
-    *   *Valid Effect:* `ShowToast("Error")`.
+    *   *Valid Effect:* `ShowToast(R.string.error, AppLanguage)` (Trigger UI feedback using strongly-typed resource IDs).
     *   *Invalid Effect:* `StartScanning` (This should be `state.isScanning = true`).
 
 ---
@@ -103,7 +104,8 @@ We optimize for BLE's small MTU (23-512 bytes).
 ```text
 ├── domain/            # The Pure World
 │   ├── State.kt       # The Data structures
-│   └── Actions.kt     # The Events
+│   ├── Actions.kt     # The Events
+│   └── AppError.kt    # The typed failure states
 ├── logic/             # The Brain
 │   ├── Reducer.kt     # The Pure Logic Function
 │   └── Actor.kt       # The Runtime (Coroutines)

@@ -11,6 +11,7 @@ import com.denizetkar.walkietalkieapp.bluetooth.BleDiscoveryModule
 import com.denizetkar.walkietalkieapp.bluetooth.GattClientHandler
 import com.denizetkar.walkietalkieapp.bluetooth.GattServerHandler
 import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.domain.AppError
 import com.denizetkar.walkietalkieapp.domain.AppState
 import com.denizetkar.walkietalkieapp.domain.Effect
 import com.denizetkar.walkietalkieapp.domain.SessionContext
@@ -274,7 +275,7 @@ class BleDriverTest {
 
         val errorAction = actions.filterIsInstance<Action.JoinGroupFailed>().lastOrNull()
         assertNotNull("Should emit JoinGroupFailed on Auth Error", errorAction)
-        assertTrue(errorAction!!.reason.contains("Rejected"))
+        assertEquals(AppError.AccessCodeRejected, errorAction!!.error)
     }
 
     @Test
@@ -591,11 +592,11 @@ class BleDriverTest {
         // 3. Assert the driver notified the Core of the failures
         assertTrue(
             "Should dispatch JoinGroupFailed when advertising fails",
-            actions.contains(Action.JoinGroupFailed("Bluetooth Radio Unavailable or Error"))
+            actions.contains(Action.JoinGroupFailed(AppError.BluetoothRadioUnavailable))
         )
         val scanFailAction = actions.filterIsInstance<Action.ScanFailed>().lastOrNull()
         assertNotNull("Should dispatch ScanFailed", scanFailAction)
-        assertTrue(scanFailAction!!.reason.contains("Bluetooth Scanner Unavailable"))
+        assertEquals(AppError.BluetoothScannerUnavailable, scanFailAction!!.error)
     }
 
     @Test
@@ -628,7 +629,8 @@ class BleDriverTest {
 
         val scanAction = actions.filterIsInstance<Action.ScanFailed>().lastOrNull()
         assertNotNull("Should bridge ScanFailed event", scanAction)
-        assertTrue(scanAction!!.reason.contains("6"))
+        assertTrue(scanAction!!.error is AppError.BluetoothScannerFailed)
+        assertEquals(6, (scanAction.error as AppError.BluetoothScannerFailed).errorCode)
 
         localDriver.close()
     }

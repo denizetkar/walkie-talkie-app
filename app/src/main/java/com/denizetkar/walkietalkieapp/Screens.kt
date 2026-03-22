@@ -1,5 +1,7 @@
 package com.denizetkar.walkietalkieapp
 
+import android.bluetooth.le.ScanCallback
+import android.media.AudioDeviceInfo
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,8 +25,48 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.denizetkar.walkietalkieapp.domain.AppError
 import com.denizetkar.walkietalkieapp.domain.AppLanguage
+import com.denizetkar.walkietalkieapp.domain.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
+
+// --- Resolvers (Recomposed cleanly on language change) ---
+
+@Composable
+fun AppError.resolveMessage(): String {
+    return when (this) {
+        is AppError.ConnectionTimeout -> stringResource(R.string.error_connection_timeout)
+        is AppError.AccessCodeRejected -> stringResource(R.string.error_access_code_rejected)
+        is AppError.BluetoothRadioUnavailable -> stringResource(R.string.error_bt_radio)
+        is AppError.BluetoothScannerUnavailable -> stringResource(R.string.error_bt_scanner)
+        is AppError.BluetoothScannerFailed -> if (this.errorCode == ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY) {
+            stringResource(R.string.error_scan_too_frequent)
+        } else {
+            stringResource(R.string.error_bt_scanner_failed, this.errorCode)
+        }
+        is AppError.Unknown -> this.message
+    }
+}
+
+@Composable
+fun AudioDeviceUi.toFriendlyName(): String {
+    val name = address.ifBlank { productName }
+    val friendly = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> stringResource(R.string.audio_device_earpiece)
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> stringResource(R.string.audio_device_speaker)
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> stringResource(R.string.audio_device_wired_headset)
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> stringResource(R.string.audio_device_wired_headphones)
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> stringResource(R.string.audio_device_bt_sco, name)
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> stringResource(R.string.audio_device_bt_a2dp, name)
+        AudioDeviceInfo.TYPE_USB_DEVICE -> stringResource(R.string.audio_device_usb_device, name)
+        AudioDeviceInfo.TYPE_USB_HEADSET -> stringResource(R.string.audio_device_usb_headset, name)
+        AudioDeviceInfo.TYPE_BUILTIN_MIC -> stringResource(R.string.audio_device_mic_generic)
+        else -> name
+    }
+    return friendly.ifBlank { stringResource(R.string.audio_device_unknown) }
+}
+
+// --- Screens ---
 
 @Composable
 fun SettingsScreen(
@@ -79,7 +121,7 @@ fun SettingsScreen(
                         onClick = { onLanguageSelected(lang) }
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = lang.displayName)
+                    Text(text = stringResource(id = lang.displayNameRes))
                 }
             }
         }
@@ -134,17 +176,18 @@ fun LoadingScreen(message: String) {
 @Composable
 fun CreateGroupScreen(
     onCreate: (String, String) -> Unit,
-    error: String?,
+    error: AppError?,
     onErrorAck: () -> Unit
 ) {
     var text by remember { mutableStateOf("") }
     var codeInput by remember { mutableStateOf("") }
 
-    if (error != null) {
+    val displayError = error?.resolveMessage()
+    if (displayError != null) {
         AlertDialog(
             onDismissRequest = onErrorAck,
             title = { Text(stringResource(R.string.create_group_alert_title)) },
-            text = { Text(error) },
+            text = { Text(displayError) },
             confirmButton = {
                 Button(onClick = onErrorAck) { Text(stringResource(R.string.create_group_alert_button)) }
             }
@@ -187,7 +230,7 @@ fun CreateGroupScreen(
 fun JoinGroupScreen(
     discoveredGroups: List<DiscoveredGroup>,
     isJoining: Boolean,
-    joinError: String?,
+    joinError: AppError?,
     isBluetoothEnabled: Boolean,
     onJoin: (DiscoveredGroup, String) -> Unit,
     onJoinErrorAck: () -> Unit
@@ -195,11 +238,12 @@ fun JoinGroupScreen(
     var selectedGroup by remember { mutableStateOf<DiscoveredGroup?>(null) }
     var codeInput by remember { mutableStateOf("") }
 
-    if (joinError != null) {
+    val displayJoinError = joinError?.resolveMessage()
+    if (displayJoinError != null) {
         AlertDialog(
             onDismissRequest = onJoinErrorAck,
             title = { Text(stringResource(R.string.join_group_alert_title)) },
-            text = { Text(joinError) },
+            text = { Text(displayJoinError) },
             confirmButton = { Button(onClick = onJoinErrorAck) { Text(stringResource(R.string.join_group_alert_button)) } }
         )
     }
@@ -417,7 +461,7 @@ fun AudioDeviceSelector(
     val friendlyName = if (selectedId == 0) {
         stringResource(R.string.audio_device_selector_default)
     } else {
-        devices.find { it.id == selectedId }?.displayName ?: stringResource(R.string.audio_device_selector_unknown)
+        devices.find { it.id == selectedId }?.toFriendlyName() ?: stringResource(R.string.audio_device_selector_unknown)
     }
 
     Box {
@@ -451,7 +495,7 @@ fun AudioDeviceSelector(
             // Other Devices
             devices.forEach { device ->
                 DropdownMenuItem(
-                    text = { Text(device.displayName) },
+                    text = { Text(device.toFriendlyName()) },
                     onClick = {
                         onSelect(device.id)
                         expanded = false

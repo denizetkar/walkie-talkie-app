@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">Telsiz Uygulaması</string>
+    <string name="language_system">Sistem varsayılanı</string>
     <string name="language">Türkçe</string>
 
     <string name="starting_audio_engine">Ses motoru başlatılıyor…</string>
@@ -24,25 +25,25 @@
     <string name="join_group_alert_button">Tamam</string>
     <string name="join_group_connecting">Bağlanıyor…</string>
     <string name="join_group_enter_code_title">Erişim kodunu gir</string>
-    <string name="join_group_enter_code_body">\'%1s\' için erişim kodu gir:</string>
+    <string name="join_group_enter_code_body">\'%1$s\' için erişim kodu gir:</string>
     <string name="join_group_enter_code_label">Kod</string>
     <string name="join_group_enter_code_connect">Bağlan</string>
     <string name="join_group_enter_code_cancel">İptal</string>
     <string name="join_group_nearby_groups_title">Yakındaki gruplar</string>
     <string name="join_group_nearby_groups_no_bluetooth">Bluetooth kapalı</string>
     <string name="join_group_nearby_groups_scanning">Taranıyor…</string>
-    <string name="join_group_nearby_groups_signal_level">Sinyal: %1d dBm</string>
+    <string name="join_group_nearby_groups_signal_level">Sinyal: %1$d dBm</string>
     <string name="join_group_nearby_groups_join">Bağlan</string>
 
-    <string name="radio_title">GRUP: %1s</string>
+    <string name="radio_title">GRUP: %1$s</string>
     <string name="radio_unknown_group">Bilinmeyen</string>
-    <string name="radio_access_code">KOD: %1s</string>
+    <string name="radio_access_code">KOD: %1$s</string>
     <string name="radio_audio_route">Ses Cihazı</string>
     <string name="radio_ptt_ble_off">BLUETOOTH KAPALI</string>
     <string name="radio_ptt_ble_searching">TARIYOR…</string>
     <string name="radio_ptt_ble_talking">KONUŞ</string>
     <string name="radio_ptt_ble_hold_to_talk">BAS KONUŞ</string>
-    <string name="radio_ptt_ble_peers">%1d kullanıcı bağlı</string>
+    <string name="radio_ptt_ble_peers">%1$d kullanıcı bağlı</string>
     <string name="radio_leave_group">Gruptan ayrıl</string>
 
     <string name="audio_device_selector_default">Varsayılan</string>
@@ -50,4 +51,28 @@
 
     <string name="settings_title">Ayarlar</string>
     <string name="settings_back">Geri</string>
+
+    <string name="audio_device_earpiece">Telefon Ahizesi</string>
+    <string name="audio_device_speaker">Hoparlör</string>
+    <string name="audio_device_wired_headset">Kablolu Kulaklık</string>
+    <string name="audio_device_wired_headphones">Kablolu Kulaklık</string>
+    <string name="audio_device_bt_sco">Bluetooth Kulaklık (%1$s)</string>
+    <string name="audio_device_bt_a2dp">Bluetooth Kulaklık (%1$s)</string>
+    <string name="audio_device_usb_device">USB Cihazı (%1$s)</string>
+    <string name="audio_device_usb_headset">USB Kulaklık (%1$s)</string>
+    <string name="audio_device_mic_phone">Telefon Mikrofonu</string>
+    <string name="audio_device_mic_generic">Telefon Mikrofonu</string>
+    <string name="audio_device_unknown">Bilinmeyen Cihaz</string>
+
+    <string name="notification_channel_name">Walkie Talkie Servisi</string>
+    <string name="notification_title">Walkie Talkie Aktif</string>
+    <string name="notification_content_live">Canlı: %1$s (%2$d Kişi)</string>
+
+    <string name="error_connection_timeout">Bağlantı Zaman Aşımına Uğradı</string>
+    <string name="error_access_code_rejected">Erişim Kodu Reddedildi</string>
+    <string name="error_bt_radio">Bluetooth Radyosu Kullanılamıyor veya Hatalı</string>
+    <string name="error_bt_scanner">Bluetooth Tarayıcı Kullanılamıyor</string>
+    <string name="error_bt_scanner_failed">Bluetooth Tarayıcı Hatası: %1$d</string>
+    <string name="error_scan_too_frequent">Çok sık taranıyor. Lütfen bekleyin.</string>
+    <string name="toast_left_group">Gruptan Ayrıldın</string>
 </resources>

@@ -1,14 +1,18 @@
 package com.denizetkar.walkietalkieapp
 
+import android.media.AudioDeviceInfo
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import com.denizetkar.walkietalkieapp.domain.AppError
+import com.denizetkar.walkietalkieapp.domain.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -164,13 +168,13 @@ class ScreensTest {
                     createdName = name
                     createdCode = code
                 },
-                error = "Name taken", // Test error dialog at the same time
+                error = AppError.BluetoothRadioUnavailable, // Strongly Typed Error
                 onErrorAck = { errorAcked = true }
             )
         }
 
-        // 1. Error Dialog
-        composeTestRule.onNodeWithText("Name taken").assertIsDisplayed()
+        // 1. Error Dialog checks the localized string
+        composeTestRule.onNodeWithStringId(R.string.error_bt_radio).assertIsDisplayed()
         composeTestRule.onNodeWithStringId(R.string.create_group_alert_button).performClick()
         assertTrue("Error acknowledgment callback should fire", errorAcked)
 
@@ -202,8 +206,8 @@ class ScreensTest {
     fun `AudioDeviceSelector - Expands dropdown and selects item`() {
         var selectedId = -1
         val devices = listOf(
-            AudioDeviceUi(1, "Wired Headset"),
-            AudioDeviceUi(2, "Bluetooth Speaker")
+            AudioDeviceUi(1, AudioDeviceInfo.TYPE_WIRED_HEADSET, "", "Wired Headset"),
+            AudioDeviceUi(2, AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "AA:BB", "Bluetooth Speaker")
         )
 
         composeTestRule.setContent {
@@ -224,10 +228,10 @@ class ScreensTest {
 
         // Assert Dropdown options are visible
         composeTestRule.onNodeWithStringId(R.string.audio_device_selector_default).assertIsDisplayed()
-        composeTestRule.onNodeWithText("Bluetooth Speaker").assertIsDisplayed()
+        composeTestRule.onAllNodesWithStringId(R.string.audio_device_wired_headset).onFirst().assertIsDisplayed()
 
-        // Select the other device
-        composeTestRule.onNodeWithText("Bluetooth Speaker").performClick()
+        // Select the other device using the localized resolution
+        composeTestRule.onNodeWithStringId(R.string.audio_device_bt_sco, "AA:BB").performClick()
 
         // Assert callback
         assertEquals(2, selectedId)

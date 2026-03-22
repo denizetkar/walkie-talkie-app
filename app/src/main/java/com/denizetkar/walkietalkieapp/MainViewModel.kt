@@ -17,8 +17,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.domain.AppError
 import com.denizetkar.walkietalkieapp.domain.AppLanguage
 import com.denizetkar.walkietalkieapp.domain.AppState
+import com.denizetkar.walkietalkieapp.domain.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 import com.denizetkar.walkietalkieapp.logic.MeshController
 import kotlinx.coroutines.CoroutineDispatcher
@@ -34,9 +36,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
-
-// Shared Data Class for UI
-data class AudioDeviceUi(val id: Int, val displayName: String)
 
 /**
  * UI State Model.
@@ -56,7 +55,7 @@ data class AppUiState(
     // UI Logic
     val isScanning: Boolean = false,
     val isJoining: Boolean = false,
-    val joinError: String? = null,
+    val joinError: AppError? = null,
 
     val discoveredGroups: List<DiscoveredGroup> = emptyList(),
 
@@ -242,7 +241,7 @@ class MainViewModel(
     }
 
     fun leaveGroup() {
-        dispatch(Action.LeaveGroup())
+        dispatch(Action.LeaveGroup)
     }
 
     fun startTalking() = dispatch(Action.SetMic(true))

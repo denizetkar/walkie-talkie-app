@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import app.cash.turbine.test
 import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.domain.AppError
 import com.denizetkar.walkietalkieapp.domain.AppState
 import com.denizetkar.walkietalkieapp.domain.Effect
 import com.denizetkar.walkietalkieapp.domain.SessionContext
@@ -196,14 +197,11 @@ class MainViewModelTest {
             awaitItem() // Consume current "Ready" state
 
             // ACTION: Core reports error
-            controllerState.value = AppState(
-                myself = 1u,
-                joinError = "Timeout"
-            )
+            controllerState.value = AppState(myself = 1u, joinError = AppError.ConnectionTimeout)
 
             // ASSERT: UI shows error
             val errorState = awaitItem()
-            assertEquals("Timeout", errorState.joinError)
+            assertEquals(AppError.ConnectionTimeout, errorState.joinError)
         }
     }
 
@@ -219,7 +217,7 @@ class MainViewModelTest {
 
         viewModel.leaveGroup()
 
-        verify { binder.dispatchAction(Action.LeaveGroup()) }
+        verify { binder.dispatchAction(Action.LeaveGroup) }
     }
 
     @Test

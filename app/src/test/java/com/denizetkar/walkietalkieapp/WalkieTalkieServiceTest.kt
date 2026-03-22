@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.denizetkar.walkietalkieapp.domain.Action
+import com.denizetkar.walkietalkieapp.logic.VoiceManager
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
@@ -43,10 +44,10 @@ class WalkieTalkieServiceTest {
         every { initLogger() } just Runs
 
         // Prevent native crash leakage
-        io.mockk.mockkConstructor(com.denizetkar.walkietalkieapp.logic.VoiceManager::class)
-        every { anyConstructed<com.denizetkar.walkietalkieapp.logic.VoiceManager>().bind(any(), any()) } just Runs
-        every { anyConstructed<com.denizetkar.walkietalkieapp.logic.VoiceManager>().renderAudio(any()) } just Runs
-        every { anyConstructed<com.denizetkar.walkietalkieapp.logic.VoiceManager>().close() } just Runs
+        io.mockk.mockkConstructor(VoiceManager::class)
+        every { anyConstructed<VoiceManager>().bind(any(), any()) } just Runs
+        every { anyConstructed<VoiceManager>().renderAudio(any()) } just Runs
+        every { anyConstructed<VoiceManager>().close() } just Runs
 
         context = ApplicationProvider.getApplicationContext()
         serviceController = Robolectric.buildService(WalkieTalkieService::class.java)
@@ -102,7 +103,7 @@ class WalkieTalkieServiceTest {
         assertEquals("Walkie Talkie Active", notification.extras.getString("android.title"))
 
         // 3. Dispatch Action to leave the group
-        binder.dispatchAction(Action.LeaveGroup())
+        binder.dispatchAction(Action.LeaveGroup)
 
         withTimeout(3000) { controller.state.first { it.session == null } }
 

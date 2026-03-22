@@ -5,8 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
+import android.content.res.Resources
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -21,6 +24,14 @@ import com.denizetkar.walkietalkieapp.network.BleDriver
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import uniffi.walkie_talkie_engine.initLogger
+import java.util.Locale
+
+private data class ForegroundChanges(
+    val hasSession: Boolean,
+    val groupName: String?,
+    val peerCount: Int,
+    val language: AppLanguage,
+)
 
 class WalkieTalkieService : Service() {
 
@@ -147,8 +158,9 @@ class WalkieTalkieService : Service() {
                 when (effect) {
                     is Effect.RenderAudio -> voiceManagerInstance.renderAudio(effect.data)
                     is Effect.ShowToast -> {
+                        val ctx = getLocalizedContext(effect.language)
                         mainScope.launch {
-                            Toast.makeText(this@WalkieTalkieService, effect.message, Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@WalkieTalkieService, ctx.getString(effect.messageRes), Toast.LENGTH_SHORT).show()
                         }
                     }
                     else -> {} // Handled by bound drivers
@@ -158,13 +170,23 @@ class WalkieTalkieService : Service() {
 
         // --- 3. Lifecycle & Foreground Management ---
         serviceScope.launch {
-            controller.state.collectLatest { state ->
-                if (state.session != null) {
-                    promoteToForeground(state)
-                } else {
-                    demoteToBackground()
+            controller.state
+                .map { state ->
+                    ForegroundChanges(
+                        hasSession = state.session != null,
+                        groupName = state.session?.groupName,
+                        peerCount = state.connectedPeers.size,
+                        language = state.language,
+                    )
                 }
-            }
+                .distinctUntilChanged()
+                .collectLatest { changes ->
+                    if (changes.hasSession) {
+                        promoteToForeground(changes)
+                    } else {
+                        demoteToBackground()
+                    }
+                }
         }
     }
 
@@ -193,10 +215,27 @@ class WalkieTalkieService : Service() {
         super.onDestroy()
     }
 
-    private fun promoteToForeground(state: AppState) {
+    private fun getLocalizedContext(language: AppLanguage): Context {
+        val locale = if (language == AppLanguage.SYSTEM) {
+            Resources.getSystem().configuration.locales.get(0)
+        } else {
+            Locale.forLanguageTag(language.tag)
+        }
+        val config = Configuration(resources.configuration).apply {
+            setLocale(locale)
+        }
+        return createConfigurationContext(config)
+    }
+
+    private fun promoteToForeground(changes: ForegroundChanges) {
+        val localizedContext = getLocalizedContext(changes.language)
         val channelId = "WalkieTalkieChannel"
         val manager = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(channelId, "Walkie Talkie Service", NotificationManager.IMPORTANCE_LOW)
+        val channel = NotificationChannel(
+            channelId,
+            localizedContext.getString(R.string.notification_channel_name),
+            NotificationManager.IMPORTANCE_LOW,
+        )
         manager.createNotificationChannel(channel)
 
         // Ensure we resume the existing Activity instead of creating a new one.
@@ -211,13 +250,13 @@ class WalkieTalkieService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val peerCount = state.connectedPeers.size
-        val groupName = state.session?.groupName ?: "Unknown"
+        val peerCount = changes.peerCount
+        val groupName = changes.groupName ?: localizedContext.getString(R.string.radio_unknown_group)
 
-        val contentText = "Live: $groupName ($peerCount Peers)"
+        val contentText = localizedContext.getString(R.string.notification_content_live, groupName, peerCount)
 
-        val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Walkie Talkie Active")
+        val notification: Notification = NotificationCompat.Builder(localizedContext, channelId)
+            .setContentTitle(localizedContext.getString(R.string.notification_title))
             .setContentText(contentText)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
