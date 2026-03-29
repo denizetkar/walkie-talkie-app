@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
 import android.os.ParcelUuid
@@ -66,7 +67,7 @@ class BleDiscoveryModuleTest {
         val result = discoveryModule.start()
 
         assertFalse("Should block scan start to prevent Android OS Exception", result)
-        verify(exactly = 0) { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), any<ScanCallback>()) }
+        verify(exactly = 0) { mockScanner.startScan(any<List<ScanFilter>>(), any(), any<ScanCallback>()) }
 
         // Clean up the static mock so it doesn't affect other tests
         unmockkStatic("com.denizetkar.walkietalkieapp.utils.RetryKt")
@@ -75,7 +76,7 @@ class BleDiscoveryModuleTest {
     @Test
     fun `Deserialization - Successfully parses payload into TransportNode`() = testScope.runTest {
         val cbSlot = slot<ScanCallback>()
-        every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), capture(cbSlot)) } just runs
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), capture(cbSlot)) } just runs
 
         assertTrue("Should start scanning successfully", discoveryModule.start())
 
@@ -129,7 +130,7 @@ class BleDiscoveryModuleTest {
     @Test
     fun `Resilience - Silently drops truncated or malformed payloads`() = testScope.runTest {
         val cbSlot = slot<ScanCallback>()
-        every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), capture(cbSlot)) } just runs
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), capture(cbSlot)) } just runs
 
         discoveryModule.start()
 
@@ -157,6 +158,39 @@ class BleDiscoveryModuleTest {
     }
 
     @Test
+    fun `Resilience - Silently drops advertisements with truncated Manufacturer Data`() = testScope.runTest {
+        val cbSlot = slot<ScanCallback>()
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), capture(cbSlot)) } just runs
+
+        discoveryModule.start()
+
+        // 1. Valid Service Data (10 bytes)
+        val validServiceData = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(1).putInt(1).put(1).put(1).array()
+
+        // 2. INVALID Manufacturer Data (Only 3 bytes! Needs at least 4 for Group ID)
+        val badManufacturerData = byteArrayOf(0x01, 0x02, 0x03)
+
+        val mockRecord = mockk<ScanRecord> {
+            every { serviceData } returns mapOf(ParcelUuid(Config.APP_SERVICE_UUID) to validServiceData)
+            every { getManufacturerSpecificData(Config.BLE_MANUFACTURER_ID) } returns badManufacturerData
+        }
+        val mockResult = mockk<ScanResult> {
+            every { device } returns mockk { every { address } returns "AA:BB:CC:DD:EE:FF" }
+            every { scanRecord } returns mockRecord
+            every { rssi } returns -42
+        }
+
+        discoveryModule.events.test {
+            // Trigger callback
+            cbSlot.captured.onScanResult(1, mockResult)
+
+            // Assert it drops silently and DOES NOT crash with BufferUnderflowException
+            expectNoEvents()
+        }
+    }
+
+    @Test
     fun `Hardware Unavailable - Returns false if scanner is null`() {
         // Simulate Bluetooth disabled state
         every { mockAdapter.bluetoothLeScanner } returns null
@@ -166,14 +200,14 @@ class BleDiscoveryModuleTest {
     @Test
     fun `Start Scan Exception - Caught and returns false`() {
         // Simulate an internal Android BLE stack crash
-        every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), any<ScanCallback>()) } throws IllegalStateException("Mock Crash")
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), any<ScanCallback>()) } throws IllegalStateException("Mock Crash")
         assertFalse("Should catch exception and return false", discoveryModule.start())
     }
 
     @Test
     fun `Batch Results - Processes multiple scan results correctly`() = testScope.runTest {
         val cbSlot = slot<ScanCallback>()
-        every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), capture(cbSlot)) } just runs
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), capture(cbSlot)) } just runs
         discoveryModule.start()
 
         // Create a valid dummy payload
@@ -210,7 +244,7 @@ class BleDiscoveryModuleTest {
     @Test
     fun `Scan Failed - Emits ScanFailed event and clears active session so it can restart`() = testScope.runTest {
         val cbSlot = slot<ScanCallback>()
-        every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), capture(cbSlot)) } just runs
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), capture(cbSlot)) } just runs
 
         // 1. Start successfully
         assertTrue(discoveryModule.start())
@@ -226,15 +260,15 @@ class BleDiscoveryModuleTest {
 
         // 3. Since the session was cleared, calling start() again should succeed
         // (If it wasn't cleared, the Idempotency check would return true without calling startScan again)
-        every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), any<ScanCallback>()) } just runs
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), any<ScanCallback>()) } just runs
         assertTrue(discoveryModule.start())
-        verify(exactly = 2) { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), any<ScanCallback>()) }
+        verify(exactly = 2) { mockScanner.startScan(any<List<ScanFilter>>(), any(), any<ScanCallback>()) }
     }
 
     @Test
     fun `Lifecycle - stop calls scanner stopScan`() = testScope.runTest {
         val cbSlot = slot<ScanCallback>()
-        every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), capture(cbSlot)) } just runs
+        every { mockScanner.startScan(any<List<ScanFilter>>(), any(), capture(cbSlot)) } just runs
         every { mockScanner.stopScan(any<ScanCallback>()) } just runs
 
         discoveryModule.start()

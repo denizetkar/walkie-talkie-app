@@ -279,6 +279,25 @@ class MainViewModelTest {
     }
 
     @Test
+    fun `Actions - Create Group generates random Group ID and Access Code`() = runTest {
+        connectService()
+
+        viewModel.createGroup("Hiking", "")
+
+        val actionSlot = slot<Action.CreateGroup>()
+        verify { binder.dispatchAction(capture(actionSlot)) }
+
+        val capturedAction = actionSlot.captured
+        assertEquals("Hiking", capturedAction.name)
+
+        // Assert Code generation
+        assertTrue("Generated code should be 4 digits", capturedAction.code.matches(Regex("\\d{4}")))
+
+        // Assert Group ID generation (Probability of generating exactly 0u is 1 in 4.29 billion)
+        assertTrue("Should generate a valid random Group ID", capturedAction.groupId != 0u)
+    }
+
+    @Test
     fun `Lifecycle - onCleared unbinds the service`() = runTest {
         connectService() // Connects and marks isServiceBound = true
 

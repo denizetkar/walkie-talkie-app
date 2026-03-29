@@ -544,6 +544,29 @@ class MeshControllerTest {
     }
 
     @Test
+    fun `Discovery - Distinguishes groups with the same name but different Group IDs`() = testScope.runTest {
+        val sharedName = "Campfire"
+
+        // 1. First group named "Campfire"
+        val groupA = DiscoveredGroup("11:22:33:44:55:66", 0x11112222u, sharedName, -80, 100u, 101u, simulationTime)
+        controller.dispatch(Action.AdvertisementSeen(groupA))
+        runCurrent()
+
+        // 2. Second group ALSO named "Campfire", but different ID
+        val groupB = DiscoveredGroup("AA:BB:CC:DD:EE:FF", 0x99998888u, sharedName, -60, 200u, 201u, simulationTime)
+        controller.dispatch(Action.AdvertisementSeen(groupB))
+        runCurrent()
+
+        // 3. Assert BOTH exist in the list
+        val discovered = controller.state.value.discoveredGroups
+        assertEquals("Should track both groups independently despite identical names", 2, discovered.size)
+
+        // Ensure both unique IDs are present
+        assertTrue(discovered.any { it.groupId == 0x11112222u })
+        assertTrue(discovered.any { it.groupId == 0x99998888u })
+    }
+
+    @Test
     fun `Discovery Eviction - Stale advertisements are cleared`() = testScope.runTest {
         // 1. Discover a group
         val ad = DiscoveredGroup("MAC", 100u, "Hiking", -50, 100u, 101u, simulationTime)
