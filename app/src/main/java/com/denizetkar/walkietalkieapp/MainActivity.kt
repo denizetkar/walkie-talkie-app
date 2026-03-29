@@ -232,6 +232,7 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
                 }
 
                 RadioScreen(
+                    groupId = state.groupId,
                     groupName = state.groupName,
                     accessCode = state.accessCode,
                     peerCount = state.peerCount,

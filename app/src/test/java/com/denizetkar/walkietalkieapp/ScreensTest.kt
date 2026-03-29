@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import com.denizetkar.walkietalkieapp.domain.AppError
@@ -95,6 +96,7 @@ class ScreensTest {
 
         composeTestRule.setContent {
             RadioScreen(
+                groupId = 100u,
                 groupName = "Hiking",
                 accessCode = "1234",
                 peerCount = 1, // Network is ready
@@ -133,6 +135,7 @@ class ScreensTest {
 
         composeTestRule.setContent {
             RadioScreen(
+                groupId = 100u,
                 groupName = "Hiking",
                 accessCode = "1234",
                 peerCount = 0, // Network is disconnected / lonely
@@ -204,6 +207,42 @@ class ScreensTest {
     }
 
     @Test
+    fun `CreateGroupScreen - Enforces Byte Limit on Group Name`() {
+        composeTestRule.setContent {
+            CreateGroupScreen(onCreate = { _, _ -> }, error = null, onErrorAck = {})
+        }
+
+        val nameInput = composeTestRule.onNodeWithStringId(R.string.create_group_group_name)
+
+        // 1. Type 20 normal ASCII characters (20 bytes) - Should be accepted
+        val exactly20 = "12345678901234567890"
+        nameInput.performTextInput(exactly20)
+        composeTestRule.onNodeWithText(exactly20).assertIsDisplayed()
+
+        // 2. Try to type 1 more character (21st byte)
+        // By NOT clearing the text, performTextInput appends "X" to the existing 20 characters.
+        // The UI will reject the state change, effectively ignoring the keystroke.
+        nameInput.performTextInput("X")
+
+        // Assert the 'X' was not accepted; the text remains exactly 20 characters
+        composeTestRule.onNodeWithText(exactly20).assertIsDisplayed()
+
+        // Clear the field for the next test case
+        nameInput.performTextClearance()
+
+        // 3. UTF-8 Byte Check: A German 'ü' is 2 bytes.
+        // 10 'ü's = 20 bytes. Should be accepted.
+        val tenUmlauts = "üüüüüüüüüü"
+        nameInput.performTextInput(tenUmlauts)
+        composeTestRule.onNodeWithText(tenUmlauts).assertIsDisplayed()
+
+        // Try to add one more 'ü' (22 bytes total) -> Should be rejected
+        nameInput.performTextInput("ü")
+        // Should STILL just be 10 umlauts
+        composeTestRule.onNodeWithText(tenUmlauts).assertIsDisplayed()
+    }
+
+    @Test
     fun `AudioDeviceSelector - Expands dropdown and selects item`() {
         var selectedId = -1
         val devices = listOf(
@@ -270,6 +309,7 @@ class ScreensTest {
 
         composeTestRule.setContent {
             RadioScreen(
+                groupId = 100u,
                 groupName = "Hiking",
                 accessCode = "1234",
                 peerCount = 1,

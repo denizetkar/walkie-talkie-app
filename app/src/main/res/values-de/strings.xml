@@ -18,6 +18,7 @@
     <string name="create_group_alert_button">OK</string>
     <string name="create_group_title">Gruppe erstellen</string>
     <string name="create_group_group_name">Gruppenname</string>
+    <string name="create_group_bytes_used">%1$d / %2$d Bytes</string>
     <string name="create_group_code_placeholder">4-stelliger Code (Optional)</string>
     <string name="create_group_go_live">Live gehen</string>
 
@@ -37,6 +38,7 @@
     <string name="join_group_nearby_groups_join">Verbinden</string>
 
     <string name="radio_title">GRUPPE: %1$s</string>
+    <string name="radio_group_id">ID: #%1$s</string>
     <string name="radio_unknown_group">Unbekannt</string>
     <string name="radio_access_code">CODE: %1$s</string>
     <string name="radio_audio_route">Audio Gerät</string>

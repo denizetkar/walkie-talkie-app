@@ -195,6 +195,7 @@ fun CreateGroupScreen(
         )
     }
 
+    val currentBytes = text.toByteArray(Charsets.UTF_8).size
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.Center,
@@ -204,9 +205,19 @@ fun CreateGroupScreen(
         Spacer(modifier = Modifier.height(16.dp))
         OutlinedTextField(
             value = text,
-            onValueChange = { text = it },
+            onValueChange = { newText ->
+                if (newText.toByteArray(Charsets.UTF_8).size <= Config.MAX_ADVERTISING_NAME_BYTES) {
+                    text = newText
+                }
+            },
             label = { Text(stringResource(R.string.create_group_group_name)) },
-            singleLine = true
+            singleLine = true,
+            supportingText = {
+                Text(
+                    text = stringResource(R.string.create_group_bytes_used, currentBytes, Config.MAX_ADVERTISING_NAME_BYTES),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         )
         Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
@@ -352,6 +363,7 @@ fun JoinGroupScreen(
 
 @Composable
 fun RadioScreen(
+    groupId: UInt?,
     groupName: String?,
     accessCode: String?,
     peerCount: Int,
@@ -384,6 +396,14 @@ fun RadioScreen(
                     stringResource(R.string.radio_title, groupName ?: stringResource(R.string.radio_unknown_group)),
                     style = MaterialTheme.typography.titleLarge
                 )
+                if (groupId != null) {
+                    val hexId = groupId.toString(16).padStart(8, '0').uppercase()
+                    Text(
+                        stringResource(R.string.radio_group_id, hexId),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     stringResource(R.string.radio_access_code, accessCode ?: ""),

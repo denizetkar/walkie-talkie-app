@@ -18,6 +18,7 @@
     <string name="create_group_alert_button">Tamam</string>
     <string name="create_group_title">Grup kur</string>
     <string name="create_group_group_name">Grup ismi</string>
+    <string name="create_group_bytes_used">%1$d / %2$d byte</string>
     <string name="create_group_code_placeholder">4 haneli kod (opsiyonel)</string>
     <string name="create_group_go_live">Sohbete başla</string>
 
@@ -37,6 +38,7 @@
     <string name="join_group_nearby_groups_join">Bağlan</string>
 
     <string name="radio_title">GRUP: %1$s</string>
+    <string name="radio_group_id">Kimlik: #%1$s</string>
     <string name="radio_unknown_group">Bilinmeyen</string>
     <string name="radio_access_code">KOD: %1$s</string>
     <string name="radio_audio_route">Ses Cihazı</string>
