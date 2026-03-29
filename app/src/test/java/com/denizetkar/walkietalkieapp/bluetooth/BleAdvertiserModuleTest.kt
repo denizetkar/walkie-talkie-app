@@ -46,15 +46,16 @@ class BleAdvertiserModuleTest {
         // Setup: Bluetooth is off or not supported
         every { mockAdapter.bluetoothLeAdvertiser } returns null
 
-        val config = AdvertisingConfig("Test", 1u, 1u, 0, true)
+        val config = AdvertisingConfig(100u, "Test", 1u, 1u, 0, true)
         val result = advertiserModule.start(config)
 
         assertFalse("Should return false when advertiser is null", result)
     }
 
     @Test
-    fun `Serialization - Encodes Topology to 10-byte Little-Endian Payload`() {
+    fun `Serialization - Encodes Topology and Manufacturer Data`() {
         val config = AdvertisingConfig(
+            groupId = 0x1A2B3C4Du,
             groupName = "Alpha",
             ownNodeId = 0x11223344u,
             networkId = 0x55667788u,
@@ -62,35 +63,56 @@ class BleAdvertiserModuleTest {
             isAvailable = true
         )
 
-        val dataSlot = slot<AdvertiseData>()
+        // 1. Create TWO slots to capture both data packets
+        val mainDataSlot = slot<AdvertiseData>()
+        val scanResponseSlot = slot<AdvertiseData>()
         val cbSlot = slot<AdvertisingSetCallback>()
 
+        // 2. Capture the 2nd argument (mainData) and 3rd argument (scanResponse)
         every {
-            mockAdvertiser.startAdvertisingSet(any(), capture(dataSlot), any(), any(), any(), capture(cbSlot))
+            mockAdvertiser.startAdvertisingSet(
+                any(),
+                capture(mainDataSlot),
+                capture(scanResponseSlot),
+                any(),
+                any(),
+                capture(cbSlot)
+            )
         } just runs
 
         val result = advertiserModule.start(config)
         assertTrue("Should successfully request advertising start", result)
 
-        // Ensure the server was told to be ready
         verify { mockServerHandler.startServer() }
 
-        // Assert 1: Service Data Payload
-        val serviceData = dataSlot.captured.serviceData[ParcelUuid(Config.APP_SERVICE_UUID)]
+        // Assert 1: Service Data Payload (Topology) is in mainDataSlot
+        val serviceData = mainDataSlot.captured.serviceData[ParcelUuid(Config.APP_SERVICE_UUID)]
         requireNotNull(serviceData) { "Service data must be present" }
         assertEquals("Payload must be exactly 10 bytes", 10, serviceData.size)
 
-        // Verify Little-Endian Serialization
         val buffer = ByteBuffer.wrap(serviceData).order(ByteOrder.LITTLE_ENDIAN)
         assertEquals(0x11223344, buffer.int)
         assertEquals(0x55667788, buffer.int)
         assertEquals(2.toByte(), buffer.get())
-        assertEquals(1.toByte(), buffer.get()) // isAvailable = true
+        assertEquals(1.toByte(), buffer.get())
+
+        // Assert 2: Manufacturer Data (Group ID + Name) is in scanResponseSlot
+        val manufacturerData = scanResponseSlot.captured.manufacturerSpecificData[Config.BLE_MANUFACTURER_ID]
+        requireNotNull(manufacturerData) { "Manufacturer data must be present" }
+
+        // Assert payload structure: [4 bytes Group ID] +[5 bytes "Alpha"]
+        assertEquals("Payload must be 9 bytes", 9, manufacturerData.size)
+        val manufacturerBuffer = ByteBuffer.wrap(manufacturerData).order(ByteOrder.LITTLE_ENDIAN)
+        assertEquals(0x1A2B3C4D, manufacturerBuffer.int) // Group ID
+
+        val nameBytes = ByteArray(5)
+        manufacturerBuffer.get(nameBytes)
+        assertEquals("Alpha", String(nameBytes, Charsets.UTF_8))
     }
 
     @Test
     fun `Idempotency - Updates existing AdvertisingSet instead of creating a new one`() {
-        val config1 = AdvertisingConfig("Alpha", 1u, 1u, 0, true)
+        val config1 = AdvertisingConfig(100u, "Alpha", 1u, 1u, 0, true)
         val cbSlot = slot<AdvertisingSetCallback>()
 
         every {
@@ -104,7 +126,7 @@ class BleAdvertiserModuleTest {
         cbSlot.captured.onAdvertisingSetStarted(mockAdvertisingSet, 0, AdvertisingSetCallback.ADVERTISE_SUCCESS)
 
         // 2. Second Start (Configuration Update)
-        val config2 = AdvertisingConfig("Alpha", 1u, 2u, 1, false)
+        val config2 = AdvertisingConfig(100u, "Alpha", 1u, 2u, 1, false)
         val updateDataSlot = slot<AdvertiseData>()
 
         every { mockAdvertisingSet.setAdvertisingData(capture(updateDataSlot)) } just runs

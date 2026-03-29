@@ -86,7 +86,7 @@ class WalkieTalkieServiceTest {
 
         // 2. Get Binder and Dispatch an Action to join a group
         val binder = service.onBind(Intent()) as WalkieTalkieService.LocalBinder
-        binder.dispatchAction(Action.CreateGroup("TestGroup", "1234"))
+        binder.dispatchAction(Action.CreateGroup(100u, "TestGroup", "1234"))
 
         // Wait for the Core to process the intent
         val controller = service.meshControllerState.filterNotNull().first()

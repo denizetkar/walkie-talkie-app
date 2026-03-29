@@ -326,7 +326,17 @@ fun JoinGroupScreen(
                     val displayName = group.name.ifBlank { stringResource(R.string.radio_unknown_group) }
                     ListItem(
                         headlineContent = { Text(displayName, fontWeight = FontWeight.Bold) },
-                        supportingContent = { Text(stringResource(R.string.join_group_nearby_groups_signal_level, group.rssi)) },
+                        supportingContent = {
+                            Column {
+                                val hexId = group.groupId.toString(16).padStart(8, '0').uppercase()
+                                Text(
+                                    text = stringResource(R.string.join_group_nearby_groups_id, hexId),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(stringResource(R.string.join_group_nearby_groups_signal_level, group.rssi))
+                            }
+                        },
                         trailingContent = {
                             Button(onClick = { selectedGroup = group }) {
                                 Text(stringResource(R.string.join_group_nearby_groups_join))

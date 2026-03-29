@@ -109,11 +109,11 @@ class MeshController(
                     }
 
                     is Action.CreateGroup -> {
-                        Log.i("MeshController", "USER ACTION: Create Group '${action.name}'")
+                        Log.i("MeshController", "USER ACTION: Create Group '${action.name}' (ID: ${action.groupId})")
                         // ROTATE ID: To reset receiver Jitter Buffers
                         val newNodeId = Random.nextUInt()
                         // We are hosting, so isJoinAttempt = false (No timeout)
-                        val session = SessionContext(action.name, action.code, isJoinAttempt = false, startTime = internalClockMs)
+                        val session = SessionContext(action.groupId, action.name, action.code, isJoinAttempt = false, startTime = internalClockMs)
                         _state.update {
                             it.copy(
                                 myself = newNodeId,
@@ -126,11 +126,11 @@ class MeshController(
                     }
 
                     is Action.JoinGroup -> {
-                        Log.i("MeshController", "USER ACTION: Join Group '${action.name}'")
+                        Log.i("MeshController", "USER ACTION: Join Group '${action.name}' (ID: ${action.groupId})")
                         // ROTATE ID: To reset receiver Jitter Buffers
                         val newNodeId = Random.nextUInt()
                         // We are joining, so isJoinAttempt = true (Global Timeout active)
-                        val session = SessionContext(action.name, action.code, isJoinAttempt = true, startTime = internalClockMs)
+                        val session = SessionContext(action.groupId, action.name, action.code, isJoinAttempt = true, startTime = internalClockMs)
                         _state.update {
                             it.copy(
                                 myself = newNodeId,
@@ -388,7 +388,7 @@ class MeshController(
     private suspend fun handleAdvertisement(state: AppState, group: DiscoveredGroup) {
         // 1. Discovery Logic (UI List)
         // We group by NAME. If we see "Hiking" again, we check if it's a better signal.
-        val existing = state.discoveredGroups.find { it.name == group.name }
+        val existing = state.discoveredGroups.find { it.groupId == group.groupId }
 
         val updatedGroup = if (existing == null) {
             // New Group found
@@ -410,7 +410,7 @@ class MeshController(
         }
 
         // Rebuild list: Remove old entry with same name, add new/updated entry, sort.
-        val newGroups = (state.discoveredGroups.filter { it.name != group.name } + updatedGroup)
+        val newGroups = (state.discoveredGroups.filter { it.groupId != group.groupId } + updatedGroup)
             .sortedByDescending { it.rssi }
 
         _state.update { it.copy(discoveredGroups = newGroups) }
@@ -418,7 +418,7 @@ class MeshController(
         // 2. Auto-Connect Logic
         val session = state.session ?: return
         // We only care about groups that match our current Session Name.
-        if (group.name != session.groupName) return
+        if (group.groupId != session.groupId) return
         if (!calculateConnectionStrategy(state, group)) return
 
         Log.d("MeshController", "Strategy: Decided to connect to ${group.id} (NetID: ${group.netId})")

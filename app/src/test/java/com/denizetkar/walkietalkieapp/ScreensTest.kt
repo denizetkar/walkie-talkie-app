@@ -33,7 +33,7 @@ class ScreensTest {
         var joinedGroup: DiscoveredGroup? = null
         var enteredCode: String? = null
 
-        val mockGroup = DiscoveredGroup("AA:BB", "Hiking", -50, 1u, 2u)
+        val mockGroup = DiscoveredGroup("AA:BB", 0xABCDEF12u, "Hiking", -50, 1u, 2u)
 
         composeTestRule.setContent {
             JoinGroupScreen(
@@ -51,6 +51,7 @@ class ScreensTest {
 
         // 1. Verify group is displayed and click join
         composeTestRule.onNodeWithText("Hiking").assertIsDisplayed()
+        composeTestRule.onNodeWithStringId(R.string.join_group_nearby_groups_id, "ABCDEF12", substring = true, ignoreCase = true).assertIsDisplayed()
         composeTestRule.onNodeWithStringId(R.string.join_group_nearby_groups_join).performClick()
 
         // 2. Verify dialog appears but Connect is disabled initially

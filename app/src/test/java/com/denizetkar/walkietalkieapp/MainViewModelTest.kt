@@ -146,7 +146,7 @@ class MainViewModelTest {
             assertTrue("Should start in ready state", initialState.isServiceBound)
 
             // ACTION: Update Core State
-            val session = SessionContext("Hiking", "9999", isJoinAttempt = false)
+            val session = SessionContext(100u, "Hiking", "9999", isJoinAttempt = false)
             controllerState.value = AppState(
                 myself = 1u,
                 session = session,
@@ -171,15 +171,15 @@ class MainViewModelTest {
             awaitItem() // Consume current "Ready" state
 
             // ACTION: User taps join
-            viewModel.joinGroup("Camp", "1234")
+            viewModel.joinGroup(100u, "Camp", "1234")
 
             // ASSERT: Action was dispatched to the Core
-            verify { binder.dispatchAction(Action.JoinGroup("Camp", "1234")) }
+            verify { binder.dispatchAction(Action.JoinGroup(100u, "Camp", "1234")) }
 
             // SIMULATE CORE REACTION: The Core creates a Join session
             controllerState.value = AppState(
                 myself = 1u,
-                session = SessionContext("Camp", "1234", isJoinAttempt = true)
+                session = SessionContext(100u, "Camp", "1234", isJoinAttempt = true)
             )
 
             // ASSERT: UI reacts to the Core's state change
@@ -212,7 +212,7 @@ class MainViewModelTest {
         // Setup: In a group
         controllerState.value = AppState(
             myself = 1u,
-            session = SessionContext("Test", "1111", false)
+            session = SessionContext(100u, "Test", "1111", false)
         )
 
         viewModel.leaveGroup()
@@ -261,6 +261,7 @@ class MainViewModelTest {
         verify { binder.dispatchAction(capture(actionSlot)) }
 
         assertEquals("Hiking", actionSlot.captured.name)
+        assertTrue(actionSlot.captured.groupId != 0u)
         assertTrue("Generated code should be 4 digits", actionSlot.captured.code.matches(Regex("\\d{4}")))
     }
 

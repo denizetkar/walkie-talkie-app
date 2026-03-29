@@ -71,7 +71,7 @@ class MeshControllerTest {
         }
 
         // 1. Setup: Join a group
-        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Test", "1234"))
         runCurrent()
         effects.clear() // Clear "Connect" effects
 
@@ -101,7 +101,7 @@ class MeshControllerTest {
             controller.effects.toList(effects)
         }
 
-        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Test", "1234"))
         runCurrent()
         effects.clear()
 
@@ -128,7 +128,7 @@ class MeshControllerTest {
             controller.effects.toList(effects)
         }
 
-        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Test", "1234"))
         runCurrent()
 
         // 1. Setup: Peer 50 connects
@@ -165,7 +165,7 @@ class MeshControllerTest {
         }
 
         // 1. Join Group 1
-        controller.dispatch(Action.JoinGroup("Group1", "1111"))
+        controller.dispatch(Action.JoinGroup(100u, "Group1", "1111"))
         runCurrent()
 
         // 2. Receive Packet X (cached)
@@ -180,7 +180,7 @@ class MeshControllerTest {
         assertNull(controller.state.value.session)
 
         // 4. Create NEW Group
-        controller.dispatch(Action.CreateGroup("Group2", "2222"))
+        controller.dispatch(Action.CreateGroup(100u, "Group2", "2222"))
         runCurrent()
         effects.clear()
 
@@ -199,7 +199,7 @@ class MeshControllerTest {
         }
 
         // 1. Create Group (Becomes Root)
-        controller.dispatch(Action.CreateGroup("Test", "1234"))
+        controller.dispatch(Action.CreateGroup(100u, "Test", "1234"))
         runCurrent()
         effects.clear()
 
@@ -222,7 +222,7 @@ class MeshControllerTest {
         }
 
         // 1. Setup: Node starts a group (Random Root ID)
-        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        controller.dispatch(Action.CreateGroup(100u, "Hiking", "1234"))
         runCurrent()
         effects.clear()
 
@@ -259,7 +259,7 @@ class MeshControllerTest {
             controller.effects.toList(effects)
         }
 
-        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        controller.dispatch(Action.CreateGroup(100u, "Hiking", "1234"))
         runCurrent()
         effects.clear()
 
@@ -291,7 +291,7 @@ class MeshControllerTest {
 
     @Test
     fun `Self Healing - Reverts to Standalone after Root Timeout`() = testScope.runTest {
-        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        controller.dispatch(Action.CreateGroup(100u, "Hiking", "1234"))
         runCurrent()
 
         // Use relative ID
@@ -327,7 +327,7 @@ class MeshControllerTest {
             controller.effects.toList(effects)
         }
 
-        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Hiking", "1234"))
         runCurrent()
 
         // 1. Set Mic DISABLED
@@ -359,7 +359,7 @@ class MeshControllerTest {
     @Test
     fun `Join Timeout - Drops session if no peers connect within 15 seconds`() = testScope.runTest {
         // 1. Action: Try to join a group
-        controller.dispatch(Action.JoinGroup("GhostCamp", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "GhostCamp", "1234"))
         runCurrent()
 
         assertNotNull("Session should be active while attempting to join", controller.state.value.session)
@@ -375,7 +375,7 @@ class MeshControllerTest {
 
     @Test
     fun `Yo-Yo Fix - Session survives if peer drops to zero after successfully joining once`() = testScope.runTest {
-        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Hiking", "1234"))
         runCurrent()
 
         // 1. Peer connects! (We have found the mesh)
@@ -422,7 +422,7 @@ class MeshControllerTest {
         effects.clear()
 
         // --- SCENARIO B: Active Session (Critical Failure) ---
-        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Test", "1234"))
         runCurrent()
         assertNotNull(controller.state.value.session)
 
@@ -448,7 +448,7 @@ class MeshControllerTest {
 
         // 3. Enable Bluetooth, Join Group
         controller.dispatch(Action.BluetoothStateChanged(true))
-        controller.dispatch(Action.JoinGroup("Test", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Test", "1234"))
         runCurrent()
         assertTrue(controller.state.value.isBluetoothEnabled)
         assertNotNull(controller.state.value.session)
@@ -481,7 +481,7 @@ class MeshControllerTest {
     @Test
     fun `Error Handling - JoinGroupFailed clears session and sets error`() = testScope.runTest {
         // Setup: Active Join Attempt
-        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Hiking", "1234"))
         runCurrent()
         assertNotNull(controller.state.value.session)
 
@@ -497,7 +497,7 @@ class MeshControllerTest {
     @Test
     fun `Error Handling - Non-fatal JoinGroupFailed is ignored in established session`() = testScope.runTest {
         // Setup: Active established session
-        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        controller.dispatch(Action.CreateGroup(100u, "Hiking", "1234"))
         runCurrent()
         assertNotNull(controller.state.value.session)
 
@@ -515,7 +515,7 @@ class MeshControllerTest {
         val groupName = "Hiking"
 
         // 1. New Group Discovered
-        val ad1 = DiscoveredGroup("MAC_1", groupName, -80, 100u, 101u, simulationTime)
+        val ad1 = DiscoveredGroup("MAC_1", 100u, groupName, -80, 100u, 101u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad1))
         runCurrent()
         assertEquals("MAC_1", controller.state.value.discoveredGroups.first().id)
@@ -530,14 +530,14 @@ class MeshControllerTest {
         assertEquals(-70, controller.state.value.discoveredGroups.first().rssi)
 
         // 3. Different MAC, Better RSSI (Replaces MAC_1 because name is the same)
-        val ad2 = DiscoveredGroup("MAC_2", groupName, -60, 200u, 201u, simulationTime)
+        val ad2 = DiscoveredGroup("MAC_2", 100u, groupName, -60, 200u, 201u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad2))
         runCurrent()
         assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id)
         assertEquals(1, controller.state.value.discoveredGroups.size)
 
         // 4. Different MAC, Worse RSSI (Ignored entirely)
-        val ad3 = DiscoveredGroup("MAC_3", groupName, -90, 300u, 301u, simulationTime)
+        val ad3 = DiscoveredGroup("MAC_3", 100u, groupName, -90, 300u, 301u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad3))
         runCurrent()
         assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id) // Unchanged
@@ -546,7 +546,7 @@ class MeshControllerTest {
     @Test
     fun `Discovery Eviction - Stale advertisements are cleared`() = testScope.runTest {
         // 1. Discover a group
-        val ad = DiscoveredGroup("MAC", "Hiking", -50, 100u, 101u, simulationTime)
+        val ad = DiscoveredGroup("MAC", 100u, "Hiking", -50, 100u, 101u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad))
         runCurrent()
         assertEquals(1, controller.state.value.discoveredGroups.size)
@@ -566,13 +566,13 @@ class MeshControllerTest {
         }
 
         // 1. Setup Session
-        controller.dispatch(Action.CreateGroup("Hiking", "1234"))
+        controller.dispatch(Action.CreateGroup(100u, "Hiking", "1234"))
         runCurrent()
         effects.clear()
         val myId = controller.state.value.myself
 
         // 2. Self-Reject: Ignore own ID
-        controller.dispatch(Action.AdvertisementSeen(DiscoveredGroup("MAC", "Hiking", -50, myId, myId, simulationTime)))
+        controller.dispatch(Action.AdvertisementSeen(DiscoveredGroup("MAC", 100u, "Hiking", -50, myId, myId, simulationTime)))
         runCurrent()
         assertTrue("Should ignore self", effects.isEmpty())
 
@@ -584,13 +584,13 @@ class MeshControllerTest {
 
         // 4. Ignore Weak Roots when Full
         val weakRootId = if (myId > 0u) myId - 1u else return@runTest
-        controller.dispatch(Action.AdvertisementSeen(DiscoveredGroup("MAC2", "Hiking", -50, weakRootId, weakRootId, simulationTime)))
+        controller.dispatch(Action.AdvertisementSeen(DiscoveredGroup("MAC2", 100u, "Hiking", -50, weakRootId, weakRootId, simulationTime)))
         runCurrent()
         assertTrue("Should ignore weak root when full", effects.isEmpty())
 
         // 5. Connect to Better Roots EVEN WHEN FULL (Island Merging)
         val betterRootId = myId + 100u
-        controller.dispatch(Action.AdvertisementSeen(DiscoveredGroup("MAC3", "Hiking", -50, betterRootId, betterRootId, simulationTime)))
+        controller.dispatch(Action.AdvertisementSeen(DiscoveredGroup("MAC3", 100u, "Hiking", -50, betterRootId, betterRootId, simulationTime)))
         runCurrent()
         val connectEffect = effects.filterIsInstance<Effect.ConnectTo>().lastOrNull()
         assertNotNull("Should forcefully connect to a better root to merge islands", connectEffect)
@@ -604,7 +604,7 @@ class MeshControllerTest {
             controller.effects.toList(effects)
         }
 
-        controller.dispatch(Action.JoinGroup("Hiking", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Hiking", "1234"))
         runCurrent()
         effects.clear()
 
@@ -642,14 +642,14 @@ class MeshControllerTest {
         assertTrue("Should be browsing initially", controller.state.value.isBrowsing)
 
         // 2. User tries to join a group
-        controller.dispatch(Action.JoinGroup("Group", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Group", "1234"))
         runCurrent()
 
         // 3. Assert isBrowsing remains true!
         assertTrue("isBrowsing MUST NOT be overridden by JoinGroup", controller.state.value.isBrowsing)
 
         // 4. Same for CreateGroup
-        controller.dispatch(Action.CreateGroup("Group2", "4321"))
+        controller.dispatch(Action.CreateGroup(100u, "Group2", "4321"))
         runCurrent()
         assertTrue("isBrowsing MUST NOT be overridden by CreateGroup", controller.state.value.isBrowsing)
     }

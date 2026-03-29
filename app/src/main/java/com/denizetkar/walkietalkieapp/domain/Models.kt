@@ -103,6 +103,7 @@ data class AppState(
 )
 
 data class SessionContext(
+    val groupId: UInt,
     val groupName: String,
     val accessCode: String,
     // Logic: Track if we are the Host (Create) or Client (Join)
@@ -113,6 +114,7 @@ data class SessionContext(
 
 data class DiscoveredGroup(
     val id: String, // MAC Address
+    val groupId: UInt,
     val name: String,
     val rssi: Int,
     val netId: UInt,
@@ -155,8 +157,8 @@ typealias PeerId = UInt
  */
 sealed class Action {
     // --- User Intents (UI -> Core) ---
-    data class CreateGroup(val name: String, val code: String) : Action()
-    data class JoinGroup(val name: String, val code: String) : Action()
+    data class CreateGroup(val groupId: UInt, val name: String, val code: String) : Action()
+    data class JoinGroup(val groupId: UInt, val name: String, val code: String) : Action()
     data object LeaveGroup : Action()
     data class SetLanguage(val language: AppLanguage) : Action()  // UI -> Core (User Input)
 

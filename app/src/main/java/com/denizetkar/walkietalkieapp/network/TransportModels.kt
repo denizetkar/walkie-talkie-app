@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 data class TransportNode(
     val id: String,           // MAC Address
+    val groupId: UInt,
     val name: String,
     val rssi: Int,
     val nodeId: UInt,
@@ -25,6 +26,7 @@ sealed interface DiscoveryEvent {
 }
 
 data class AdvertisingConfig(
+    val groupId: UInt,
     val groupName: String,
     val ownNodeId: UInt,
     val networkId: UInt,
@@ -48,6 +50,7 @@ data class DriverConfig(
     val isBluetoothEnabled: Boolean,
     val isAdvertising: Boolean,
     val isScanning: Boolean,
+    val groupId: UInt,
     val groupName: String,
     val ownNodeId: PeerId,
     val netId: UInt,

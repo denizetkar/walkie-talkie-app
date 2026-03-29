@@ -53,8 +53,15 @@ class BleAdvertiserModule(
 
         // 2. Scan Response (Group Name)
         val nameBytes = HandshakeLogic.truncateUtf8(config.groupName, Config.MAX_ADVERTISING_NAME_BYTES)
+        // Payload:[4 bytes Group ID] + [N bytes Name]
+        val manufacturerPayload = ByteBuffer.allocate(4 + nameBytes.size)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(config.groupId.toInt())
+            .put(nameBytes)
+            .array()
+
         val scanResponseData = AdvertiseData.Builder()
-            .addManufacturerData(Config.BLE_MANUFACTURER_ID, nameBytes)
+            .addManufacturerData(Config.BLE_MANUFACTURER_ID, manufacturerPayload)
             .build()
 
         // If already running, update data only (Success assumed if we got this far)

@@ -32,6 +32,7 @@
     <string name="join_group_nearby_groups_title">Yakındaki gruplar</string>
     <string name="join_group_nearby_groups_no_bluetooth">Bluetooth kapalı</string>
     <string name="join_group_nearby_groups_scanning">Taranıyor…</string>
+    <string name="join_group_nearby_groups_id">Grup kimliği: #%1$s</string>
     <string name="join_group_nearby_groups_signal_level">Sinyal: %1$d dBm</string>
     <string name="join_group_nearby_groups_join">Bağlan</string>
 

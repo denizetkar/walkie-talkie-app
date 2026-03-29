@@ -92,6 +92,7 @@ class BleDriver(
                         dispatch(Action.AdvertisementSeen(
                             DiscoveredGroup(
                                 id = event.node.id,
+                                groupId = event.node.groupId,
                                 name = event.node.name,
                                 rssi = event.node.rssi,
                                 netId = event.node.networkId,
@@ -254,6 +255,7 @@ class BleDriver(
             isBluetoothEnabled = state.isBluetoothEnabled,
             isAdvertising = shouldAdvertise,
             isScanning = isScanning,
+            groupId = session?.groupId ?: 0u,
             groupName = session?.groupName ?: "",
             ownNodeId = state.myself,
             netId = state.network.rootId,
@@ -276,6 +278,7 @@ class BleDriver(
 
         if (config.isAdvertising) {
             val advertisingConfig = AdvertisingConfig(
+                groupId = config.groupId,
                 groupName = config.groupName,
                 ownNodeId = config.ownNodeId,
                 networkId = config.netId,

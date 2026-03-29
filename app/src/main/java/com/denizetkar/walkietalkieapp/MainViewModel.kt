@@ -48,6 +48,7 @@ data class AppUiState(
     val currentLanguage: AppLanguage = AppLanguage.SYSTEM,
 
     // Session State
+    val groupId: UInt? = null,
     val groupName: String? = null,
     val accessCode: String? = null,
     val peerCount: Int = 0,
@@ -155,6 +156,7 @@ class MainViewModel(
                         currentLanguage = coreState.language,
 
                         // Map Session State
+                        groupId = coreState.session?.groupId,
                         groupName = coreState.session?.groupName,
                         accessCode = coreState.session?.accessCode,
                         peerCount = coreState.connectedPeers.size,
@@ -229,11 +231,12 @@ class MainViewModel(
         } else {
             Random.nextInt(1000, 10000).toString()
         }
-        dispatch(Action.CreateGroup(name, code))
+        val groupId = Random.nextInt().toUInt()
+        dispatch(Action.CreateGroup(groupId, name, code))
     }
 
-    fun joinGroup(name: String, code: String) {
-        dispatch(Action.JoinGroup(name, code))
+    fun joinGroup(groupId: UInt, name: String, code: String) {
+        dispatch(Action.JoinGroup(groupId, name, code))
     }
 
     fun ackJoinError() {

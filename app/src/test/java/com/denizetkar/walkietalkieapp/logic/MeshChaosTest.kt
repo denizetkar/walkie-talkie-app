@@ -47,7 +47,7 @@ class MeshChaosTest {
     @Test
     fun `Zombie Peer - Traffic after disconnect does not resurrect peer`() = testScope.runTest {
         // 1. Setup: Active Session with Peer 50
-        controller.dispatch(Action.JoinGroup("Chaos", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Chaos", "1234"))
         runCurrent()
         controller.dispatch(Action.PeerConnected(50u))
         runCurrent()
@@ -104,7 +104,7 @@ class MeshChaosTest {
      */
     @Test
     fun `Race Condition - Rapid Connect-Disconnect-Connect`() = testScope.runTest {
-        controller.dispatch(Action.JoinGroup("Chaos", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Chaos", "1234"))
         runCurrent()
 
         // Rapid Fire
@@ -126,7 +126,7 @@ class MeshChaosTest {
      */
     @Test
     fun `Security - Unknown OpCode is ignored`() = testScope.runTest {
-        controller.dispatch(Action.JoinGroup("Chaos", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Chaos", "1234"))
         runCurrent()
         effects.clear()
 
@@ -148,7 +148,7 @@ class MeshChaosTest {
      */
     @Test
     fun `Echo Chamber - Relays own packet if cache expired`() = testScope.runTest {
-        controller.dispatch(Action.JoinGroup("Chaos", "1234"))
+        controller.dispatch(Action.JoinGroup(100u, "Chaos", "1234"))
         runCurrent()
 
         // Enable Mic, otherwise AudioDataCaptured is ignored

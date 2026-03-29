@@ -32,6 +32,7 @@
     <string name="join_group_nearby_groups_title">Gruppen in der Nähe</string>
     <string name="join_group_nearby_groups_no_bluetooth">Bluetooth ausgeschaltet</string>
     <string name="join_group_nearby_groups_scanning">Wird gescannt…</string>
+    <string name="join_group_nearby_groups_id">Gruppe ID: #%1$s</string>
     <string name="join_group_nearby_groups_signal_level">Signal: %1$d dBm</string>
     <string name="join_group_nearby_groups_join">Verbinden</string>
 

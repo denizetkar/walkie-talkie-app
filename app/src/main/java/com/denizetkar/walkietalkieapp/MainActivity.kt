@@ -219,7 +219,7 @@ fun WalkieTalkieNavHost(viewModel: MainViewModel, state: AppUiState) {
                     isJoining = state.isJoining,
                     joinError = state.joinError,
                     isBluetoothEnabled = state.isBluetoothEnabled,
-                    onJoin = { group, code -> viewModel.joinGroup(group.name, code) },
+                    onJoin = { group, code -> viewModel.joinGroup(group.groupId, group.name, code) },
                     onJoinErrorAck = { viewModel.ackJoinError() }
                 )
             }

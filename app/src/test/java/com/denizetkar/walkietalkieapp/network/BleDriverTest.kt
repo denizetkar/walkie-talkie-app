@@ -134,7 +134,7 @@ class BleDriverTest {
 
     @Test
     fun `Advertising - Starts when hosting a session`() = testScope.runTest {
-        val session = SessionContext("Hiking", "1234", isJoinAttempt = false)
+        val session = SessionContext(100u, "Hiking", "1234", isJoinAttempt = false)
         stateFlow.value = AppState(myself = 10u, session = session)
         advanceUntilIdle()
 
@@ -147,7 +147,7 @@ class BleDriverTest {
         // This already caused discovery.stop() to be called exactly 1 time.
 
         // 1. Joining, no peers -> Should NOT advertise, BUT MUST scan
-        val session = SessionContext("Hiking", "1234", isJoinAttempt = true)
+        val session = SessionContext(100u, "Hiking", "1234", isJoinAttempt = true)
         stateFlow.value = AppState(myself = 10u, session = session, connectedPeers = emptySet())
         advanceUntilIdle()
 
@@ -175,7 +175,7 @@ class BleDriverTest {
         // Ensure device exists in shadow adapter
         realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
@@ -190,7 +190,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         val device = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "9999", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "9999", false))
         advanceUntilIdle()
 
         // 1. Order Connection
@@ -209,7 +209,7 @@ class BleDriverTest {
 
     @Test
     fun `System Events - Turning off Bluetooth dispatches BluetoothStateChanged`() = testScope.runTest {
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Hiking", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Hiking", "1234", false))
         advanceUntilIdle()
 
         // 1. Send the broadcast
@@ -233,7 +233,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Connect & Auth
@@ -264,7 +264,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
@@ -283,7 +283,7 @@ class BleDriverTest {
         val targetMac = "AA:BB:CC:DD:EE:FF"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Incoming Authentication
@@ -308,7 +308,7 @@ class BleDriverTest {
 
     @Test
     fun `Routing - Transmit respects Split Horizon (Loop Prevention)`() = testScope.runTest {
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Setup Client Connection (Node 20u)
@@ -337,7 +337,7 @@ class BleDriverTest {
     fun `Collision Resolution - Innocent Kill Prevention (New Incoming survives Old Outgoing death)`() = testScope.runTest {
         // My ID is 10. Target ID is 50. Target > MyID, so Target wins the right to dictate connection.
         // Therefore, if Target connects to us (INCOMING), we accept it and kill our OUTGOING attempt.
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         val oldMac = "11:22:33:44:55:66"
@@ -380,7 +380,7 @@ class BleDriverTest {
     fun `Collision Resolution - Zombie Prevention (Rejects INCOMING and disconnects if OUTGOING wins)`() = testScope.runTest {
         // My ID is 50. Target ID is 10. MyID > Target, so I win the right to dictate connection.
         // Therefore, if Target connects to us (INCOMING), we reject it and keep our OUTGOING attempt.
-        stateFlow.value = AppState(myself = 50u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 50u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         val outgoingMac = "11:22:33:44:55:66"
@@ -417,7 +417,7 @@ class BleDriverTest {
     @Test
     fun `Connection - Ignores Duplicate Outgoing Connection`() = testScope.runTest {
         val targetMac = "11:22:33:44:55:66"
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Establish first OUTGOING attempt to Node 50u
@@ -436,7 +436,7 @@ class BleDriverTest {
     fun `Server Connection - Ignores unknown devices safely`() = testScope.runTest {
         val unknownDevice = realAdapter.getRemoteDevice("FF:EE:DD:CC:BB:AA")
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Message Received from an unknown device
@@ -457,7 +457,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
@@ -476,7 +476,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         effectFlow.emit(Effect.ConnectTo(targetMac, 20u, 10u, "1234"))
@@ -499,12 +499,12 @@ class BleDriverTest {
     @Test
     fun `Config Changes - Stops Scanning and Advertising when Bluetooth disabled`() = testScope.runTest {
         // Start a session
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false), isBluetoothEnabled = true)
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false), isBluetoothEnabled = true)
         advanceUntilIdle()
         verify { anyConstructed<BleAdvertiserModule>().start(any()) }
 
         // Disable Bluetooth
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false), isBluetoothEnabled = false)
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false), isBluetoothEnabled = false)
         advanceUntilIdle()
 
         // Verify the modules are told to spin down
@@ -516,12 +516,12 @@ class BleDriverTest {
     @Test
     fun `Config Changes - Stops Scanning and Advertising when session ends`() = testScope.runTest {
         // Start a session
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
         verify { anyConstructed<BleAdvertiserModule>().start(any()) }
 
         // Turn on browsing
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false), isBrowsing = true)
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false), isBrowsing = true)
         advanceUntilIdle()
         verify { anyConstructed<BleDiscoveryModule>().start() }
 
@@ -539,7 +539,7 @@ class BleDriverTest {
         val targetMac = "AA:BB:CC:DD:EE:FF"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Unauthenticated Client Connects
@@ -559,7 +559,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Initiate Outgoing Connection (Driver adds it to managed peers)
@@ -585,7 +585,7 @@ class BleDriverTest {
         every { anyConstructed<BleDiscoveryModule>().start() } returns false
 
         // 2. Trigger configuration update (Hosting a session + Browsing)
-        val session = SessionContext("FailGroup", "1234", isJoinAttempt = false)
+        val session = SessionContext(100u, "FailGroup", "1234", isJoinAttempt = false)
         stateFlow.value = AppState(myself = 10u, session = session, isBrowsing = true)
         advanceUntilIdle()
 
@@ -615,7 +615,7 @@ class BleDriverTest {
         )
 
         // 1. Test NodeFound bridging
-        val node = TransportNode("AA:BB:CC:DD:EE:FF", "Test", -50, 1u, 2u, 3, true)
+        val node = TransportNode("AA:BB:CC:DD:EE:FF", 100u, "Test", -50, 1u, 2u, 3, true)
         localEventsFlow.emit(DiscoveryEvent.NodeFound(node))
         advanceUntilIdle()
 
@@ -643,7 +643,7 @@ class BleDriverTest {
         // Force Bluetooth to OFF via Robolectric Shadow
         Shadows.shadowOf(realAdapter).setEnabled(false)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // Attempt connection
@@ -659,7 +659,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         val mockDevice = realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Establish the connection so the peer job is running
@@ -709,7 +709,7 @@ class BleDriverTest {
         val targetMac = "11:22:33:44:55:66"
         realAdapter.getRemoteDevice(targetMac)
 
-        stateFlow.value = AppState(myself = 10u, session = SessionContext("Test", "1234", false))
+        stateFlow.value = AppState(myself = 10u, session = SessionContext(100u, "Test", "1234", false))
         advanceUntilIdle()
 
         // 1. Mock the client handler to throw an unexpected RuntimeException

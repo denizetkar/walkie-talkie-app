@@ -138,11 +138,18 @@ class BleDiscoveryModule(
         val hops = buffer.get().toInt() and 0xFF
         val isAvailable = (buffer.get().toInt() == 1)
 
-        val nameBytes = record.getManufacturerSpecificData(Config.BLE_MANUFACTURER_ID)
-        val groupName = if (nameBytes != null) String(nameBytes, Charsets.UTF_8) else ""
+        val manufacturerData = record.getManufacturerSpecificData(Config.BLE_MANUFACTURER_ID)
+        if (manufacturerData == null || manufacturerData.size < 4) return
+
+        val manufacturerBuffer = ByteBuffer.wrap(manufacturerData).order(ByteOrder.LITTLE_ENDIAN)
+        val groupId = manufacturerBuffer.int.toUInt()
+
+        val nameBytes = manufacturerData.copyOfRange(4, manufacturerData.size)
+        val groupName = String(nameBytes, Charsets.UTF_8)
 
         val node = TransportNode(
             id = result.device.address,
+            groupId = groupId,
             name = groupName,
             rssi = result.rssi,
             nodeId = nodeId,

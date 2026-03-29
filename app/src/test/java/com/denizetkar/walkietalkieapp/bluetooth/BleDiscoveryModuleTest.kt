@@ -73,7 +73,7 @@ class BleDiscoveryModuleTest {
     }
 
     @Test
-    fun `Deserialization - Successfully parses 10-byte payload into TransportNode`() = testScope.runTest {
+    fun `Deserialization - Successfully parses payload into TransportNode`() = testScope.runTest {
         val cbSlot = slot<ScanCallback>()
         every { mockScanner.startScan(any<List<android.bluetooth.le.ScanFilter>>(), any(), capture(cbSlot)) } just runs
 
@@ -86,7 +86,13 @@ class BleDiscoveryModuleTest {
         serviceDataBuffer.put(3.toByte())            // Hops
         serviceDataBuffer.put(1.toByte())            // Available = true
 
-        val manufacturerData = "TestGroup".toByteArray(Charsets.UTF_8)
+        val expectedGroupId = 0x99AABBCCu
+        val expectedGroupName = "TestGroup"
+        val manufacturerData = ByteBuffer.allocate(4 + expectedGroupName.length)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(expectedGroupId.toInt())
+            .put(expectedGroupName.toByteArray(Charsets.UTF_8))
+            .array()
 
         // 2. Mock Android ScanResult
         val mockDevice = mockk<BluetoothDevice> { every { address } returns "AA:BB:CC:DD:EE:FF" }
@@ -110,7 +116,8 @@ class BleDiscoveryModuleTest {
             val node = event.node
 
             assertEquals("AA:BB:CC:DD:EE:FF", node.id)
-            assertEquals("TestGroup", node.name)
+            assertEquals(expectedGroupId, node.groupId)
+            assertEquals(expectedGroupName, node.name)
             assertEquals(-42, node.rssi)
             assertEquals(0x99887766u, node.nodeId)
             assertEquals(0x11223344u, node.networkId)
