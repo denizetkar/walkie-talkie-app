@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -267,12 +268,13 @@ fun JoinGroupScreen(
     }
 
     if (selectedGroup != null) {
+        val dialogName = selectedGroup!!.name.ifBlank { stringResource(R.string.radio_unknown_group) }
         AlertDialog(
             onDismissRequest = { selectedGroup = null },
             title = { Text(stringResource(R.string.join_group_enter_code_title)) },
             text = {
                 Column {
-                    Text(stringResource(R.string.join_group_enter_code_body, selectedGroup!!.name))
+                    Text(stringResource(R.string.join_group_enter_code_body, dialogName))
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = codeInput,
@@ -321,8 +323,9 @@ fun JoinGroupScreen(
             LazyColumn {
                 items(discoveredGroups.size) { i ->
                     val group = discoveredGroups[i]
+                    val displayName = group.name.ifBlank { stringResource(R.string.radio_unknown_group) }
                     ListItem(
-                        headlineContent = { Text(group.name, fontWeight = FontWeight.Bold) },
+                        headlineContent = { Text(displayName, fontWeight = FontWeight.Bold) },
                         supportingContent = { Text(stringResource(R.string.join_group_nearby_groups_signal_level, group.rssi)) },
                         trailingContent = {
                             Button(onClick = { selectedGroup = group }) {
@@ -434,7 +437,7 @@ fun RadioScreen(
 
                 if (isNetworkReady) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(stringResource(R.string.radio_ptt_ble_peers, peerCount), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                    Text(pluralStringResource(R.plurals.radio_ptt_ble_peers, count = peerCount, peerCount), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
                 }
             }
         }

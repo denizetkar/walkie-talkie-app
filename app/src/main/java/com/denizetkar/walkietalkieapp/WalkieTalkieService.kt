@@ -253,7 +253,7 @@ class WalkieTalkieService : Service() {
         val peerCount = changes.peerCount
         val groupName = changes.groupName ?: localizedContext.getString(R.string.radio_unknown_group)
 
-        val contentText = localizedContext.getString(R.string.notification_content_live, groupName, peerCount)
+        val contentText = localizedContext.resources.getQuantityString(R.plurals.notification_content_live, peerCount, groupName, peerCount)
 
         val notification: Notification = NotificationCompat.Builder(localizedContext, channelId)
             .setContentTitle(localizedContext.getString(R.string.notification_title))

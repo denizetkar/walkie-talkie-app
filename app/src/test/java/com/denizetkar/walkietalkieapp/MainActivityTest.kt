@@ -249,7 +249,7 @@ class MainActivityTest {
             // 1. Anchor the touch to text that DOES NOT change during the press.
             // The "1 Peers Online" text is inside the same clickable Box, so this works perfectly
             // and preserves the Compose gesture state!
-            val pttNode = composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_peers, 1, substring = true)
+            val pttNode = composeTestRule.onNodeWithPluralId(R.plurals.radio_ptt_ble_peers, 1, substring = true)
 
             pttNode.performTouchInput { down(center) }
             composeTestRule.waitForIdle()

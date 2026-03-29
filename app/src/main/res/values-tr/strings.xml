@@ -43,7 +43,10 @@
     <string name="radio_ptt_ble_searching">TARIYOR…</string>
     <string name="radio_ptt_ble_talking">KONUŞ</string>
     <string name="radio_ptt_ble_hold_to_talk">BAS KONUŞ</string>
-    <string name="radio_ptt_ble_peers">%1$d kullanıcı bağlı</string>
+    <plurals name="radio_ptt_ble_peers">
+        <item quantity="one">%1$d kullanıcı bağlı</item>
+        <item quantity="other">%1$d kullanıcı bağlı</item>
+    </plurals>
     <string name="radio_leave_group">Gruptan ayrıl</string>
 
     <string name="audio_device_selector_default">Varsayılan</string>
@@ -66,7 +69,10 @@
 
     <string name="notification_channel_name">Walkie Talkie Servisi</string>
     <string name="notification_title">Walkie Talkie Aktif</string>
-    <string name="notification_content_live">Canlı: %1$s (%2$d Kişi)</string>
+    <plurals name="notification_content_live">
+        <item quantity="one">Canlı: %1$s (%2$d Kişi)</item>
+        <item quantity="other">Canlı: %1$s (%2$d Kişi)</item>
+    </plurals>
 
     <string name="error_connection_timeout">Bağlantı Zaman Aşımına Uğradı</string>
     <string name="error_access_code_rejected">Erişim Kodu Reddedildi</string>

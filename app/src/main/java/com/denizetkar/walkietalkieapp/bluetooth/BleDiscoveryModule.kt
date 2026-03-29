@@ -139,7 +139,7 @@ class BleDiscoveryModule(
         val isAvailable = (buffer.get().toInt() == 1)
 
         val nameBytes = record.getManufacturerSpecificData(Config.BLE_MANUFACTURER_ID)
-        val groupName = if (nameBytes != null) String(nameBytes, Charsets.UTF_8) else "Unknown"
+        val groupName = if (nameBytes != null) String(nameBytes, Charsets.UTF_8) else ""
 
         val node = TransportNode(
             id = result.device.address,

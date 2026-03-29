@@ -43,7 +43,10 @@
     <string name="radio_ptt_ble_searching">GESUCHT…</string>
     <string name="radio_ptt_ble_talking">SPRECHEN</string>
     <string name="radio_ptt_ble_hold_to_talk">DRÜCKEN</string>
-    <string name="radio_ptt_ble_peers">%1$d Peers verbunden</string>
+    <plurals name="radio_ptt_ble_peers">
+        <item quantity="one">%1$d Peer verbunden</item>
+        <item quantity="other">%1$d Peers verbunden</item>
+    </plurals>
     <string name="radio_leave_group">Gruppe verlassen</string>
 
     <string name="audio_device_selector_default">Standard</string>
@@ -66,7 +69,10 @@
 
     <string name="notification_channel_name">Walkie Talkie Dienst</string>
     <string name="notification_title">Walkie Talkie Aktiv</string>
-    <string name="notification_content_live">Live: %1$s (%2$d Teilnehmer)</string>
+    <plurals name="notification_content_live">
+        <item quantity="one">Live: %1$s (%2$d Teilnehmer)</item>
+        <item quantity="other">Live: %1$s (%2$d Teilnehmer)</item>
+    </plurals>
 
     <string name="error_connection_timeout">Zeitüberschreitung bei der Verbindung</string>
     <string name="error_access_code_rejected">Zugangscode abgelehnt</string>
