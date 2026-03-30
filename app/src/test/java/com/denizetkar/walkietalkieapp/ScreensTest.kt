@@ -1,18 +1,24 @@
 package com.denizetkar.walkietalkieapp
 
+import android.content.Context
 import android.media.AudioDeviceInfo
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Text
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.test.core.app.ApplicationProvider
 import com.denizetkar.walkietalkieapp.domain.AppError
+import com.denizetkar.walkietalkieapp.domain.AppLanguage
 import com.denizetkar.walkietalkieapp.domain.AudioDeviceUi
 import com.denizetkar.walkietalkieapp.domain.DiscoveredGroup
 import org.junit.Assert.assertEquals
@@ -161,6 +167,33 @@ class ScreensTest {
     }
 
     @Test
+    fun `RadioScreen - PTT shows BLUETOOTH OFF when disabled`() {
+        var talkAttempted = false
+
+        composeTestRule.setContent {
+            RadioScreen(
+                groupId = 100u,
+                groupName = "Hiking",
+                accessCode = "1234",
+                peerCount = 1,
+                isBluetoothEnabled = false, // Simulate disabled Bluetooth
+                availableAudioDevices = emptyList(),
+                selectedAudioDevice = 0,
+                onDeviceSelect = {},
+                onLeave = {},
+                onTalkStart = { talkAttempted = true },
+                onTalkStop = {}
+            )
+        }
+
+        val btn = composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_off)
+        btn.assertIsDisplayed()
+        btn.performClick()
+
+        assertFalse("Talk should not be permitted when BT is off", talkAttempted)
+    }
+
+    @Test
     fun `CreateGroupScreen - Validates input, displays error dialog, and fires callback`() {
         var createdName = ""
         var createdCode = ""
@@ -304,29 +337,72 @@ class ScreensTest {
     }
 
     @Test
-    fun `RadioScreen - PTT shows BLUETOOTH OFF when disabled`() {
-        var talkAttempted = false
+    fun `SettingsScreen - Displays languages and triggers callbacks`() {
+        var selectedLang: AppLanguage? = null
+        var backClicked = false
 
         composeTestRule.setContent {
-            RadioScreen(
-                groupId = 100u,
-                groupName = "Hiking",
-                accessCode = "1234",
-                peerCount = 1,
-                isBluetoothEnabled = false, // Simulate disabled Bluetooth
-                availableAudioDevices = emptyList(),
-                selectedAudioDevice = 0,
-                onDeviceSelect = {},
-                onLeave = {},
-                onTalkStart = { talkAttempted = true },
-                onTalkStop = {}
+            SettingsScreen(
+                currentLanguage = AppLanguage.ENGLISH,
+                onLanguageSelected = { selectedLang = it },
+                onBack = { backClicked = true }
             )
         }
 
-        val btn = composeTestRule.onNodeWithStringId(R.string.radio_ptt_ble_off)
-        btn.assertIsDisplayed()
-        btn.performClick()
+        // Verify Title
+        composeTestRule.onNodeWithStringId(R.string.settings_title).assertIsDisplayed()
 
-        assertFalse("Talk should not be permitted when BT is off", talkAttempted)
+        // Click German and verify callback
+        composeTestRule.onNodeWithStringId(R.string.language_german).performClick()
+        assertEquals(AppLanguage.GERMAN, selectedLang)
+
+        // Verify Back Button (Matched by Content Description)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        composeTestRule.onNodeWithContentDescription(context.getString(R.string.settings_back)).performClick()
+        assertTrue(backClicked)
+    }
+
+    @Test
+    fun `Resolvers - AppError resolveMessage covers all branches`() {
+        composeTestRule.setContent {
+            Column {
+                Text(AppError.ConnectionTimeout.resolveMessage())
+                Text(AppError.AccessCodeRejected.resolveMessage())
+                Text(AppError.BluetoothRadioUnavailable.resolveMessage())
+                Text(AppError.BluetoothScannerUnavailable.resolveMessage())
+                Text(AppError.BluetoothScannerFailed(5).resolveMessage())
+                Text(AppError.Unknown("Fatal Crash").resolveMessage())
+            }
+        }
+        // Verifying just one ensures the Compose engine evaluated the entire tree successfully
+        composeTestRule.onNodeWithText("Fatal Crash").assertIsDisplayed()
+    }
+
+    @Test
+    fun `Resolvers - AudioDeviceUi toFriendlyName covers all branches`() {
+        composeTestRule.setContent {
+            val allTypes = listOf(
+                AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
+                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+                AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                AudioDeviceInfo.TYPE_USB_DEVICE,
+                AudioDeviceInfo.TYPE_USB_HEADSET,
+                AudioDeviceInfo.TYPE_BUILTIN_MIC,
+                AudioDeviceInfo.TYPE_UNKNOWN
+            )
+            Column {
+                allTypes.forEach { type ->
+                    Text(AudioDeviceUi(1, type, "MAC", "ProdName").toFriendlyName())
+                }
+                // Blank fallback test
+                Text(AudioDeviceUi(2, AudioDeviceInfo.TYPE_UNKNOWN, "", "").toFriendlyName())
+            }
+        }
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        composeTestRule.onNodeWithText(context.getString(R.string.audio_device_earpiece)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(context.getString(R.string.audio_device_unknown)).assertIsDisplayed()
     }
 }

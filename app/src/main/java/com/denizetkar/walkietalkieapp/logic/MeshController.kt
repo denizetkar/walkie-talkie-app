@@ -189,10 +189,12 @@ class MeshController(
                     is Action.LeaveGroup -> {
                         Log.i("MeshController", "USER ACTION: Leave Group")
                         // 1. Safely reset ONLY the session/network state.
-                        // PRESERVE hardware states (isBluetoothEnabled)
+                        // PRESERVE hardware states and user preferences!
                         _state.update {
                             AppState(
                                 myself = it.myself,
+                                language = it.language,
+                                selectedAudioDevice = it.selectedAudioDevice,
                                 availableAudioDevices = it.availableAudioDevices,
                                 isBluetoothEnabled = it.isBluetoothEnabled,
                             )

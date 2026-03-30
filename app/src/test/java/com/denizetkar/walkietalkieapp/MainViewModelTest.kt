@@ -135,6 +135,33 @@ class MainViewModelTest {
     }
 
     @Test
+    fun `Service Connection - Handles Disconnects and Binding Deaths`() = runTest {
+        connectService()
+        assertTrue(viewModel.appState.value.isServiceBound)
+
+        val connectionSlot = slot<ServiceConnection>()
+        verify { application.bindService(any(), capture(connectionSlot), Context.BIND_AUTO_CREATE) }
+
+        // Simulate unexpected OS service kill
+        connectionSlot.captured.onServiceDisconnected(null)
+        assertFalse(viewModel.appState.value.isServiceBound)
+
+        // Simulate complete process binding death
+        connectionSlot.captured.onBindingDied(null)
+        assertFalse(viewModel.appState.value.isServiceBound)
+    }
+
+    @Test
+    fun `Service Connection - Handles startService exceptions gracefully`() = runTest {
+        // Simulate Android 14+ throwing SecurityException on background start
+        every { application.startService(any()) } throws SecurityException("Not allowed in bg")
+
+        viewModel.retryConnection()
+
+        assertTrue(viewModel.appState.value.serviceStartupFailed)
+    }
+
+    @Test
     fun `State Mapping - Core AppState maps correctly to UI State`() = runTest {
         // Setup: Connect first. State flows settle to "Ready".
         connectService()
@@ -308,6 +335,16 @@ class MainViewModelTest {
         onClearedMethod.invoke(viewModel)
 
         verify { application.unbindService(any()) }
+    }
+
+    @Test
+    fun `Lifecycle - onCleared does not throw if not bound`() = runTest {
+        // Attempting to unbind an unbound service crashes Android. Ensure we protect against this.
+        val onClearedMethod = MainViewModel::class.java.getDeclaredMethod("onCleared")
+        onClearedMethod.isAccessible = true
+        onClearedMethod.invoke(viewModel)
+
+        verify(exactly = 0) { application.unbindService(any()) }
     }
 
     @Test

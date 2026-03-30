@@ -1,5 +1,15 @@
+# --- HELPER: CMake & Cargo require forward slashes ---
+function Normalize-Path {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    # Resolve to absolute path, then convert slashes
+    $AbsPath =[System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PWD.Path, $Path))
+    return $AbsPath.Replace('\', '/')
+}
+
 # --- CONFIGURATION (Zero-Redundancy SSOT) ---
-$EnvFilePath = Join-Path $PSScriptRoot "../build.env"
+$PSScriptRootNorm = Normalize-Path $PSScriptRoot
+$EnvFilePath = Normalize-Path "$PSScriptRootNorm/../build.env"
 
 if (Test-Path $EnvFilePath) {
     # Read file, ignore comments/empty lines, and inject into $env:
@@ -16,9 +26,9 @@ $NDK_VERSION = $env:NDK_VERSION
 $CMAKE_VERSION = $env:CMAKE_VERSION
 $RUST_TARGET = $env:RUST_TARGET
 
-$ANDROID_SDK_ROOT = $env:ANDROID_HOME ?? (Join-Path $env:LOCALAPPDATA 'Android/Sdk')
-$NDK_PATH = "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
-$CMAKE_BIN = "$ANDROID_SDK_ROOT/cmake/$CMAKE_VERSION/bin"
+$ANDROID_SDK_ROOT = Normalize-Path ($env:ANDROID_HOME ?? (Join-Path $env:LOCALAPPDATA 'Android/Sdk'))
+$NDK_PATH = Normalize-Path "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+$CMAKE_BIN = Normalize-Path "$ANDROID_SDK_ROOT/cmake/$CMAKE_VERSION/bin"
 
 $NINJA_EXE = if ($IsWindows) { "ninja.exe" } else { "ninja" }
 function Get-NdkHostTag {
@@ -54,7 +64,7 @@ $env:NDK_HOME = $NDK_PATH
 $env:ANDROID_NDK_ROOT = $NDK_PATH
 
 # --- GENERATE WRAPPER TOOLCHAIN ---
-$WrapperFile = "$PSScriptRoot/android_wrapper.cmake"
+$WrapperFile = "$PSScriptRootNorm/android_wrapper.cmake"
 $RealToolchainPath = "$NDK_PATH/build/cmake/android.toolchain.cmake"
 
 # CHANGE: Set STL to c++_shared (The standard for Android)
@@ -67,48 +77,62 @@ include("$RealToolchainPath")
 
 Set-Content -Path $WrapperFile -Value $WrapperContent
 
-# --- CONFIGURE CMAKE ---
+# --- CONFIGURE CMAKE (FOR ANDROID) ---
 $env:CMAKE_TOOLCHAIN_FILE = $WrapperFile
 $env:CMAKE_GENERATOR = "Ninja"
 $env:CMAKE_MAKE_PROGRAM = "$CMAKE_BIN/$NINJA_EXE"
-$env:PATH = "$CMAKE_BIN" + [IO.Path]::PathSeparator + $env:PATH
+if ($env:PATH -notmatch [regex]::Escape($CMAKE_BIN)) {
+    $env:PATH = "$CMAKE_BIN" + [IO.Path]::PathSeparator + $env:PATH
+}
 
 # --- CLEAN & BUILD ---
-Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
+# Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
 # cargo clean
 
 Write-Host "Building for Android (arm64-v8a) API 30..." -ForegroundColor Green
 
-cargo ndk -t arm64-v8a --platform 30 -o ../app/src/main/jniLibs build --release
+$JniLibsDir = Normalize-Path "$PSScriptRootNorm/../app/src/main/jniLibs"
+cargo ndk -t arm64-v8a --platform 30 -o $JniLibsDir build --release
+$CargoExitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -eq 0) {
+# --- HOST ENVIRONMENT CLEANUP ---
+# CRITICAL: We MUST wipe the Android CMake variables from the environment!
+# Otherwise, the `cargo run` command below (which compiles for Windows/Mac)
+# will try to compile host dependencies using the Android cross-compiler.
+$env:CMAKE_TOOLCHAIN_FILE = $null
+$env:CMAKE_GENERATOR = $null
+$env:CMAKE_MAKE_PROGRAM = $null
+
+if ($CargoExitCode -eq 0) {
     Write-Host "Rust Build Success!" -ForegroundColor Cyan
 
     # Path to libc++ in NDK r21+ (LLVM toolchain)
-    $StlSource = "$NDK_PATH/toolchains/llvm/prebuilt/$NDK_HOST_TAG/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
-    $StlDest = "../app/src/main/jniLibs/arm64-v8a/libc++_shared.so"
+    $StlSource = Normalize-Path "$NDK_PATH/toolchains/llvm/prebuilt/$NDK_HOST_TAG/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+    $StlDest = Normalize-Path "$JniLibsDir/arm64-v8a/libc++_shared.so"
 
     if (Test-Path $StlSource) {
         Copy-Item -Path $StlSource -Destination $StlDest -Force
         Write-Host "Copied libc++_shared.so to jniLibs." -ForegroundColor Green
     } else {
-        Write-Error "CRITICAL: Could not find libc++_shared.so at $StlSource"
+        Write-Host "Could not find libc++_shared.so at $StlSource"
         # Try fallback path for older NDK layouts just in case
-        $StlSourceOld = "$NDK_PATH/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so"
+        $StlSourceOld = Normalize-Path "$NDK_PATH/sources/cxx-stl/llvm-libc++/libs/arm64-v8a/libc++_shared.so"
         if (Test-Path $StlSourceOld) {
-             Copy-Item -Path $StlSourceOld -Destination $StlDest -Force
-             Write-Host "Copied libc++_shared.so (Legacy Path) to jniLibs." -ForegroundColor Green
+            Copy-Item -Path $StlSourceOld -Destination $StlDest -Force
+            Write-Host "Copied libc++_shared.so (Legacy Path) to jniLibs." -ForegroundColor Green
         } else {
-             exit 1
+            Write-Error "CRITICAL: Could not find libc++_shared.so"
+            exit 1
         }
     }
 
     # --- AUTOMATIC BINDING GENERATION ---
     # Dynamically construct the path using the RUST_TARGET from build.env
-    $LibPath = "target/$RUST_TARGET/release/libwalkie_talkie_engine.so"
+    $LibPath = Normalize-Path "$PSScriptRootNorm/target/$RUST_TARGET/release/libwalkie_talkie_engine.so"
+    $OutDir = Normalize-Path "$PSScriptRootNorm/../app/src/main/java"
 
     Write-Host "Generating Kotlin bindings from $LibPath..." -ForegroundColor Yellow
-    cargo run --bin uniffi-bindgen -- generate --library $LibPath --language kotlin --out-dir ../app/src/main/java
+    cargo run --bin uniffi-bindgen -- generate --library $LibPath --language kotlin --out-dir $OutDir
 
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Bindings generated successfully!" -ForegroundColor Green

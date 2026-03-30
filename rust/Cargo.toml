@@ -13,19 +13,19 @@ path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
 # --- Common Dependencies ---
-uniffi = { version = "0.31", features = ["cli"] }
-thiserror = "2.0"
-log = "0.4"
-bytes = "1.11"
-anyhow = "1.0"
-byteorder = "1.5"
-crossbeam-channel = "0.5"
-opus-codec = "0.1"
+uniffi = { version = "^0.31", features = ["cli"] }
+thiserror = "^2.0"
+log = "^0.4"
+bytes = "^1.11"
+anyhow = "^1.0"
+byteorder = "^1.5"
+crossbeam-channel = "^0.5"
+opus-codec = "^0.1"
 
 # --- Android Only Dependencies ---
 [target.'cfg(target_os = "android")'.dependencies]
-oboe = { version = "0.6", features = ["java-interface"] }
-android_logger = "0.15"
+oboe = { version = "^0.6", features = ["java-interface"] }
+android_logger = "^0.15"
 
 [dev-dependencies]
-proptest = "1.10.0"
+proptest = "^1.10"

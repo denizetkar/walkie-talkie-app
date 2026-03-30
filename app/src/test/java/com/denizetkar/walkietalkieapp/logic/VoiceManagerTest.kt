@@ -149,6 +149,57 @@ class VoiceManagerTest {
     }
 
     @Test
+    fun `Hardware Update - Device Types Map to Friendly Names`() = testScope.runTest {
+        val micGateFlow = MutableStateFlow(false)
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(null)
+        val manager = createVoiceManager(micGateFlow, configFlow)
+        actions.clear()
+
+        // Create mock devices hitting various logic branches in `toFriendlyName`
+        val mockEarPiece = mockk<AudioDeviceInfo> {
+            every { id } returns 1
+            every { type } returns AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+            every { address } returns ""
+            every { productName } returns ""
+        }
+        val mockSco = mockk<AudioDeviceInfo> {
+            every { id } returns 2
+            every { type } returns AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            every { address } returns "AA:BB"
+            every { productName } returns "BT Headset"
+        }
+        val mockUsb = mockk<AudioDeviceInfo> {
+            every { id } returns 3
+            every { type } returns AudioDeviceInfo.TYPE_USB_DEVICE
+            every { address } returns ""
+            every { productName } returns "USB DAC"
+        }
+        val mockSpeaker = mockk<AudioDeviceInfo> {
+            every { id } returns 4
+            every { type } returns AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            every { address } returns ""
+            every { productName } returns ""
+        }
+
+        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_INPUTS) } returns arrayOf()
+        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } returns arrayOf(mockEarPiece, mockSco, mockUsb, mockSpeaker)
+
+        capturedDeviceCallback.onAudioDevicesAdded(null)
+        advanceUntilIdle()
+
+        val updateAction = actions.filterIsInstance<Action.AudioDevicesUpdated>().lastOrNull()
+        org.junit.Assert.assertNotNull(updateAction)
+
+        val devices = updateAction!!.devices
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, devices.find { it.id == 1 }?.type)
+        assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, devices.find { it.id == 2 }?.type)
+        assertEquals(AudioDeviceInfo.TYPE_USB_DEVICE, devices.find { it.id == 3 }?.type)
+        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, devices.find { it.id == 4 }?.type)
+
+        manager.close()
+    }
+
+    @Test
     fun `Ghost Validation - Unplugging active mic reverts to default`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
         val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(99, 1u))
@@ -198,6 +249,79 @@ class VoiceManagerTest {
         verify(exactly = 1) { engine2.startSession() }
 
         testVoiceManager.close()
+    }
+
+    @Test
+    fun `Lifecycle - Stop Session Exception is caught and ignored`() = testScope.runTest {
+        val micGateFlow = MutableStateFlow(false)
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
+
+        val engine = mockk<AudioEngine>(relaxed = true)
+        // Simulate a native crash when trying to close the Oboe stream
+        every { engine.stopSession() } throws RuntimeException("Oboe Crash")
+
+        val manager = spyk(VoiceManager(
+            context = mockContext,
+            scope = testScope.backgroundScope,
+            ioDispatcher = testDispatcher,
+            dispatch = { actions.add(it) },
+            engineFactory = { _, _, _, _ -> engine }
+        ), recordPrivateCalls = true)
+
+        every { manager["requestAudioFocus"]() } returns true
+        every { manager["abandonAudioFocus"]() } returns Unit
+
+        manager.bind(micGateFlow, configFlow)
+        advanceUntilIdle()
+
+        // Set config to null to trigger stopEngine
+        configFlow.value = null
+        advanceUntilIdle()
+
+        // The test passes if no unhandled exception crashed the coroutine
+        verify(exactly = 1) { engine.stopSession() }
+        manager.close()
+    }
+
+    @Test
+    fun `Lifecycle - Audio Focus Denied Retries Until Granted`() = testScope.runTest {
+        val engines = mutableListOf<AudioEngine>()
+        val micGateFlow = MutableStateFlow(false)
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
+
+        val manager = spyk(VoiceManager(
+            context = mockContext,
+            scope = testScope.backgroundScope,
+            ioDispatcher = testDispatcher,
+            dispatch = { actions.add(it) },
+            engineFactory = { _, _, _, _ ->
+                val engine = mockk<AudioEngine>(relaxed = true)
+                engines.add(engine)
+                engine
+            }
+        ), recordPrivateCalls = true)
+
+        // Mock focus to be DENIED initially
+        var focusGranted = false
+        every { manager["requestAudioFocus"]() } answers { focusGranted }
+        every { manager["abandonAudioFocus"]() } returns Unit
+
+        manager.bind(micGateFlow, configFlow)
+        advanceUntilIdle()
+
+        // Engine should not be started yet because focus was denied
+        assertEquals(0, engines.size)
+
+        // Now grant focus (e.g. user hung up a GSM call)
+        focusGranted = true
+        // Advance time to surpass Config.AUDIO_SESSION_START_DELAY retry loop
+        advanceTimeBy(Config.AUDIO_SESSION_START_DELAY + 100L)
+        advanceUntilIdle()
+
+        // Now it should have successfully bypassed the wait and started
+        assertEquals(1, engines.size)
+
+        manager.close()
     }
 
     @Test
@@ -284,126 +408,33 @@ class VoiceManagerTest {
     }
 
     @Test
-    fun `Lifecycle - Stop Session Exception is caught and ignored`() = testScope.runTest {
+    @org.robolectric.annotation.Config(sdk = [30])
+    fun `Legacy SDK - applyAudioRouting uses Bluetooth SCO`() = testScope.runTest {
         val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
+        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(2, 1u)) // ID 2 = BT SCO
 
-        val engine = mockk<AudioEngine>(relaxed = true)
-        // Simulate a native crash when trying to close the Oboe stream
-        every { engine.stopSession() } throws RuntimeException("Oboe Crash")
-
-        val manager = spyk(VoiceManager(
-            context = mockContext,
-            scope = testScope.backgroundScope,
-            ioDispatcher = testDispatcher,
-            dispatch = { actions.add(it) },
-            engineFactory = { _, _, _, _ -> engine }
-        ), recordPrivateCalls = true)
-
-        every { manager["requestAudioFocus"]() } returns true
-        every { manager["abandonAudioFocus"]() } returns Unit
-
-        manager.bind(micGateFlow, configFlow)
-        advanceUntilIdle()
-
-        // Set config to null to trigger stopEngine
-        configFlow.value = null
-        advanceUntilIdle()
-
-        // The test passes if no unhandled exception crashed the coroutine
-        verify(exactly = 1) { engine.stopSession() }
-        manager.close()
-    }
-
-    @Test
-    fun `Lifecycle - Audio Focus Denied Retries Until Granted`() = testScope.runTest {
-        val engines = mutableListOf<AudioEngine>()
-        val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(Pair(0, 1u))
-
-        val manager = spyk(VoiceManager(
-            context = mockContext,
-            scope = testScope.backgroundScope,
-            ioDispatcher = testDispatcher,
-            dispatch = { actions.add(it) },
-            engineFactory = { _, _, _, _ ->
-                val engine = mockk<AudioEngine>(relaxed = true)
-                engines.add(engine)
-                engine
-            }
-        ), recordPrivateCalls = true)
-
-        // Mock focus to be DENIED initially
-        var focusGranted = false
-        every { manager["requestAudioFocus"]() } answers { focusGranted }
-        every { manager["abandonAudioFocus"]() } returns Unit
-
-        manager.bind(micGateFlow, configFlow)
-        advanceUntilIdle()
-
-        // Engine should not be started yet because focus was denied
-        assertEquals(0, engines.size)
-
-        // Now grant focus (e.g. user hung up a GSM call)
-        focusGranted = true
-        // Advance time to surpass Config.AUDIO_SESSION_START_DELAY retry loop
-        advanceTimeBy(Config.AUDIO_SESSION_START_DELAY + 100L)
-        advanceUntilIdle()
-
-        // Now it should have successfully bypassed the wait and started
-        assertEquals(1, engines.size)
-
-        manager.close()
-    }
-
-    @Test
-    fun `Hardware Update - Device Types Map to Friendly Names`() = testScope.runTest {
-        val micGateFlow = MutableStateFlow(false)
-        val configFlow = MutableStateFlow<Pair<Int, UInt>?>(null)
-        val manager = createVoiceManager(micGateFlow, configFlow)
-        actions.clear()
-
-        // Create mock devices hitting various logic branches in `toFriendlyName`
-        val mockEarPiece = mockk<AudioDeviceInfo> {
-            every { id } returns 1
-            every { type } returns AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-            every { address } returns ""
-            every { productName } returns ""
-        }
         val mockSco = mockk<AudioDeviceInfo> {
             every { id } returns 2
             every { type } returns AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-            every { address } returns "AA:BB"
-            every { productName } returns "BT Headset"
+            // Provide answers for the UI mapping fields
+            every { address } returns "AA:BB:CC"
+            every { productName } returns "Legacy Headset"
         }
-        val mockUsb = mockk<AudioDeviceInfo> {
-            every { id } returns 3
-            every { type } returns AudioDeviceInfo.TYPE_USB_DEVICE
-            every { address } returns ""
-            every { productName } returns "USB DAC"
-        }
-        val mockSpeaker = mockk<AudioDeviceInfo> {
-            every { id } returns 4
-            every { type } returns AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            every { address } returns ""
-            every { productName } returns ""
-        }
+        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } returns arrayOf(mockSco)
 
-        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_INPUTS) } returns arrayOf()
-        every { spyAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } returns arrayOf(mockEarPiece, mockSco, mockUsb, mockSpeaker)
-
-        capturedDeviceCallback.onAudioDevicesAdded(null)
+        val manager = createVoiceManager(micGateFlow, configFlow)
         advanceUntilIdle()
 
-        val updateAction = actions.filterIsInstance<Action.AudioDevicesUpdated>().lastOrNull()
-        org.junit.Assert.assertNotNull(updateAction)
+        // Verifies older Android hardware routing API
+        @Suppress("DEPRECATION")
+        verify { spyAudioManager.startBluetoothSco() }
+        verify { spyAudioManager.isBluetoothScoOn = true }
 
-        val devices = updateAction!!.devices
-        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, devices.find { it.id == 1 }?.type)
-        assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, devices.find { it.id == 2 }?.type)
-        assertEquals(AudioDeviceInfo.TYPE_USB_DEVICE, devices.find { it.id == 3 }?.type)
-        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, devices.find { it.id == 4 }?.type)
+        configFlow.value = null // trigger engine stop
+        advanceUntilIdle()
 
+        @Suppress("DEPRECATION")
+        verify { spyAudioManager.stopBluetoothSco() }
         manager.close()
     }
 }

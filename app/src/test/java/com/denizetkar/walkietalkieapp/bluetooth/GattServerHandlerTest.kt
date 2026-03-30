@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.os.Build
 import app.cash.turbine.test
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.MainApplication
@@ -61,10 +62,10 @@ class GattServerHandlerTest {
     private val device = mockk<BluetoothDevice> {
         every { address } returns "AA:BB:CC:DD:EE:FF"
     }
-    private val controlChar = mockk<BluetoothGattCharacteristic> {
+    private val controlChar = mockk<BluetoothGattCharacteristic>(relaxed = true) {
         every { uuid } returns Config.CHAR_CONTROL_UUID
     }
-    private val dataChar = mockk<BluetoothGattCharacteristic> {
+    private val dataChar = mockk<BluetoothGattCharacteristic>(relaxed = true) {
         every { uuid } returns Config.CHAR_DATA_UUID
     }
     private val mockService = mockk<BluetoothGattService>()
@@ -78,13 +79,19 @@ class GattServerHandlerTest {
         val callbackSlot = slot<BluetoothGattServerCallback>()
         every { bluetoothManager.openGattServer(any(), capture(callbackSlot)) } returns mockGattServer
 
-        every { mockGattServer.notifyCharacteristicChanged(any(), any(), any(), any()) } returns BluetoothStatusCodes.SUCCESS
+        // Only mock API 33+ methods if we are actually running on API 33+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            every { mockGattServer.notifyCharacteristicChanged(any(), any(), any(), any()) } returns BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            every { mockGattServer.notifyCharacteristicChanged(any(), any(), any()) } returns true
+        }
+
         every { bluetoothManager.getConnectionState(any(), any()) } returns BluetoothProfile.STATE_DISCONNECTED
         every { mockGattServer.getService(Config.APP_SERVICE_UUID) } returns mockService
         every { mockService.getCharacteristic(Config.CHAR_CONTROL_UUID) } returns controlChar
         every { mockService.getCharacteristic(Config.CHAR_DATA_UUID) } returns dataChar
 
-        // Inject the test dispatcher here
         serverHandler = GattServerHandler(context, testScope.backgroundScope, testDispatcher) { accessCode }
         serverHandler.startServer()
         gattCallback = callbackSlot.captured
@@ -254,8 +261,6 @@ class GattServerHandlerTest {
         serverHandler.stopServer()
     }
 
-    // --- ADDITIONAL COVERAGE TESTS ---
-
     @Test
     fun `startServer - Handles null GattServer gracefully`() {
         // Simulate a scenario where Bluetooth is turned off, so openGattServer returns null
@@ -390,5 +395,21 @@ class GattServerHandlerTest {
         // Verify that cleanupDeviceData STILL happened despite the timeout by trying to send to it
         serverHandler.sendTo(device, byteArrayOf(0x01), TransportDataType.CONTROL)
         verify(exactly = 0) { mockGattServer.notifyCharacteristicChanged(any(), any(), any(), any()) }
+    }
+
+    @Test
+    @RoboConfig(sdk = [30])
+    @Suppress("DEPRECATION")
+    fun `Legacy SDK - Uses fallback notifyCharacteristicChanged`() = testScope.runTest {
+        gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+        runCurrent()
+
+        // Store the array in a variable to ensure reference equality in the verify block
+        val payload = byteArrayOf(0xAA.toByte())
+        serverHandler.sendTo(device, payload, TransportDataType.AUDIO)
+        runCurrent()
+
+        verify { dataChar.value = payload }
+        verify { mockGattServer.notifyCharacteristicChanged(device, dataChar, false) }
     }
 }

@@ -463,6 +463,40 @@ mod tests {
         assert_eq!(stream.next_expected_seq, Some(5001));
     }
 
+    #[test]
+    fn test_audio_config_default() {
+        let config = AudioConfig::default();
+        assert_eq!(config.sample_rate, 48000);
+        assert_eq!(config.frame_size_ms, 60);
+        assert_eq!(config.jitter_buffer_ms, 1000);
+    }
+
+    #[test]
+    fn test_remote_stream_alternative_sample_rates() {
+        // Tests the fallback mapping for varying hardware capabilities
+        let rates =[8000, 12000, 16000, 24000, 48000, 99999];
+        for rate in rates {
+            let stream = RemoteStream::new(rate, 1000, 60);
+            assert_eq!(stream.valid_samples, 0);
+        }
+    }
+
+    #[test]
+    fn test_opus_decode_error_resilience() {
+        let mut stream = RemoteStream::new(48000, 1000, 60);
+        stream.buffering = false;
+
+        // Push an invalid 1-byte packet that Opus cannot physically decode
+        stream.push_packet(1, vec![0xFF]);
+        stream.next_expected_seq = Some(1);
+
+        let played = stream.process_next_frame();
+
+        // The engine should gracefully drop it and output silence, NOT panic.
+        assert!(!played);
+        assert_eq!(stream.valid_samples, 0);
+    }
+
     use proptest::prelude::*;
 
     proptest! {

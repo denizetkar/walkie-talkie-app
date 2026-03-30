@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.os.Build
 import app.cash.turbine.test
 import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.network.ClientEvent
@@ -59,10 +60,10 @@ class GattClientHandlerTest {
     }
 
     private val mockService = mockk<BluetoothGattService>()
-    private val controlChar = mockk<BluetoothGattCharacteristic> {
+    private val controlChar = mockk<BluetoothGattCharacteristic>(relaxed = true) {
         every { uuid } returns Config.CHAR_CONTROL_UUID
     }
-    private val dataChar = mockk<BluetoothGattCharacteristic> {
+    private val dataChar = mockk<BluetoothGattCharacteristic>(relaxed = true) {
         every { uuid } returns Config.CHAR_DATA_UUID
     }
     private val mockDescriptor = mockk<BluetoothGattDescriptor> {
@@ -74,10 +75,15 @@ class GattClientHandlerTest {
         val callbackSlot = slot<BluetoothGattCallback>()
         every { device.connectGatt(any(), any(), capture(callbackSlot), any()) } returns mockGatt
 
-        every { mockGatt.writeCharacteristic(any(), any(), any()) } returns BluetoothStatusCodes.SUCCESS
-        every { mockGatt.writeDescriptor(any(), any()) } returns BluetoothStatusCodes.SUCCESS
+        // Only mock API 33+ methods if we are actually running on API 33+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            every { mockGatt.writeCharacteristic(any(), any(), any()) } returns BluetoothStatusCodes.SUCCESS
+            every { mockGatt.writeDescriptor(any(), any()) } returns BluetoothStatusCodes.SUCCESS
+        } else @Suppress("DEPRECATION") {
+            every { mockGatt.writeCharacteristic(any()) } returns true
+            every { mockGatt.writeDescriptor(any()) } returns true
+        }
 
-        // FIX: Relaxed mocks return false for booleans. Explicitly return true.
         every { mockGatt.discoverServices() } returns true
         every { mockGatt.setCharacteristicNotification(any(), any()) } returns true
         every { mockGatt.requestMtu(any()) } returns true
@@ -88,9 +94,7 @@ class GattClientHandlerTest {
         every { controlChar.getDescriptor(GattServerHandler.CCCD_UUID) } returns mockDescriptor
         every { dataChar.getDescriptor(GattServerHandler.CCCD_UUID) } returns mockDescriptor
 
-        // Inject the test dispatcher
         clientHandler = GattClientHandler(context, testScope.backgroundScope, device, myNodeId, accessCode, testDispatcher)
-
         clientHandler.connect()
         gattCallback = callbackSlot.captured
     }
@@ -170,106 +174,6 @@ class GattClientHandlerTest {
 
             cancelAndIgnoreRemainingEvents()
         }
-    }
-
-    @Test
-    fun `Connection Drops - Emits Disconnected on STATE_DISCONNECTED`() = testScope.runTest {
-        clientHandler.clientEvents.test {
-            gattCallback.onConnectionStateChange(mockGatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED)
-
-            val event = awaitItem()
-            assertTrue("Should emit Disconnected event", event is ClientEvent.Disconnected)
-
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
-    fun `Connection Drops - Emits Error on GATT failure`() = testScope.runTest {
-        clientHandler.clientEvents.test {
-            // Android sometimes sends GATT_ERROR (133)
-            gattCallback.onConnectionStateChange(mockGatt, 133, BluetoothProfile.STATE_CONNECTED)
-
-            val event = awaitItem() as ClientEvent.Error
-            assertTrue("Should emit Error on GATT failure", event.reason.message.contains("Status 133"))
-
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
-    fun `MTU Failures - Emits Error if MTU too low`() = testScope.runTest {
-        clientHandler.clientEvents.test {
-            // Simulate MTU negotiation concluding with an unacceptably low value
-            gattCallback.onMtuChanged(mockGatt, 23, BluetoothGatt.GATT_SUCCESS)
-
-            val event = awaitItem() as ClientEvent.Error
-            assertTrue("Should emit Error if MTU is below minimum", event.reason.message.contains("MTU Negotiation Failed"))
-
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
-    fun `Message Sending - Respects MTU and enqueues packets correctly`() = testScope.runTest {
-        // Assume default MTU (23). Max payload is 20.
-        val tooLargePacket = ByteArray(25)
-        val validPacket = ByteArray(15)
-
-        clientHandler.sendMessage(TransportDataType.AUDIO, tooLargePacket)
-        runCurrent()
-
-        // Ensure no write occurred for the oversized packet
-        verify(exactly = 0) { mockGatt.writeCharacteristic(dataChar, any(), any()) }
-
-        // Send a valid packet
-        clientHandler.sendMessage(TransportDataType.AUDIO, validPacket)
-        runCurrent()
-
-        verify(exactly = 1) {
-            mockGatt.writeCharacteristic(dataChar, validPacket, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-        }
-
-        // Fulfill the suspending callback so the queue can process the next one
-        gattCallback.onCharacteristicWrite(mockGatt, dataChar, BluetoothGatt.GATT_SUCCESS)
-        runCurrent()
-
-        // Send a control packet
-        clientHandler.sendMessage(TransportDataType.CONTROL, validPacket)
-        runCurrent()
-
-        verify(exactly = 1) {
-            mockGatt.writeCharacteristic(controlChar, validPacket, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-        }
-    }
-
-    @Test
-    fun `Audio Reception - Emits MessageReceived for CHAR_DATA_UUID`() = testScope.runTest {
-        clientHandler.clientEvents.test {
-            val audioPayload = byteArrayOf(0x01, 0x02, 0x03)
-
-            // Trigger characteristic changed for the AUDIO char
-            gattCallback.onCharacteristicChanged(mockGatt, dataChar, audioPayload)
-
-            val event = awaitItem() as ClientEvent.MessageReceived
-            assertEquals(TransportDataType.AUDIO, event.type)
-            assertEquals(audioPayload.toList(), event.data.toList())
-
-            cancelAndIgnoreRemainingEvents()
-        }
-    }
-
-    @Test
-    fun `Lifecycle Cleanup - close cancels scope and disconnects`() {
-        // Verify state prior to close
-        assertTrue("Scope should be active", clientHandler.scope.isActive)
-
-        clientHandler.disconnect()
-        verify(exactly = 1) { mockGatt.disconnect() }
-
-        clientHandler.close()
-        verify(exactly = 1) { mockGatt.close() }
-        assertFalse("Scope should be cancelled on close", clientHandler.scope.isActive)
     }
 
     @Test
@@ -375,6 +279,77 @@ class GattClientHandlerTest {
     }
 
     @Test
+    fun `Connection Drops - Emits Disconnected on STATE_DISCONNECTED`() = testScope.runTest {
+        clientHandler.clientEvents.test {
+            gattCallback.onConnectionStateChange(mockGatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED)
+
+            val event = awaitItem()
+            assertTrue("Should emit Disconnected event", event is ClientEvent.Disconnected)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `Connection Drops - Emits Error on GATT failure`() = testScope.runTest {
+        clientHandler.clientEvents.test {
+            // Android sometimes sends GATT_ERROR (133)
+            gattCallback.onConnectionStateChange(mockGatt, 133, BluetoothProfile.STATE_CONNECTED)
+
+            val event = awaitItem() as ClientEvent.Error
+            assertTrue("Should emit Error on GATT failure", event.reason.message.contains("Status 133"))
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `MTU Failures - Emits Error if MTU too low`() = testScope.runTest {
+        clientHandler.clientEvents.test {
+            // Simulate MTU negotiation concluding with an unacceptably low value
+            gattCallback.onMtuChanged(mockGatt, 23, BluetoothGatt.GATT_SUCCESS)
+
+            val event = awaitItem() as ClientEvent.Error
+            assertTrue("Should emit Error if MTU is below minimum", event.reason.message.contains("MTU Negotiation Failed"))
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `Message Sending - Respects MTU and enqueues packets correctly`() = testScope.runTest {
+        // Assume default MTU (23). Max payload is 20.
+        val tooLargePacket = ByteArray(25)
+        val validPacket = ByteArray(15)
+
+        clientHandler.sendMessage(TransportDataType.AUDIO, tooLargePacket)
+        runCurrent()
+
+        // Ensure no write occurred for the oversized packet
+        verify(exactly = 0) { mockGatt.writeCharacteristic(dataChar, any(), any()) }
+
+        // Send a valid packet
+        clientHandler.sendMessage(TransportDataType.AUDIO, validPacket)
+        runCurrent()
+
+        verify(exactly = 1) {
+            mockGatt.writeCharacteristic(dataChar, validPacket, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+        }
+
+        // Fulfill the suspending callback so the queue can process the next one
+        gattCallback.onCharacteristicWrite(mockGatt, dataChar, BluetoothGatt.GATT_SUCCESS)
+        runCurrent()
+
+        // Send a control packet
+        clientHandler.sendMessage(TransportDataType.CONTROL, validPacket)
+        runCurrent()
+
+        verify(exactly = 1) {
+            mockGatt.writeCharacteristic(controlChar, validPacket, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        }
+    }
+
+    @Test
     fun `Message Sending - Fails synchronously (Stack Busy) exhausts retries and emits Error`() = testScope.runTest {
         clientHandler.clientEvents.test {
             // Mock the write to fail immediately (simulate Bluetooth stack is busy/crashing)
@@ -391,5 +366,64 @@ class GattClientHandlerTest {
             assertTrue(errorEvent.reason.message.contains("Characteristic Write Failed"))
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun `Audio Reception - Emits MessageReceived for CHAR_DATA_UUID`() = testScope.runTest {
+        clientHandler.clientEvents.test {
+            val audioPayload = byteArrayOf(0x01, 0x02, 0x03)
+
+            // Trigger characteristic changed for the AUDIO char
+            gattCallback.onCharacteristicChanged(mockGatt, dataChar, audioPayload)
+
+            val event = awaitItem() as ClientEvent.MessageReceived
+            assertEquals(TransportDataType.AUDIO, event.type)
+            assertEquals(audioPayload.toList(), event.data.toList())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `Lifecycle Cleanup - close cancels scope and disconnects`() {
+        // Verify state prior to close
+        assertTrue("Scope should be active", clientHandler.scope.isActive)
+
+        clientHandler.disconnect()
+        verify(exactly = 1) { mockGatt.disconnect() }
+
+        clientHandler.close()
+        verify(exactly = 1) { mockGatt.close() }
+        assertFalse("Scope should be cancelled on close", clientHandler.scope.isActive)
+    }
+
+    @Test
+    @Suppress("DEPRECATION")
+    fun `Deprecated onCharacteristicChanged is handled safely`() = testScope.runTest {
+        clientHandler.clientEvents.test {
+            val payload = byteArrayOf(0x05)
+            every { dataChar.value } returns payload
+
+            // Android 12 and below use this deprecated callback
+            gattCallback.onCharacteristicChanged(mockGatt, dataChar)
+
+            val event = awaitItem() as ClientEvent.MessageReceived
+            assertEquals(payload.toList(), event.data.toList())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    @RoboConfig(sdk = [30])
+    @Suppress("DEPRECATION")
+    fun `Legacy SDK - Uses fallback writeCharacteristic`() = testScope.runTest {
+        // Store the array in a variable to ensure reference equality in the verify block
+        val payload = byteArrayOf(1, 2, 3)
+        clientHandler.sendMessage(TransportDataType.CONTROL, payload)
+        runCurrent()
+
+        verify { controlChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT }
+        verify { controlChar.value = payload }
+        verify { mockGatt.writeCharacteristic(controlChar) }
     }
 }
