@@ -12,7 +12,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 
 /**
@@ -60,13 +59,8 @@ class BleOperationQueue(
                 // 1. Select the next operation based on priority
                 val nextOp = pickNextOperation()
 
-                // 2. Execute with a hard timeout
-                withTimeout(Config.BLE_OPERATION_TIMEOUT) {
-                    // This block suspends until the BLE callback fires (or fails)
-                    nextOp()
-                }
-                // If the operation times out, we should never reach here.
-                // Because `shutdown()` should be called already.
+                // 2. Execute directly (Timeouts are now handled natively inside nextOp)
+                nextOp()
 
                 // 3. Yield briefly to allow other coroutines (like the cancellation handler) to run
                 yield()

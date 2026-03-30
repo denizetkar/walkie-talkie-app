@@ -222,6 +222,7 @@ class GattServerHandlerTest {
             gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
             assertTrue(awaitItem() is ServerEvent.ClientConnected)
 
+            every { bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) } returns BluetoothProfile.STATE_CONNECTED
             // Trigger MTU below minimum 300
             gattCallback.onMtuChanged(device, 23)
             runCurrent() // Yield so the fail() coroutine can emit the Error and call disconnect()
@@ -232,13 +233,13 @@ class GattServerHandlerTest {
             // Verify that the fail() logic triggered a disconnect
             verify(exactly = 1) { mockGattServer.cancelConnection(device) }
 
+            every { bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) } returns BluetoothProfile.STATE_DISCONNECTED
             // Manually simulate the Android Bluetooth stack responding to the cancellation request
             gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED)
             runCurrent()
 
             // Drain the resulting disconnect event
-            val disconnectEvent = awaitItem()
-            assertTrue(disconnectEvent is ServerEvent.ClientDisconnected)
+            assertTrue(awaitItem() is ServerEvent.ClientDisconnected)
         }
     }
 
@@ -299,17 +300,19 @@ class GattServerHandlerTest {
     @Test
     fun `sendTo - Fails synchronously (Stack Busy) exhausts retries and emits Error`() = testScope.runTest {
         serverHandler.serverEvents.test {
-            // 1. Connect to establish the internal operation queue
+            // Connect to establish the internal operation queue
             gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
             assertTrue(awaitItem() is ServerEvent.ClientConnected)
 
-            // 2. Mock the stack busy response (returns ERROR_UNKNOWN instead of SUCCESS)
+            // Tell the mock the device is now fully connected
+            every { bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) } returns BluetoothProfile.STATE_CONNECTED
+            // Mock the stack busy response (returns ERROR_UNKNOWN instead of SUCCESS)
             every { mockGattServer.notifyCharacteristicChanged(device, controlChar, true, any()) } returns BluetoothStatusCodes.ERROR_UNKNOWN
 
-            // 3. Send Control Packet
+            // Send Control Packet
             serverHandler.sendTo(device, byteArrayOf(0x01), TransportDataType.CONTROL)
 
-            // 4. Advance time past the internal retry backoff
+            // Advance time past the internal retry backoff
             advanceTimeBy(Config.GATT_RETRY_COOLDOWN * Config.GATT_RETRY_ATTEMPTS + 1000L)
             runCurrent()
 
@@ -321,6 +324,47 @@ class GattServerHandlerTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun `sendTo - Asynchronous Timeout exhausts retries and emits Error`() = testScope.runTest {
+        serverHandler.serverEvents.test {
+            gattCallback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+            awaitItem()
+            every { bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) } returns BluetoothProfile.STATE_CONNECTED
+            // Mock Android ACCEPTING the packet, but we will purposefully NEVER fire onNotificationSent
+            every { mockGattServer.notifyCharacteristicChanged(device, controlChar, true, any()) } returns BluetoothStatusCodes.SUCCESS
+
+            // Send Control Packet
+            serverHandler.sendTo(device, byteArrayOf(0x01), TransportDataType.CONTROL)
+
+            // Advance time past the 3 attempts:
+            val totalWait = (Config.BLE_OPERATION_TIMEOUT + Config.GATT_RETRY_COOLDOWN) * Config.GATT_RETRY_ATTEMPTS + 1000L
+            advanceTimeBy(totalWait)
+            runCurrent()
+
+            val errorEvent = awaitItem() as ServerEvent.Error
+            assertTrue(errorEvent.reason.message.contains("Notify Failed"))
+
+            // Verify it actually tried 3 times before failing
+            verify(exactly = Config.GATT_RETRY_ATTEMPTS) { mockGattServer.notifyCharacteristicChanged(any(), any(), any(), any()) }
+            // Verify it tore down the dead connection
+            verify(exactly = 1) { mockGattServer.cancelConnection(device) }
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `Disconnect - Skips cancelConnection if already physically disconnected`() = testScope.runTest {
+        // In our setup(), getConnectionState returns STATE_DISCONNECTED by default.
+
+        // Call the suspending disconnect method
+        serverHandler.disconnect(device)
+        runCurrent()
+
+        // Assert that we bypassed the Android stack call entirely
+        verify(exactly = 0) { mockGattServer.cancelConnection(device) }
     }
 
     @Test

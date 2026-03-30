@@ -48,7 +48,7 @@ object Config {
 
     const val WAKE_LOCK_TIMEOUT = 4 * 60 * 60 * 1000L
     const val GATT_RETRY_ATTEMPTS = 3
-    const val GATT_RETRY_COOLDOWN = 10L
+    const val GATT_RETRY_COOLDOWN = 500L
 
     // Delay to allow Android GATT stack to stabilize after service discovery
     const val GATT_SUBSCRIPTION_DELAY = 300L
@@ -78,7 +78,7 @@ object Config {
     // If we haven't heard from Root in this time, we downgrade to Standalone.
     const val HEARTBEAT_TIMEOUT = 3000L
 
-    const val BLE_OPERATION_TIMEOUT = 3000L
+    const val BLE_OPERATION_TIMEOUT = 2000L
 
     const val PEER_DISCONNECT_TIMEOUT = 3000L
 }

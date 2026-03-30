@@ -110,10 +110,9 @@ class GattClientHandler(
                     writeCharacteristic(data, type)
                 }
             } catch (t: Throwable) {
-                if (t is CancellationException) {
-                    fail(ConnectionFailure.Timeout("Characteristic Write Timeout: ${t.message}"))
-                    throw t // Re-throw to satisfy Coroutine flow
-                }
+                // Since BleOperationQueue no longer times out, the ONLY way this is cancelled
+                // is if the Handler's scope was cancelled (graceful disconnect).
+                if (t is CancellationException) throw t
 
                 if (type == TransportDataType.CONTROL) {
                     fail(ConnectionFailure.Io("Characteristic Write Failed: ${t.message}"))
@@ -138,21 +137,27 @@ class GattClientHandler(
         val service = gatt.getService(Config.APP_SERVICE_UUID) ?: throw Exception("Service not found when writing to $uuid")
         val char = service.getCharacteristic(uuid) ?: throw Exception("Characteristic not found: $uuid")
 
-        suspendCancellableCoroutine { cont ->
-            pendingAction.set(cont)
+        val result = withTimeoutOrNull(Config.BLE_OPERATION_TIMEOUT) {
+            suspendCancellableCoroutine { cont ->
+                pendingAction.set(cont)
 
-            val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(char, data, writeType) == BluetoothStatusCodes.SUCCESS
-            } else @Suppress("DEPRECATION") {
-                char.writeType = writeType
-                char.value = data
-                gatt.writeCharacteristic(char)
-            }
+                val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(char, data, writeType) == BluetoothStatusCodes.SUCCESS
+                } else @Suppress("DEPRECATION") {
+                    char.writeType = writeType
+                    char.value = data
+                    gatt.writeCharacteristic(char)
+                }
 
-            if (!success) {
-                pendingAction.set(null)
-                if (cont.isActive) cont.resumeWithException(Exception("Stack Busy"))
+                if (!success) {
+                    pendingAction.set(null)
+                    if (cont.isActive) cont.resumeWithException(Exception("Stack Busy"))
+                }
             }
+        }
+        if (result == null) {
+            pendingAction.set(null)
+            throw Exception("Characteristic Write Timeout") // To be caught by retryWithBackoff
         }
     }
 
@@ -167,9 +172,12 @@ class GattClientHandler(
             if (!gatt.discoverServices()) throw Exception("Service Discovery Start Failed")
 
             // 2. Wait for Callback (Reactive Bridge)
-            suspendCancellableCoroutine { cont ->
-                pendingAction.set(cont)
-                // If discovery takes too long, the OperationQueue timeout will kill this
+            val result = withTimeoutOrNull(Config.BLE_OPERATION_TIMEOUT) {
+                suspendCancellableCoroutine { cont -> pendingAction.set(cont) }
+            }
+            if (result == null) {
+                pendingAction.set(null)
+                throw Exception("Service Discovery Timeout")
             }
 
             // 3. Subscribe
@@ -188,9 +196,9 @@ class GattClientHandler(
             }
 
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t  // Check for graceful cancellation FIRST
+
             fail(ConnectionFailure.Io("Handshake Failed: ${t.message}"))
-            // FIX: Don't swallow cancellation!
-            if (t is CancellationException) throw t
         }
     }
 
@@ -201,18 +209,24 @@ class GattClientHandler(
         val descriptor = char.getDescriptor(GattServerHandler.CCCD_UUID) ?: throw Exception("CCCD not found for $charUUID")
 
         Log.d("GattClient", "Subscribing to $charUUID")
-        suspendCancellableCoroutine { cont ->
-            pendingAction.set(cont)
-            val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
-            } else @Suppress("DEPRECATION") {
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor)
+        val result = withTimeoutOrNull(Config.BLE_OPERATION_TIMEOUT) {
+            suspendCancellableCoroutine { cont ->
+                pendingAction.set(cont)
+                val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+                } else @Suppress("DEPRECATION") {
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(descriptor)
+                }
+                if (!success) {
+                    pendingAction.set(null)
+                    if (cont.isActive) cont.resumeWithException(Exception("writeDescriptor failed for $charUUID"))
+                }
             }
-            if (!success) {
-                pendingAction.set(null)
-                if (cont.isActive) cont.resumeWithException(Exception("writeDescriptor failed for $charUUID"))
-            }
+        }
+        if (result == null) {
+            pendingAction.set(null)
+            throw Exception("subscribeToCharacteristic Timeout")
         }
     }
 
@@ -315,9 +329,9 @@ class GattClientHandler(
                                     throw Exception("MTU Request Rejected")
                                 }
                             } catch (t: Throwable) {
+                                if (t is CancellationException) throw t  // Check for graceful cancellation FIRST
+
                                 fail(ConnectionFailure.Io("MTU Request Failed: ${t.message}"))
-                                // FIX: Don't swallow cancellation!
-                                if (t is CancellationException) throw t
                             }
                         }
                     } else {

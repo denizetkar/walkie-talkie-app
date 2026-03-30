@@ -223,7 +223,14 @@ class GattServerHandler(
                     notify(server, device, char, data, type)
                 }
             } catch (t: Throwable) {
-                handleNotifyError(t, device, type)
+                // Safe to ignore because the queue no longer throws TimeoutCancellationException
+                if (t is CancellationException) throw t
+
+                if (type == TransportDataType.CONTROL) {
+                    fail(device, ConnectionFailure.Io("Notify Failed: ${t.message}"))
+                } else {
+                    Log.w("GattServer", "Dropped Audio Packet (Stack Busy)")
+                }
             }
         }
     }
@@ -246,36 +253,27 @@ class GattServerHandler(
         val address = TransportAddress.from(device.address)
 
         if (confirm) {
-            // SUSPENDING PATH (Control/Indication)
-            // We must wait for onNotificationSent to ensure the stack is ready for the next one.
-            suspendCancellableCoroutine { cont ->
-                pendingNotifications[address] = cont
-                val success = notifyCompat(server, device, char, data, confirm)
-                if (!success) {
-                    pendingNotifications.remove(address)
-                    if (cont.isActive) cont.resumeWithException(Exception("Stack Busy"))
+            val result = withTimeoutOrNull(Config.BLE_OPERATION_TIMEOUT) {
+                // SUSPENDING PATH (Control/Indication)
+                // We must wait for onNotificationSent to ensure the stack is ready for the next one.
+                suspendCancellableCoroutine { cont ->
+                    pendingNotifications[address] = cont
+                    val success = notifyCompat(server, device, char, data, confirm)
+                    if (!success) {
+                        pendingNotifications.remove(address)
+                        if (cont.isActive) cont.resumeWithException(Exception("Stack Busy"))
+                    }
                 }
-                // If success == true, we wait for onNotificationSent
+            }
+            if (result == null) {
+                pendingNotifications.remove(address)
+                throw Exception("Notification Timeout") // To be caught by retryWithBackoff
             }
         } else {
             // FIRE-AND-FORGET PATH (Audio/Notification)
             // We do not wait for callbacks for audio to prevent blocking the queue on slow receivers.
             val success = notifyCompat(server, device, char, data, confirm)
             if (!success) throw Exception("Stack Busy")
-        }
-    }
-
-    private fun handleNotifyError(t: Throwable, device: BluetoothDevice, type: TransportDataType) {
-        // If any packet times out, it's fatal. Because it can cause desync in the BLE operation queue.
-        if (t is CancellationException) {
-            fail(device, ConnectionFailure.Timeout("Notify Characteristic Timeout: ${t.message}"))
-            throw t
-        }
-
-        if (type == TransportDataType.CONTROL) {
-            fail(device, ConnectionFailure.Io("Notify Failed: ${t.message}"))
-        } else {
-            Log.w("GattServer", "Dropped Audio Packet (Stack Busy)")
         }
     }
 
@@ -325,12 +323,18 @@ class GattServerHandler(
     @SuppressLint("MissingPermission")
     suspend fun disconnect(device: BluetoothDevice) {
         val address = TransportAddress.from(device.address)
-        Log.d("GattServer", "Requesting disconnect for $address")
-
-        val signal = CompletableDeferred<Unit>()
-        disconnectSignals[address] = signal
-
         try {
+            // Do not wait for a callback if they are already physically disconnected!
+            val state = bluetoothManager.getConnectionState(device, BluetoothProfile.GATT)
+            if (state == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.d("GattServer", "Skipping disconnect wait for $address (Already Disconnected)")
+                return
+            }
+
+            Log.d("GattServer", "Requesting disconnect for $address")
+            val signal = CompletableDeferred<Unit>()
+            disconnectSignals[address] = signal
+
             gattServer?.cancelConnection(device)
             if (bluetoothManager.adapter?.isEnabled != true) {
                 Log.d("GattServer", "Skipping polite disconnect wait: Bluetooth is off")
