@@ -113,7 +113,7 @@ data class SessionContext(
 )
 
 data class DiscoveredGroup(
-    val id: String, // MAC Address
+    val networkId: String, // MAC Address
     val groupId: UInt,
     val name: String,
     val rssi: Int,
@@ -253,7 +253,7 @@ sealed class Effect {
      * @param originNodeId The identity WE should assume for this connection attempt.
      */
     data class ConnectTo(
-        val targetId: String,
+        val networkId: String,
         val targetNodeId: PeerId,
         val originNodeId: PeerId,
         val accessCode: String,

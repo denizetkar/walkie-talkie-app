@@ -116,7 +116,7 @@ class BleDiscoveryModuleTest {
             val event = awaitItem() as DiscoveryEvent.NodeFound
             val node = event.node
 
-            assertEquals("AA:BB:CC:DD:EE:FF", node.id)
+            assertEquals("AA:BB:CC:DD:EE:FF", node.networkId)
             assertEquals(expectedGroupId, node.groupId)
             assertEquals(expectedGroupName, node.name)
             assertEquals(-42, node.rssi)
@@ -236,8 +236,8 @@ class BleDiscoveryModuleTest {
             val event1 = awaitItem() as DiscoveryEvent.NodeFound
             val event2 = awaitItem() as DiscoveryEvent.NodeFound
 
-            assertEquals("11:11:11:11:11:11", event1.node.id)
-            assertEquals("22:22:22:22:22:22", event2.node.id)
+            assertEquals("11:11:11:11:11:11", event1.node.networkId)
+            assertEquals("22:22:22:22:22:22", event2.node.networkId)
         }
     }
 

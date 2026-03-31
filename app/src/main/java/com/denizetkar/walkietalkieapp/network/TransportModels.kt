@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 // --- Low Level DTOs (Bluetooth Layer) ---
 
 data class TransportNode(
-    val id: String,           // MAC Address
+    val networkId: String, // MAC Address
     val groupId: UInt,
     val name: String,
     val rssi: Int,

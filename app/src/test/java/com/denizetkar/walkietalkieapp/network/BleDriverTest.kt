@@ -621,7 +621,7 @@ class BleDriverTest {
 
         val adAction = actions.filterIsInstance<Action.AdvertisementSeen>().lastOrNull()
         assertNotNull("Should bridge NodeFound to AdvertisementSeen", adAction)
-        assertEquals("AA:BB:CC:DD:EE:FF", adAction?.group?.id)
+        assertEquals("AA:BB:CC:DD:EE:FF", adAction?.group?.networkId)
 
         // 2. Test ScanFailed bridging
         localEventsFlow.emit(DiscoveryEvent.ScanFailed(6)) // Error code 6 (Too Frequent)

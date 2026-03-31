@@ -148,7 +148,7 @@ class BleDiscoveryModule(
         val groupName = String(nameBytes, Charsets.UTF_8)
 
         val node = TransportNode(
-            id = result.device.address,
+            networkId = result.device.address,
             groupId = groupId,
             name = groupName,
             rssi = result.rssi,

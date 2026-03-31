@@ -91,7 +91,7 @@ class BleDriver(
                     is DiscoveryEvent.NodeFound -> {
                         dispatch(Action.AdvertisementSeen(
                             DiscoveredGroup(
-                                id = event.node.id,
+                                networkId = event.node.networkId,
                                 groupId = event.node.groupId,
                                 name = event.node.name,
                                 rssi = event.node.rssi,
@@ -209,7 +209,7 @@ class BleDriver(
         scope.launch {
             effects.collect { effect ->
                 when (effect) {
-                    is Effect.ConnectTo -> handleConnectRequest(effect.targetId, effect.targetNodeId, effect.originNodeId, effect.accessCode)
+                    is Effect.ConnectTo -> handleConnectRequest(effect.networkId, effect.targetNodeId, effect.originNodeId, effect.accessCode)
                     is Effect.Disconnect -> handleDisconnectRequest(effect.peerId)
                     is Effect.Transmit -> handleTransmit(effect.data, effect.isControl, effect.excludedSource)
                     else -> {} // Other effects (like Toast) are handled by UI layer

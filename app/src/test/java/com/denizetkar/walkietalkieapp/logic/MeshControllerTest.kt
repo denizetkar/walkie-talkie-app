@@ -518,14 +518,14 @@ class MeshControllerTest {
         val ad1 = DiscoveredGroup("MAC_1", 100u, groupName, -80, 100u, 101u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad1))
         runCurrent()
-        assertEquals("MAC_1", controller.state.value.discoveredGroups.first().id)
+        assertEquals("MAC_1", controller.state.value.discoveredGroups.first().networkId)
         assertEquals(-80, controller.state.value.discoveredGroups.first().rssi)
 
         // 2. Same MAC, Better RSSI (Updates existing)
         val ad1Better = ad1.copy(rssi = -70)
         controller.dispatch(Action.AdvertisementSeen(ad1Better))
         runCurrent()
-        assertEquals("MAC_1", controller.state.value.discoveredGroups.first().id)
+        assertEquals("MAC_1", controller.state.value.discoveredGroups.first().networkId)
         assertEquals(1, controller.state.value.discoveredGroups.size)
         assertEquals(-70, controller.state.value.discoveredGroups.first().rssi)
 
@@ -533,14 +533,14 @@ class MeshControllerTest {
         val ad2 = DiscoveredGroup("MAC_2", 100u, groupName, -60, 200u, 201u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad2))
         runCurrent()
-        assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id)
+        assertEquals("MAC_2", controller.state.value.discoveredGroups.first().networkId)
         assertEquals(1, controller.state.value.discoveredGroups.size)
 
         // 4. Different MAC, Worse RSSI (Ignored entirely)
         val ad3 = DiscoveredGroup("MAC_3", 100u, groupName, -90, 300u, 301u, simulationTime)
         controller.dispatch(Action.AdvertisementSeen(ad3))
         runCurrent()
-        assertEquals("MAC_2", controller.state.value.discoveredGroups.first().id) // Unchanged
+        assertEquals("MAC_2", controller.state.value.discoveredGroups.first().networkId) // Unchanged
     }
 
     @Test

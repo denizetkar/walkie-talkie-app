@@ -398,7 +398,7 @@ class MeshController(
         } else {
             // Existing Group found.
             // If it's the SAME device (MAC), always update (RSSI might fluctuate).
-            if (existing.id == group.id) {
+            if (existing.networkId == group.networkId) {
                 group
             }
             // If it's a DIFFERENT device but has BETTER signal, switch to it.
@@ -423,8 +423,8 @@ class MeshController(
         if (group.groupId != session.groupId) return
         if (!calculateConnectionStrategy(state, group)) return
 
-        Log.d("MeshController", "Strategy: Decided to connect to ${group.id} (RootID: ${group.rootNodeId})")
-        emit(Effect.ConnectTo(group.id, group.nodeId, state.myself, session.accessCode))
+        Log.d("MeshController", "Strategy: Decided to connect to ${group.networkId} (RootID: ${group.rootNodeId})")
+        emit(Effect.ConnectTo(group.networkId, group.nodeId, state.myself, session.accessCode))
     }
 
     /**
