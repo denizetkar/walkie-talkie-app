@@ -14,8 +14,8 @@ data class TransportNode(
     val groupId: UInt,
     val name: String,
     val rssi: Int,
-    val nodeId: UInt,
-    val networkId: UInt,
+    val nodeId: PeerId,
+    val rootNodeId: PeerId,
     val hopsToRoot: Int,
     val isAvailable: Boolean
 )
@@ -28,8 +28,8 @@ sealed interface DiscoveryEvent {
 data class AdvertisingConfig(
     val groupId: UInt,
     val groupName: String,
-    val ownNodeId: UInt,
-    val networkId: UInt,
+    val ownNodeId: PeerId,
+    val rootNodeId: PeerId,
     val hopsToRoot: Int,
     val isAvailable: Boolean
 )
@@ -53,7 +53,7 @@ data class DriverConfig(
     val groupId: UInt,
     val groupName: String,
     val ownNodeId: PeerId,
-    val netId: UInt,
+    val rootNodeId: PeerId,
     val hops: Int,
     val isFull: Boolean
 )
@@ -116,7 +116,6 @@ enum class TransportType {
 sealed interface ConnectionFailure {
     val message: String
     data class Io(override val message: String) : ConnectionFailure
-    data class Timeout(override val message: String) : ConnectionFailure
     data class AuthRejected(override val message: String) : ConnectionFailure
 }
 

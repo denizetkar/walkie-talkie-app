@@ -95,7 +95,7 @@ class BleDriver(
                                 groupId = event.node.groupId,
                                 name = event.node.name,
                                 rssi = event.node.rssi,
-                                netId = event.node.networkId,
+                                rootNodeId = event.node.rootNodeId,
                                 nodeId = event.node.nodeId
                             )
                         ))
@@ -258,7 +258,7 @@ class BleDriver(
             groupId = session?.groupId ?: 0u,
             groupName = session?.groupName ?: "",
             ownNodeId = state.myself,
-            netId = state.network.rootId,
+            rootNodeId = state.network.rootId,
             hops = state.network.hops,
             isFull = state.connectedPeers.size >= Config.MAX_PEERS
         )
@@ -281,7 +281,7 @@ class BleDriver(
                 groupId = config.groupId,
                 groupName = config.groupName,
                 ownNodeId = config.ownNodeId,
-                networkId = config.netId,
+                rootNodeId = config.rootNodeId,
                 hopsToRoot = config.hops,
                 isAvailable = !config.isFull,
             )

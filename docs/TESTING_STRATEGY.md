@@ -25,7 +25,7 @@ We test the mesh algorithms by simulating a "Virtual Network" on the JVM. We do 
 ### Key Scenarios
 1.  **Convergence (Merging):**
     *   *Setup:* Local Node (ID 10) is Root.
-    *   *Action:* Receive `Heartbeat(NetID: 20, Seq: 5)`.
+    *   *Action:* Receive `Heartbeat(RootID: 20, Seq: 5)`.
     *   *Assert:* Local State updates to `NetworkTopology.Mesh(Root=20)`.
     *   *Assert:* `Effect.Transmit` is emitted (Relaying the better root).
 2.  **Split Horizon (Loop Prevention):**

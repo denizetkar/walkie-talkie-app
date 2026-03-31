@@ -210,7 +210,7 @@ class MeshControllerTest {
         assertNotNull("Should generate heartbeat", hbEffect)
 
         val packet = Packet.fromBytes(hbEffect!!.data, true) as Packet.Control.Heartbeat
-        assertEquals("Should be my ID", controller.state.value.myself, packet.netId)
+        assertEquals("Should be my ID", controller.state.value.myself, packet.rootNodeId)
         assertEquals("Hops should be 0", 0, packet.hops)
     }
 
@@ -232,7 +232,7 @@ class MeshControllerTest {
 
         // 2. Action: Receive Heartbeat from Better Root
         val hbPacket = Packet.Control.Heartbeat(
-            netId = betterRootId,
+            rootNodeId = betterRootId,
             seq = 50,
             hops = 0
         ).toBytes()
@@ -276,7 +276,7 @@ class MeshControllerTest {
 
         // 2. Action: Receive Heartbeat from Worse Root
         val hbPacket = Packet.Control.Heartbeat(
-            netId = worseRootId,
+            rootNodeId = worseRootId,
             seq = 50,
             hops = 0
         ).toBytes()

@@ -13,7 +13,7 @@ class ProtocolTest {
     @Test
     fun `Heartbeat Packet Serialization Round Trip`() {
         val original = Packet.Control.Heartbeat(
-            netId = 123456u,
+            rootNodeId = 123456u,
             seq = 99,
             hops = 2
         )

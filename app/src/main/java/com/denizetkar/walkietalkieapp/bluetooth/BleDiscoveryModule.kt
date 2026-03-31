@@ -134,7 +134,7 @@ class BleDiscoveryModule(
 
         val buffer = ByteBuffer.wrap(serviceData).order(ByteOrder.LITTLE_ENDIAN)
         val nodeId = buffer.int.toUInt()
-        val networkId = buffer.int.toUInt()
+        val rootNodeId = buffer.int.toUInt()
         val hops = buffer.get().toInt() and 0xFF
         val isAvailable = (buffer.get().toInt() == 1)
 
@@ -153,7 +153,7 @@ class BleDiscoveryModule(
             name = groupName,
             rssi = result.rssi,
             nodeId = nodeId,
-            networkId = networkId,
+            rootNodeId = rootNodeId,
             hopsToRoot = hops,
             isAvailable = isAvailable
         )

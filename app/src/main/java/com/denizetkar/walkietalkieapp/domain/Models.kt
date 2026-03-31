@@ -117,7 +117,7 @@ data class DiscoveredGroup(
     val groupId: UInt,
     val name: String,
     val rssi: Int,
-    val netId: UInt,
+    val rootNodeId: PeerId,
     val nodeId: PeerId,
     // Timestamp used to prune old groups from the UI list
     val lastSeen: Long = System.currentTimeMillis()

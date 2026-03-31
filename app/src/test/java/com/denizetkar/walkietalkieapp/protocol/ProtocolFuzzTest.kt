@@ -68,7 +68,7 @@ class ProtocolFuzzTest {
             if (Random.nextBoolean()) {
                 // Heartbeat
                 Packet.Control.Heartbeat(
-                    netId = Random.nextUInt(),
+                    rootNodeId = Random.nextUInt(),
                     seq = Random.nextInt(),
                     hops = Random.nextInt(0, 255)
                 )

@@ -41,7 +41,7 @@ class BleAdvertiserModule(
         val pUuid = ParcelUuid(Config.APP_SERVICE_UUID)
         val payload = ByteBuffer.allocate(Config.PACKET_SERVICE_DATA_SIZE).order(ByteOrder.LITTLE_ENDIAN)
         payload.putInt(config.ownNodeId.toInt())
-        payload.putInt(config.networkId.toInt())
+        payload.putInt(config.rootNodeId.toInt())
         payload.put(config.hopsToRoot.toByte())
         payload.put(if (config.isAvailable) 1.toByte() else 0.toByte())
 

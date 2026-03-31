@@ -59,7 +59,7 @@ Every Control packet starts with a 2-byte header.
 #### `0x10` HEARTBEAT
 *   **Direction:** Bi-directional (Flooded)
 *   **Payload:**
-    *   `[0-3] NetID` (`UInt32`) - The Root ID.
+    *   `[0-3] RootID` (`UInt32`) - The Root ID.
     *   `[4-7] Seq` (`UInt32`) - Sequence number (increments on every heartbeat).
     *   `[8] Hops` (`UInt8`) - Hops from Root (incremented on relay).
 

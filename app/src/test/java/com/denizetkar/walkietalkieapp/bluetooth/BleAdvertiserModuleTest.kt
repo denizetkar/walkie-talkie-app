@@ -58,7 +58,7 @@ class BleAdvertiserModuleTest {
             groupId = 0x1A2B3C4Du,
             groupName = "Alpha",
             ownNodeId = 0x11223344u,
-            networkId = 0x55667788u,
+            rootNodeId = 0x55667788u,
             hopsToRoot = 2,
             isAvailable = true
         )

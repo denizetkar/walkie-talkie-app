@@ -121,7 +121,7 @@ class BleDiscoveryModuleTest {
             assertEquals(expectedGroupName, node.name)
             assertEquals(-42, node.rssi)
             assertEquals(0x99887766u, node.nodeId)
-            assertEquals(0x11223344u, node.networkId)
+            assertEquals(0x11223344u, node.rootNodeId)
             assertEquals(3, node.hopsToRoot)
             assertTrue(node.isAvailable)
         }

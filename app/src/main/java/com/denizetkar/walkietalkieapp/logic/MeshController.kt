@@ -365,19 +365,19 @@ class MeshController(
         var changed = false
 
         // Rule 1: Always prefer a higher Network ID (Merge Island)
-        if (hb.netId > current.rootId) {
-            Log.i("MeshController", "Topology: Found Better Root ${hb.netId}. Merging.")
+        if (hb.rootNodeId > current.rootId) {
+            Log.i("MeshController", "Topology: Found Better Root ${hb.rootNodeId}. Merging.")
             _state.update {
-                it.copy(network = NetworkTopology.Mesh(hb.netId, hb.hops + 1, hb.seq))
+                it.copy(network = NetworkTopology.Mesh(hb.rootNodeId, hb.hops + 1, hb.seq))
             }
             lastRootSeen = internalClockMs
             changed = true
         }
         // Rule 2: If same Network ID, update if Sequence is newer (Keepalive)
-        else if (hb.netId == current.rootId) {
+        else if (hb.rootNodeId == current.rootId) {
             if (current is NetworkTopology.Mesh && hb.seq > current.rootSeq) {
                 _state.update {
-                    it.copy(network = NetworkTopology.Mesh(hb.netId, hb.hops + 1, hb.seq))
+                    it.copy(network = NetworkTopology.Mesh(hb.rootNodeId, hb.hops + 1, hb.seq))
                 }
                 changed = true
             }
@@ -423,7 +423,7 @@ class MeshController(
         if (group.groupId != session.groupId) return
         if (!calculateConnectionStrategy(state, group)) return
 
-        Log.d("MeshController", "Strategy: Decided to connect to ${group.id} (NetID: ${group.netId})")
+        Log.d("MeshController", "Strategy: Decided to connect to ${group.id} (RootID: ${group.rootNodeId})")
         emit(Effect.ConnectTo(group.id, group.nodeId, state.myself, session.accessCode))
     }
 
@@ -441,7 +441,7 @@ class MeshController(
         // PRIORITY 1: Convergence (Island Merging)
         // If they have a higher Network ID, they are a "Better Root".
         // We ALWAYS want to connect to them, even if we are full.
-        if (target.netId > state.network.rootId) return true
+        if (target.rootNodeId > state.network.rootId) return true
 
         // PRIORITY 2: Fill Stable Slots (up to 3)
         // If we are lonely, connect to anyone to form a mesh.

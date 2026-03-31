@@ -1,5 +1,6 @@
 package com.denizetkar.walkietalkieapp.protocol
 
+import com.denizetkar.walkietalkieapp.domain.PeerId
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -39,14 +40,14 @@ sealed class Packet {
 
         // 1. Heartbeat (The Pulse of the Mesh)
         data class Heartbeat(
-            val netId: UInt,
+            val rootNodeId: PeerId,
             val seq: Int,
-            val hops: Int
+            val hops: Int,
         ) : Control(Protocol.OP_HEARTBEAT) {
             override fun encodePayload(): ByteArray {
-                // Payload: [NetId(4)] [Seq(4)] [Hops(1)]
+                // Payload: [RootID(4)] [Seq(4)] [Hops(1)]
                 val buf = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
-                buf.putInt(netId.toInt())
+                buf.putInt(rootNodeId.toInt())
                 buf.putInt(seq)
                 buf.put(hops.toByte())
                 return buf.array()
@@ -109,10 +110,10 @@ sealed class Packet {
                     if (payload.size < 9) return null
                     try {
                         val pBuf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
-                        val netId = pBuf.int.toUInt()
+                        val rootNodeId = pBuf.int.toUInt()
                         val seq = pBuf.int
                         val hops = pBuf.get().toInt() and 0xFF
-                        Control.Heartbeat(netId, seq, hops)
+                        Control.Heartbeat(rootNodeId, seq, hops)
                     } catch (_: Exception) { null }
                 }
                 else -> Control.Raw(op, payload)
