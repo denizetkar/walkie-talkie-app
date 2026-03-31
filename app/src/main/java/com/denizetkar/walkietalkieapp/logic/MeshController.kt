@@ -5,6 +5,7 @@ import com.denizetkar.walkietalkieapp.Config
 import com.denizetkar.walkietalkieapp.R
 import com.denizetkar.walkietalkieapp.domain.*
 import com.denizetkar.walkietalkieapp.protocol.Packet
+import com.denizetkar.walkietalkieapp.utils.TimeEvictingCache
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +50,7 @@ class MeshController(
      * Deduplication Cache. Maps PacketHash -> TimestampMs.
      * Used to ignore packets we have already processed or relayed.
      */
-    private val packetCache = mutableMapOf<Int, Long>()
+    private val packetCache = TimeEvictingCache<Int>(Config.PACKET_CACHE_TIMEOUT)
 
     /**
      * Liveness Tracker. Maps PeerId -> LastHeardTimestampMs.
@@ -508,10 +509,7 @@ class MeshController(
         val now = internalClockMs
 
         // 1. Prune Packet Cache
-        val iter = packetCache.iterator()
-        while (iter.hasNext()) {
-            if (now - iter.next().value > Config.PACKET_CACHE_TIMEOUT) iter.remove()
-        }
+        packetCache.cleanup(now)
 
         // 2. Prune Dead Peers
         val peersToCheck = _state.value.connectedPeers.toList()
@@ -532,11 +530,11 @@ class MeshController(
     }
 
     private fun isPacketSeen(data: ByteArray): Boolean {
-        return packetCache.containsKey(data.contentHashCode())
+        return packetCache.contains(data.contentHashCode())
     }
 
     private fun markPacketAsSeen(data: ByteArray) {
-        packetCache[data.contentHashCode()] = internalClockMs
+        packetCache.put(data.contentHashCode(), internalClockMs)
     }
 
     private suspend fun emit(effect: Effect) {
