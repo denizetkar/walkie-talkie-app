@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Load Build Environment
         run: cat build.env >> $GITHUB_ENV
@@ -28,7 +28,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Gradle Build Cache
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Install Android NDK & CMake
         if: steps.cache-ndk.outputs.cache-hit != 'true'
@@ -63,7 +63,7 @@ jobs:
           ./gradlew build test koverXmlReport --stacktrace
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./rust/lcov.info,./app/build/reports/kover/report.xml
